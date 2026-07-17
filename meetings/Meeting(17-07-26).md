@@ -1,53 +1,44 @@
-# Meeting 01
-
+# Meeting 02 — Client Meeting
 **Date:** 17 July 2026
-
-**Time:** 10:00 AM - 10:45 AM
 
 ## Attendees
 - Thehan Andaramana
 - Thumula Rumesh
 - Sadev Ravishan
 - Sivakumar Sabeeshan
+- Client representative(s) — Altrium
 
 ---
-
 ## Agenda
-- Review the assignment brief.
-- Select the project scenario.
-- Plan for the client meeting.
+- Present the team and confirm project scope with the client.
+- Gather requirements for the CRM system.
+- Begin identifying candidate features for the scenario.
 
 ---
-
 ## Discussion
-- The team went through the assignment brief and discussed the available scenarios.
-- Scenario 3 was selected for the project.
-- The assigned company, **Altrium**, was confirmed.
-- The team briefly reviewed Altrium's background in preparation for the upcoming client meeting.
+- Went through the client's business context and current pain points with the client.
+- Walked through the required CRM capabilities directly with the client (companies, contacts, leads, deals, engagements, pipeline, follow-ups, dashboards, reports, alerts).
+- Started an initial pass at planning which features the prototype should cover, based on what the client described.
 
 ---
-
 ## Decisions
-- Proceed with Scenario 3.
-- Prepare questions and requirements for the client meeting with Altium.
+- Client requirements captured for use as the baseline requirement source going forward.
+- Team to begin turning requirements into a working feature/backlog plan.
 
 ---
-
 ## Action Items
-
 | Task | Owner | Deadline |
 |------|-------|----------|
-| Review Altrium's background | All Members | Before Meeting 02 |
-| Prepare questions for the client meeting | All Members | Before Meeting 02 |
+| Write up client requirements document | Thumula (BA) | Before Meeting 03 |
+| Begin feature/backlog planning from requirements | All Members | Ongoing |
 
 ---
-
 ## Completed
-- Selected Scenario 3.
-- Confirmed Altrium as the client company.
+- Client requirements gathered directly from Altrium.
+- Initial feature planning started.
 
 ---
-
 ## Next Meeting
-- Client meeting with Altrium.
-- Gather project requirements from the client.
+- Continue turning requirements into backlog items.
+
+---
