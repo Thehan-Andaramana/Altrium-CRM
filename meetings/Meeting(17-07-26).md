@@ -22,8 +22,8 @@
 ## Discussion
 - The team went through the assignment brief and discussed the available scenarios.
 - Scenario 3 was selected for the project.
-- The assigned company, **Altium**, was confirmed.
-- The team briefly reviewed Altium's background in preparation for the upcoming client meeting.
+- The assigned company, **Altrium**, was confirmed.
+- The team briefly reviewed Altrium's background in preparation for the upcoming client meeting.
 
 ---
 
@@ -37,17 +37,17 @@
 
 | Task | Owner | Deadline |
 |------|-------|----------|
-| Review Altium's background | All Members | Before Meeting 02 |
+| Review Altrium's background | All Members | Before Meeting 02 |
 | Prepare questions for the client meeting | All Members | Before Meeting 02 |
 
 ---
 
 ## Completed
 - Selected Scenario 3.
-- Confirmed Altium as the client company.
+- Confirmed Altrium as the client company.
 
 ---
 
 ## Next Meeting
-- Client meeting with Altium.
+- Client meeting with Altrium.
 - Gather project requirements from the client.
