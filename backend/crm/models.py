@@ -77,6 +77,7 @@ class Lead(models.Model):
         choices=Status.choices,
         default=Status.COLD,
     )
+    created_at = models.DateTimeField(auto_now_add=True)
     last_activity_at = models.DateTimeField(auto_now=True)
     assigned_to = models.ForeignKey(
         User,

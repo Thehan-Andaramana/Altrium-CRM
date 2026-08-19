@@ -29,7 +29,7 @@ class ContactAdmin(admin.ModelAdmin):
 
 @admin.register(Lead)
 class LeadAdmin(admin.ModelAdmin):
-    list_display = ('company', 'contact', 'status', 'assigned_to', 'last_activity_at')
+    list_display = ('company', 'contact', 'status', 'assigned_to', 'created_at', 'last_activity_at')
     list_filter = ('status', 'assigned_to')
     search_fields = ('company__name', 'contact__name')
 
