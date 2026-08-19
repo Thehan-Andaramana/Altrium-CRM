@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import Company, Contact, Deal, Lead, User
+from .models import Company, Contact, Deal, Lead, SystemSettings, User
 
 
 @admin.register(User)
@@ -39,3 +39,14 @@ class DealAdmin(admin.ModelAdmin):
     list_display = ('company', 'contact', 'stage', 'value', 'assigned_to')
     list_filter = ('stage', 'assigned_to')
     search_fields = ('company__name', 'contact__name')
+
+
+@admin.register(SystemSettings)
+class SystemSettingsAdmin(admin.ModelAdmin):
+    list_display = ('cold_lead_days', 'updated_at')
+
+    def has_add_permission(self, request):
+        return not SystemSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False

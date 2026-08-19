@@ -122,3 +122,24 @@ class Deal(models.Model):
 
     def __str__(self):
         return f'{self.company} - {self.get_stage_display()}'
+
+
+class SystemSettings(models.Model):
+    cold_lead_days = models.PositiveIntegerField(default=14)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'System Settings'
+        verbose_name_plural = 'System Settings'
+
+    def __str__(self):
+        return 'System Settings'
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj

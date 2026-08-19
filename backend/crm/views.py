@@ -1,13 +1,13 @@
 from django.contrib.auth import authenticate, login, logout
 from django.views.decorators.csrf import ensure_csrf_cookie
-from rest_framework import status, viewsets
+from rest_framework import generics, status, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Company, Lead, User
-from .permissions import RoleBasedAccess
-from .serializers import CompanySerializer, LeadSerializer
+from .models import Company, Lead, SystemSettings, User
+from .permissions import RoleBasedAccess, SystemSettingsPermission
+from .serializers import CompanySerializer, LeadSerializer, SystemSettingsSerializer
 
 
 def _user_payload(user):
@@ -59,13 +59,6 @@ class CompanyViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(owner=user)
         return queryset
 
-    def perform_create(self, serializer):
-        user = self.request.user
-        if user.role == User.Role.SALES_REP:
-            serializer.save(owner=user)
-        else:
-            serializer.save()
-
 
 class LeadViewSet(viewsets.ModelViewSet):
     serializer_class = LeadSerializer
@@ -82,9 +75,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(assigned_to=user)
         return queryset
 
-    def perform_create(self, serializer):
-        user = self.request.user
-        if user.role == User.Role.SALES_REP or 'assigned_to' not in serializer.validated_data:
-            serializer.save(assigned_to=user)
-        else:
-            serializer.save()
+
+class SystemSettingsView(generics.RetrieveUpdateAPIView):
+    serializer_class = SystemSettingsSerializer
+    permission_classes = [IsAuthenticated, SystemSettingsPermission]
+    http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_object(self):
+        return SystemSettings.load()

@@ -19,7 +19,7 @@ from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.routers import DefaultRouter
 
-from crm.views import CompanyViewSet, LeadViewSet
+from crm.views import CompanyViewSet, LeadViewSet, SystemSettingsView
 
 router = DefaultRouter()
 router.register('companies', CompanyViewSet, basename='company')
@@ -28,6 +28,7 @@ router.register('leads', LeadViewSet, basename='lead')
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('crm.urls')),
+    path('api/settings/', SystemSettingsView.as_view(), name='system-settings'),
     path('api/', include(router.urls)),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path(

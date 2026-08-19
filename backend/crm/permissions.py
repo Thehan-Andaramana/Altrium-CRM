@@ -34,3 +34,18 @@ class RoleBasedAccess(BasePermission):
                 or getattr(obj, 'assigned_to_id', None) == request.user.id
             )
         return False
+
+
+class SystemSettingsPermission(BasePermission):
+    """GET is open to any authenticated user; PATCH is restricted to management roles."""
+
+    MANAGE_ROLES = {
+        User.Role.SALES_MANAGER,
+        User.Role.EXECUTIVE_MANAGER,
+        User.Role.SYSTEM_ADMIN,
+    }
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        return request.user.role in self.MANAGE_ROLES
