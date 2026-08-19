@@ -1,0 +1,34 @@
+:root {
+  font-size: calc(16px * var(--app-font-scale, 1));
+}
+
+/* Compact density: tighter table cell and card padding */
+[data-density='compact'] .table > :not(caption) > * > * {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+[data-density='compact'] .card-body {
+  padding: 0.75rem;
+}
+
+[data-density='compact'] .card-header,
+[data-density='compact'] .card-footer {
+  padding: 0.5rem 0.75rem;
+}
+
+/* Card style: dashboard card appearance, toggled via a class on <html> */
+.card-style-elevated .card {
+  border: 0;
+  box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+}
+
+.card-style-flat .card {
+  border: 0;
+  box-shadow: none;
+}
+
+.card-style-bordered .card {
+  border: var(--bs-border-width) solid var(--bs-border-color);
+  box-shadow: none;
+}
