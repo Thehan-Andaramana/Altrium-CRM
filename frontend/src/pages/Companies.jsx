@@ -96,7 +96,7 @@ export default function Companies() {
                     '—'
                   )}
                 </td>
-                <td>{company.owner ?? '—'}</td>
+                <td>{company.owner_username ?? 'Unassigned'}</td>
               </tr>
             ))}
           </tbody>

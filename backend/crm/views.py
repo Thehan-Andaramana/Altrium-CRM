@@ -53,7 +53,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
 
     def get_queryset(self):
-        queryset = Company.objects.all()
+        queryset = Company.objects.select_related('owner')
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(owner=user)
@@ -69,7 +69,7 @@ class LeadViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
 
     def get_queryset(self):
-        queryset = Lead.objects.all()
+        queryset = Lead.objects.select_related('assigned_to')
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(assigned_to=user)

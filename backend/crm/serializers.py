@@ -6,9 +6,11 @@ from .permissions import FULL_ACCESS_ROLES
 
 
 class CompanySerializer(serializers.ModelSerializer):
+    owner_username = serializers.CharField(source='owner.username', read_only=True, default=None)
+
     class Meta:
         model = Company
-        fields = ['id', 'name', 'industry', 'website', 'created_at', 'owner']
+        fields = ['id', 'name', 'industry', 'website', 'created_at', 'owner', 'owner_username']
         read_only_fields = ['created_at']
 
     def __init__(self, *args, **kwargs):
@@ -36,10 +38,14 @@ class CompanySerializer(serializers.ModelSerializer):
 
 class LeadSerializer(serializers.ModelSerializer):
     assigned_to = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
+    assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True, default=None)
 
     class Meta:
         model = Lead
-        fields = ['id', 'company', 'contact', 'status', 'created_at', 'last_activity_at', 'assigned_to']
+        fields = [
+            'id', 'company', 'contact', 'status', 'created_at', 'last_activity_at',
+            'assigned_to', 'assigned_to_username',
+        ]
         read_only_fields = ['created_at', 'last_activity_at']
 
     def __init__(self, *args, **kwargs):
