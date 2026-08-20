@@ -1,13 +1,20 @@
 from django.contrib.auth import authenticate, login, logout
+from django.db.models import Count
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Company, Lead, SystemSettings, User
-from .permissions import RoleBasedAccess, SystemSettingsPermission
-from .serializers import CompanySerializer, LeadSerializer, SystemSettingsSerializer
+from .models import Company, Interaction, Lead, SystemSettings, User
+from .permissions import ManagementRolePermission, RoleBasedAccess, SystemSettingsPermission
+from .serializers import (
+    CompanySerializer,
+    InteractionSerializer,
+    LeadSerializer,
+    SystemSettingsSerializer,
+    UserSummarySerializer,
+)
 
 
 def _user_payload(user):
@@ -69,11 +76,36 @@ class LeadViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
 
     def get_queryset(self):
-        queryset = Lead.objects.select_related('assigned_to', 'company', 'contact')
+        queryset = (
+            Lead.objects.select_related('assigned_to', 'company', 'contact')
+            .annotate(interaction_count=Count('interactions', distinct=True))
+        )
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(assigned_to=user)
         return queryset
+
+
+class InteractionViewSet(viewsets.ModelViewSet):
+    serializer_class = InteractionSerializer
+    permission_classes = [IsAuthenticated, RoleBasedAccess]
+    filterset_fields = ['lead']
+    ordering_fields = ['occurred_at']
+    ordering = ['-occurred_at']
+
+    def get_queryset(self):
+        queryset = Interaction.objects.select_related('lead', 'created_by')
+        user = self.request.user
+        if user.role == User.Role.SALES_REP:
+            queryset = queryset.filter(lead__assigned_to=user)
+        return queryset
+
+
+class UserViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = UserSummarySerializer
+    permission_classes = [IsAuthenticated, ManagementRolePermission]
+    filterset_fields = ['role']
+    queryset = User.objects.all().order_by('username')
 
 
 class SystemSettingsView(generics.RetrieveUpdateAPIView):

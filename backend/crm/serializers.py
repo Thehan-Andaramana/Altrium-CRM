@@ -1,7 +1,7 @@
 from django.db import transaction
 from rest_framework import serializers
 
-from .models import Company, Lead, SystemSettings, User
+from .models import Company, Interaction, Lead, SystemSettings, User
 from .permissions import FULL_ACCESS_ROLES
 
 
@@ -41,12 +41,13 @@ class LeadSerializer(serializers.ModelSerializer):
     assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True, default=None)
     company_name = serializers.CharField(source='company.name', read_only=True, default=None)
     contact_name = serializers.CharField(source='contact.name', read_only=True, default=None)
+    interaction_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Lead
         fields = [
             'id', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
-            'last_activity_at', 'assigned_to', 'assigned_to_username',
+            'last_activity_at', 'assigned_to', 'assigned_to_username', 'interaction_count',
         ]
         read_only_fields = ['created_at', 'last_activity_at']
 
@@ -64,6 +65,27 @@ class LeadSerializer(serializers.ModelSerializer):
             elif 'assigned_to' not in validated_data:
                 validated_data['assigned_to'] = request.user
         return super().create(validated_data)
+
+
+class InteractionSerializer(serializers.ModelSerializer):
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, default=None)
+
+    class Meta:
+        model = Interaction
+        fields = ['id', 'lead', 'type', 'notes', 'occurred_at', 'created_by', 'created_by_username']
+        read_only_fields = ['created_by']
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request:
+            validated_data['created_by'] = request.user
+        return super().create(validated_data)
+
+
+class UserSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'role']
 
 
 class SystemSettingsSerializer(serializers.ModelSerializer):

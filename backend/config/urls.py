@@ -19,11 +19,19 @@ from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.routers import DefaultRouter
 
-from crm.views import CompanyViewSet, LeadViewSet, SystemSettingsView
+from crm.views import (
+    CompanyViewSet,
+    InteractionViewSet,
+    LeadViewSet,
+    SystemSettingsView,
+    UserViewSet,
+)
 
 router = DefaultRouter()
 router.register('companies', CompanyViewSet, basename='company')
 router.register('leads', LeadViewSet, basename='lead')
+router.register('interactions', InteractionViewSet, basename='interaction')
+router.register('users', UserViewSet, basename='user')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

@@ -3,16 +3,25 @@ import Alert from 'react-bootstrap/Alert'
 import Form from 'react-bootstrap/Form'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
-import { get } from '../api'
+import { get, patch } from '../api'
+import { useAuth } from '../AuthContext.jsx'
 
 const SEARCH_DEBOUNCE_MS = 300
+const OWNER_EDIT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 
 export default function Companies() {
+  const { user } = useAuth()
+  const canEditOwner = OWNER_EDIT_ROLES.has(user?.role)
+
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
+  const [salesReps, setSalesReps] = useState([])
+  const [savingOwnerId, setSavingOwnerId] = useState(null)
+  const [ownerError, setOwnerError] = useState(null)
 
   useEffect(() => {
     const timeoutId = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS)
@@ -48,6 +57,43 @@ export default function Companies() {
     }
   }, [debouncedSearch])
 
+  useEffect(() => {
+    if (!canEditOwner) {
+      return
+    }
+
+    let cancelled = false
+
+    async function fetchSalesReps() {
+      try {
+        const data = await get('/api/users/?role=SALES_REP')
+        if (!cancelled) setSalesReps(data)
+      } catch {
+        // Owner dropdown just falls back to "no reps available"; the rest of the page still works.
+      }
+    }
+
+    fetchSalesReps()
+    return () => {
+      cancelled = true
+    }
+  }, [canEditOwner])
+
+  async function handleOwnerChange(company, ownerId) {
+    setSavingOwnerId(company.id)
+    setOwnerError(null)
+    try {
+      const updated = await patch(`/api/companies/${company.id}/`, {
+        owner: ownerId ? Number(ownerId) : null,
+      })
+      setCompanies((prev) => prev.map((c) => (c.id === company.id ? updated : c)))
+    } catch {
+      setOwnerError(`Failed to update owner for ${company.name}.`)
+    } finally {
+      setSavingOwnerId(null)
+    }
+  }
+
   return (
     <>
       <div className="d-flex justify-content-between align-items-center mb-3">
@@ -63,6 +109,7 @@ export default function Companies() {
       </div>
 
       {error && <Alert variant="danger">{error}</Alert>}
+      {ownerError && <Alert variant="danger">{ownerError}</Alert>}
 
       {loading ? (
         <div className="d-flex justify-content-center py-5">
@@ -96,7 +143,26 @@ export default function Companies() {
                     '—'
                   )}
                 </td>
-                <td>{company.owner_username ?? 'Unassigned'}</td>
+                <td>
+                  {canEditOwner ? (
+                    <Form.Select
+                      size="sm"
+                      value={company.owner ?? ''}
+                      onChange={(event) => handleOwnerChange(company, event.target.value)}
+                      disabled={savingOwnerId === company.id}
+                      aria-label={`Owner for ${company.name}`}
+                    >
+                      <option value="">Unassigned</option>
+                      {salesReps.map((rep) => (
+                        <option key={rep.id} value={rep.id}>
+                          {rep.username}
+                        </option>
+                      ))}
+                    </Form.Select>
+                  ) : (
+                    company.owner_username ?? 'Unassigned'
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

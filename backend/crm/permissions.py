@@ -36,6 +36,13 @@ class RoleBasedAccess(BasePermission):
         return False
 
 
+class ManagementRolePermission(BasePermission):
+    """Restricts a view to SALES_MANAGER, EXECUTIVE_MANAGER, and SYSTEM_ADMIN."""
+
+    def has_permission(self, request, view):
+        return request.user.role in FULL_ACCESS_ROLES
+
+
 class SystemSettingsPermission(BasePermission):
     """GET is open to any authenticated user; PATCH is restricted to management roles."""
 

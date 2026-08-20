@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import Company, Contact, Deal, Lead, SystemSettings, User
+from .models import Company, Contact, Deal, Interaction, Lead, SystemSettings, User
 
 
 @admin.register(User)
@@ -32,6 +32,13 @@ class LeadAdmin(admin.ModelAdmin):
     list_display = ('company', 'contact', 'status', 'assigned_to', 'created_at', 'last_activity_at')
     list_filter = ('status', 'assigned_to')
     search_fields = ('company__name', 'contact__name')
+
+
+@admin.register(Interaction)
+class InteractionAdmin(admin.ModelAdmin):
+    list_display = ('lead', 'type', 'occurred_at', 'created_by')
+    list_filter = ('type', 'created_by')
+    search_fields = ('lead__company__name', 'notes')
 
 
 @admin.register(Deal)

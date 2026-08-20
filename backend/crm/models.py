@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 
 
 class User(AbstractUser):
@@ -122,6 +123,52 @@ class Deal(models.Model):
 
     def __str__(self):
         return f'{self.company} - {self.get_stage_display()}'
+
+
+class Interaction(models.Model):
+    class Type(models.TextChoices):
+        CALL = 'CALL', 'Call'
+        EMAIL = 'EMAIL', 'Email'
+        MEETING = 'MEETING', 'Meeting'
+        NOTE = 'NOTE', 'Note'
+
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name='interactions',
+    )
+    type = models.CharField(
+        max_length=8,
+        choices=Type.choices,
+    )
+    notes = models.TextField(blank=True)
+    occurred_at = models.DateTimeField(default=timezone.now)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='created_interactions',
+    )
+
+    class Meta:
+        ordering = ['-occurred_at']
+
+    def __str__(self):
+        return f'{self.get_type_display()} on {self.lead}'
+
+    @property
+    def assigned_to_id(self):
+        # Lets RoleBasedAccess.has_object_permission scope this the same
+        # way it scopes a Lead, without duplicating the permission class.
+        return self.lead.assigned_to_id
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # QuerySet.update() bypasses Lead.last_activity_at's auto_now, so
+        # occurred_at (which may be backdated) sticks instead of "now".
+        Lead.objects.filter(pk=self.lead_id).update(
+            last_activity_at=self.occurred_at,
+            status=Lead.Status.HOT,
+        )
 
 
 class SystemSettings(models.Model):

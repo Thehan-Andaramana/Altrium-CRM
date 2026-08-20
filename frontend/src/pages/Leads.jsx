@@ -5,6 +5,7 @@ import Badge from 'react-bootstrap/Badge'
 import Form from 'react-bootstrap/Form'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
+import { Link } from 'react-router-dom'
 import { get } from '../api'
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -117,7 +118,9 @@ export default function Leads() {
           <tbody>
             {leads.map((lead) => (
               <tr key={lead.id}>
-                <td>{lead.company_name ?? '—'}</td>
+                <td>
+                  <Link to={`/leads/${lead.id}`}>{lead.company_name ?? '—'}</Link>
+                </td>
                 <td>{lead.contact_name ?? '—'}</td>
                 <td>
                   <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}>{lead.status}</Badge>
