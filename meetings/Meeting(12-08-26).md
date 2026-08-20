@@ -1,6 +1,6 @@
 # Meeting 32 — Core Feature Review
 *Date:* 12 August 2026
-*Time:* __
+*Time:* 08:00 P.M.
 
 ## Attendees
 - Thehan Andaramana, Thumula Rumesh, Sadev Ravishan, Sivakumar Sabeeshan
