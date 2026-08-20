@@ -3,6 +3,7 @@ import Button from 'react-bootstrap/Button'
 import Container from 'react-bootstrap/Container'
 import Nav from 'react-bootstrap/Nav'
 import Navbar from 'react-bootstrap/Navbar'
+import NavDropdown from 'react-bootstrap/NavDropdown'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../AuthContext.jsx'
 import { useTheme } from '../ThemeContext.jsx'
@@ -54,7 +55,7 @@ function NavLinks({ canSeeSettings }) {
   )
 }
 
-function UserActions({ theme, onToggleTheme, user, onLogout }) {
+function UserActions({ theme, onToggleTheme, user, canSeeSettings, onLogout }) {
   return (
     <>
       <Button
@@ -66,18 +67,21 @@ function UserActions({ theme, onToggleTheme, user, onLogout }) {
       >
         {theme === 'light' ? <MoonIcon /> : <SunIcon />}
       </Button>
-      <Nav.Link
-        as={NavLink}
-        to="/preferences"
-        className="d-flex align-items-center gap-2"
-        title="Preferences"
-      >
-        <span>{user?.username}</span>
-        <Badge bg="secondary">{user?.role}</Badge>
-      </Nav.Link>
-      <Button variant="outline-danger" size="sm" onClick={onLogout}>
-        Logout
-      </Button>
+      <NavDropdown title={user?.username} align="end" id="user-menu">
+        <NavDropdown.ItemText>
+          <Badge bg="secondary">{user?.role}</Badge>
+        </NavDropdown.ItemText>
+        <NavDropdown.Item as={NavLink} to="/preferences">
+          Preferences
+        </NavDropdown.Item>
+        {canSeeSettings && (
+          <NavDropdown.Item as={NavLink} to="/settings">
+            System Settings
+          </NavDropdown.Item>
+        )}
+        <NavDropdown.Divider />
+        <NavDropdown.Item onClick={onLogout}>Logout</NavDropdown.Item>
+      </NavDropdown>
     </>
   )
 }
@@ -116,6 +120,7 @@ export default function Layout() {
               theme={theme}
               onToggleTheme={toggleTheme}
               user={user}
+              canSeeSettings={canSeeSettings}
               onLogout={handleLogout}
             />
           </div>
@@ -145,6 +150,7 @@ export default function Layout() {
                 theme={theme}
                 onToggleTheme={toggleTheme}
                 user={user}
+                canSeeSettings={canSeeSettings}
                 onLogout={handleLogout}
               />
             </Nav>

@@ -39,12 +39,14 @@ class CompanySerializer(serializers.ModelSerializer):
 class LeadSerializer(serializers.ModelSerializer):
     assigned_to = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
     assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True, default=None)
+    company_name = serializers.CharField(source='company.name', read_only=True, default=None)
+    contact_name = serializers.CharField(source='contact.name', read_only=True, default=None)
 
     class Meta:
         model = Lead
         fields = [
-            'id', 'company', 'contact', 'status', 'created_at', 'last_activity_at',
-            'assigned_to', 'assigned_to_username',
+            'id', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
+            'last_activity_at', 'assigned_to', 'assigned_to_username',
         ]
         read_only_fields = ['created_at', 'last_activity_at']
 

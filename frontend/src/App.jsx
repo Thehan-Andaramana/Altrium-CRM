@@ -3,8 +3,10 @@ import './App.css'
 import { AuthProvider, useAuth } from './AuthContext.jsx'
 import Layout from './components/Layout.jsx'
 import Companies from './pages/Companies.jsx'
+import Leads from './pages/Leads.jsx'
 import Login from './pages/Login.jsx'
 import Preferences from './pages/Preferences.jsx'
+import Settings from './pages/Settings.jsx'
 
 function RequireAuth() {
   const { user, loading } = useAuth()
@@ -28,7 +30,9 @@ function AppRoutes() {
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
           <Route path="/companies" element={<Companies />} />
+          <Route path="/leads" element={<Leads />} />
           <Route path="/preferences" element={<Preferences />} />
+          <Route path="/settings" element={<Settings />} />
         </Route>
       </Route>
     </Routes>
