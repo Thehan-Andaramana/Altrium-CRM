@@ -20,11 +20,15 @@ from .permissions import FULL_ACCESS_ROLES
 
 class CompanySerializer(serializers.ModelSerializer):
     owner_username = serializers.CharField(source='owner.username', read_only=True, default=None)
+    archived_by_username = serializers.CharField(source='archived_by.username', read_only=True, default=None)
 
     class Meta:
         model = Company
-        fields = ['id', 'name', 'industry', 'website', 'created_at', 'owner', 'owner_username']
-        read_only_fields = ['created_at']
+        fields = [
+            'id', 'name', 'industry', 'website', 'created_at', 'owner', 'owner_username',
+            'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
+        ]
+        read_only_fields = ['created_at', 'is_archived', 'archived_by', 'archived_at', 'archive_reason']
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -67,6 +71,7 @@ class LeadSerializer(serializers.ModelSerializer):
     # isn't present (e.g. the dashboard's lead queryset).
     deal_stage = serializers.CharField(read_only=True, default=None)
     has_project = serializers.BooleanField(read_only=True, default=False)
+    archived_by_username = serializers.CharField(source='archived_by.username', read_only=True, default=None)
 
     class Meta:
         model = Lead
@@ -74,8 +79,11 @@ class LeadSerializer(serializers.ModelSerializer):
             'id', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
             'last_activity_at', 'assigned_to', 'assigned_to_username', 'interaction_count',
             'deal_stage', 'has_project',
+            'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
         ]
-        read_only_fields = ['created_at', 'last_activity_at']
+        read_only_fields = [
+            'created_at', 'last_activity_at', 'is_archived', 'archived_by', 'archived_at', 'archive_reason',
+        ]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -115,6 +123,7 @@ class ProjectSerializer(serializers.ModelSerializer):
     phase_progress = serializers.SerializerMethodField()
     overall_progress = serializers.SerializerMethodField()
     pending_approval_requests = serializers.SerializerMethodField()
+    archived_by_username = serializers.CharField(source='archived_by.username', read_only=True, default=None)
 
     PHASE_FIELDS = ['phase_1_status', 'phase_2_status', 'phase_3_status']
     PHASE_SIGNOFF_TYPES = {
@@ -129,9 +138,13 @@ class ProjectSerializer(serializers.ModelSerializer):
             'id', 'lead', 'company', 'company_name', 'deal', 'current_phase',
             'phase_1_status', 'phase_2_status', 'phase_3_status',
             'maintenance', 'phase_progress', 'overall_progress', 'pending_approval_requests',
+            'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['maintenance', 'created_at', 'updated_at']
+        read_only_fields = [
+            'maintenance', 'created_at', 'updated_at',
+            'is_archived', 'archived_by', 'archived_at', 'archive_reason',
+        ]
 
     @staticmethod
     def _percent(completed, total):
@@ -347,9 +360,25 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         new_status = validated_data.get('status')
         if new_status and new_status != instance.status:
-            instance.decided_by = self.context['request'].user
+            request = self.context['request']
+            instance.decided_by = request.user
             instance.decided_at = timezone.now()
+            if new_status == ApprovalRequest.Status.APPROVED:
+                self._apply_approval_side_effect(instance, request)
         return super().update(instance, validated_data)
+
+    @staticmethod
+    def _apply_approval_side_effect(instance, request):
+        if instance.request_type != ApprovalRequest.RequestType.ARCHIVE_LEAD:
+            return
+        lead = instance.lead
+        if lead is None or lead.is_archived:
+            return
+        lead.is_archived = True
+        lead.archived_by = request.user
+        lead.archived_at = timezone.now()
+        lead.archive_reason = instance.reason or 'Archived via an approved archive request.'
+        lead.save()
 
 
 class UserSummarySerializer(serializers.ModelSerializer):

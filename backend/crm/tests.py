@@ -561,3 +561,287 @@ class ProjectPhase1DealAdvanceTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertIsNone(deal.value)
         self.assertEqual(deal.assigned_to, self.lead.assigned_to)
         self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.IN_PROGRESS)
+
+
+class ArchiveTestMixin:
+    def setUp(self):
+        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.admin = User.objects.create_user(username='admin1', password='pass', role=User.Role.SYSTEM_ADMIN)
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
+        self.lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        self.project = self.lead.project
+
+
+class CompanyRolePermissionTests(ArchiveTestMixin, APITestCase):
+    def test_manager_can_create_company(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(reverse('company-list'), {'name': 'New Co'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_manager_can_update_company(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.patch(url, {'industry': 'Retail'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_system_admin_cannot_create_company(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(reverse('company-list'), {'name': 'New Co'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_system_admin_cannot_update_company(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.patch(url, {'industry': 'Retail'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_system_admin_can_read_company(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class CompanyArchiveActionTests(ArchiveTestMixin, APITestCase):
+    def test_manager_can_archive_company_and_it_cascades(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('company-archive', args=[self.company.id])
+        response = self.client.post(url, {'archive_reason': 'Client churned'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.company.refresh_from_db()
+        self.lead.refresh_from_db()
+        self.project.refresh_from_db()
+        self.assertTrue(self.company.is_archived)
+        self.assertEqual(self.company.archived_by, self.manager)
+        self.assertIsNotNone(self.company.archived_at)
+        self.assertEqual(self.company.archive_reason, 'Client churned')
+        self.assertTrue(self.lead.is_archived)
+        self.assertTrue(self.project.is_archived)
+
+    def test_archive_without_reason_is_rejected(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('company-archive', args=[self.company.id])
+        response = self.client.post(url, {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.company.refresh_from_db()
+        self.assertFalse(self.company.is_archived)
+
+    def test_manager_can_unarchive_company(self):
+        self.company.is_archived = True
+        self.company.archived_by = self.manager
+        self.company.archived_at = timezone.now()
+        self.company.archive_reason = 'test'
+        self.company.save()
+
+        self.client.force_authenticate(self.manager)
+        url = reverse('company-unarchive', args=[self.company.id])
+        response = self.client.post(url, {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.company.refresh_from_db()
+        self.assertFalse(self.company.is_archived)
+        self.assertIsNone(self.company.archived_by)
+        self.assertIsNone(self.company.archived_at)
+        self.assertEqual(self.company.archive_reason, '')
+
+    def test_rep_cannot_archive_company(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('company-archive', args=[self.company.id])
+        response = self.client.post(url, {'archive_reason': 'Nope'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_system_admin_cannot_archive_company(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('company-archive', args=[self.company.id])
+        response = self.client.post(url, {'archive_reason': 'Nope'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class CompanyDeleteTests(ArchiveTestMixin, APITestCase):
+    def test_system_admin_cannot_delete_unarchived_company(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Company.objects.filter(pk=self.company.pk).exists())
+
+    def test_system_admin_can_delete_archived_company(self):
+        self.company.is_archived = True
+        self.company.save()
+        self.client.force_authenticate(self.admin)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Company.objects.filter(pk=self.company.pk).exists())
+
+    def test_manager_cannot_delete_even_archived_company(self):
+        self.company.is_archived = True
+        self.company.save()
+        self.client.force_authenticate(self.manager)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Company.objects.filter(pk=self.company.pk).exists())
+
+
+class LeadRolePermissionAndArchiveTests(ArchiveTestMixin, APITestCase):
+    def test_rep_can_create_lead_assigned_to_self(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('lead-list'), {'company': self.company.id}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['assigned_to'], self.rep.id)
+
+    def test_rep_can_update_own_lead(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_rep_cannot_archive_lead(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('lead-archive', args=[self.lead.id])
+        response = self.client.post(url, {'archive_reason': 'Cold'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_manager_can_archive_lead(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('lead-archive', args=[self.lead.id])
+        response = self.client.post(url, {'archive_reason': 'Cold'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.is_archived)
+        self.assertEqual(self.lead.archived_by, self.manager)
+
+    def test_system_admin_cannot_create_lead(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(reverse('lead-list'), {'company': self.company.id}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_system_admin_cannot_update_lead(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_system_admin_cannot_delete_unarchived_lead(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_system_admin_can_delete_archived_lead(self):
+        self.lead.is_archived = True
+        self.lead.save()
+        self.client.force_authenticate(self.admin)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class ProjectRolePermissionAndArchiveTests(ArchiveTestMixin, APITestCase):
+    def test_system_admin_cannot_update_project(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('project-detail', args=[self.project.id])
+        response = self.client.patch(url, {'current_phase': 2}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_manager_can_archive_project(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('project-archive', args=[self.project.id])
+        response = self.client.post(url, {'archive_reason': 'Cancelled'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertTrue(self.project.is_archived)
+
+    def test_rep_cannot_archive_project(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('project-archive', args=[self.project.id])
+        response = self.client.post(url, {'archive_reason': 'Cancelled'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_system_admin_cannot_delete_unarchived_project(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('project-detail', args=[self.project.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_system_admin_can_delete_archived_project(self):
+        self.project.is_archived = True
+        self.project.save()
+        self.client.force_authenticate(self.admin)
+        url = reverse('project-detail', args=[self.project.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class ArchivedRecordVisibilityTests(ArchiveTestMixin, APITestCase):
+    def test_archived_company_excluded_by_default(self):
+        self.company.is_archived = True
+        self.company.save()
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(reverse('company-list'))
+        ids = {c['id'] for c in response.data}
+        self.assertNotIn(self.company.id, ids)
+
+    def test_archived_company_included_with_query_param(self):
+        self.company.is_archived = True
+        self.company.save()
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(reverse('company-list'), {'include_archived': 'true'})
+        ids = {c['id'] for c in response.data}
+        self.assertIn(self.company.id, ids)
+
+    def test_archived_lead_excluded_from_lead_list_by_default(self):
+        self.lead.is_archived = True
+        self.lead.save()
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(reverse('lead-list'))
+        ids = {lead['id'] for lead in response.data}
+        self.assertNotIn(self.lead.id, ids)
+
+        response = self.client.get(reverse('lead-list'), {'include_archived': 'true'})
+        ids = {lead['id'] for lead in response.data}
+        self.assertIn(self.lead.id, ids)
+
+
+class ArchiveLeadApprovalFlowTests(ArchiveTestMixin, APITestCase):
+    def test_manager_approving_archive_lead_request_archives_the_lead(self):
+        self.client.force_authenticate(self.rep)
+        create_response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.ARCHIVE_LEAD,
+            'lead': self.lead.id,
+            'reason': 'Lead went cold',
+        }, format='json')
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(self.lead.is_archived)
+
+        approval_id = create_response.data['id']
+        self.client.force_authenticate(self.manager)
+        approve_url = reverse('approvalrequest-detail', args=[approval_id])
+        approve_response = self.client.patch(approve_url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.is_archived)
+        self.assertEqual(self.lead.archived_by, self.manager)
+        self.assertIsNotNone(self.lead.archived_at)
+        self.assertEqual(self.lead.archive_reason, 'Lead went cold')
+
+    def test_rejecting_archive_lead_request_does_not_archive_the_lead(self):
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD,
+            lead=self.lead,
+            requested_by=self.rep,
+            reason='Lead went cold',
+        )
+        self.client.force_authenticate(self.manager)
+        url = reverse('approvalrequest-detail', args=[approval.id])
+        response = self.client.patch(url, {'status': ApprovalRequest.Status.REJECTED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.is_archived)

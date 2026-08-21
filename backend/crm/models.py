@@ -34,6 +34,16 @@ class Company(models.Model):
         blank=True,
         related_name='owned_companies',
     )
+    is_archived = models.BooleanField(default=False)
+    archived_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='archived_companies',
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archive_reason = models.TextField(blank=True)
 
     class Meta:
         verbose_name_plural = 'Companies'
@@ -92,6 +102,16 @@ class Lead(models.Model):
         on_delete=models.CASCADE,
         related_name='assigned_leads',
     )
+    is_archived = models.BooleanField(default=False)
+    archived_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='archived_leads',
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archive_reason = models.TextField(blank=True)
 
     def __str__(self):
         return f'{self.company} lead ({self.status})'
@@ -262,14 +282,24 @@ class Project(models.Model):
     maintenance = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    is_archived = models.BooleanField(default=False)
+    archived_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='archived_projects',
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archive_reason = models.TextField(blank=True)
 
     def __str__(self):
         return f'Project for {self.company} (phase {self.current_phase})'
 
     @property
     def owner_id(self):
-        # Lets RoleBasedAccess.has_object_permission scope this exactly like
-        # a Company, without a bespoke permission class.
+        # Lets the permission classes scope this exactly like a Company,
+        # without duplicating their ownership logic.
         return self.company.owner_id
 
     def save(self, *args, **kwargs):

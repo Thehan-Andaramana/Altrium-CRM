@@ -8,6 +8,16 @@ FULL_ACCESS_ROLES = {
     User.Role.SYSTEM_ADMIN,
 }
 
+# Distinct from FULL_ACCESS_ROLES: for Company/Lead/Project specifically,
+# SYSTEM_ADMIN no longer has general management rights (see
+# CompanyPermission / ArchivableOwnedResourcePermission below) -- only
+# SALES_MANAGER and EXECUTIVE_MANAGER can create, update, archive, or
+# unarchive those three models.
+MANAGER_ROLES = {
+    User.Role.SALES_MANAGER,
+    User.Role.EXECUTIVE_MANAGER,
+}
+
 
 class RoleBasedAccess(BasePermission):
     """
@@ -38,14 +48,23 @@ class RoleBasedAccess(BasePermission):
 
 class CompanyPermission(BasePermission):
     """
-    Like RoleBasedAccess, except SALES_REP gets read access to every company
-    (not just ones they own) -- they can open any company read-only, but
-    only write to ones they own.
+    SALES_REP: read access to every company, write access only to ones they
+    own (they can open any company read-only).
+    SALES_MANAGER, EXECUTIVE_MANAGER: full access, including archive/unarchive.
+    SYSTEM_ADMIN: read-only, plus hard-delete -- but only of an already
+    archived company. No create/update/archive/unarchive.
+    DELIVERY_LEAD: read-only access to all records.
     """
 
     def has_permission(self, request, view):
         role = request.user.role
         if role == User.Role.DELIVERY_LEAD:
+            return request.method in SAFE_METHODS
+        if view.action in ('archive', 'unarchive'):
+            return role in MANAGER_ROLES
+        if request.method == 'DELETE':
+            return role == User.Role.SYSTEM_ADMIN
+        if role == User.Role.SYSTEM_ADMIN:
             return request.method in SAFE_METHODS
         return True
 
@@ -53,12 +72,57 @@ class CompanyPermission(BasePermission):
         role = request.user.role
         if role == User.Role.DELIVERY_LEAD:
             return request.method in SAFE_METHODS
-        if role in FULL_ACCESS_ROLES:
+        if view.action in ('archive', 'unarchive'):
+            return role in MANAGER_ROLES
+        if request.method == 'DELETE':
+            return role == User.Role.SYSTEM_ADMIN and obj.is_archived
+        if role == User.Role.SYSTEM_ADMIN:
+            return request.method in SAFE_METHODS
+        if role in MANAGER_ROLES:
             return True
         if role == User.Role.SALES_REP:
             if request.method in SAFE_METHODS:
                 return True
             return obj.owner_id == request.user.id
+        return False
+
+
+class ArchivableOwnedResourcePermission(BasePermission):
+    """
+    Like CompanyPermission, but without the "any role can read" carve-out --
+    SALES_REP only has access (read or write) to records they own or are
+    assigned to. Used by Lead and Project.
+    """
+
+    def has_permission(self, request, view):
+        role = request.user.role
+        if role == User.Role.DELIVERY_LEAD:
+            return request.method in SAFE_METHODS
+        if view.action in ('archive', 'unarchive'):
+            return role in MANAGER_ROLES
+        if request.method == 'DELETE':
+            return role == User.Role.SYSTEM_ADMIN
+        if role == User.Role.SYSTEM_ADMIN:
+            return request.method in SAFE_METHODS
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        role = request.user.role
+        if role == User.Role.DELIVERY_LEAD:
+            return request.method in SAFE_METHODS
+        if view.action in ('archive', 'unarchive'):
+            return role in MANAGER_ROLES
+        if request.method == 'DELETE':
+            return role == User.Role.SYSTEM_ADMIN and obj.is_archived
+        if role == User.Role.SYSTEM_ADMIN:
+            return request.method in SAFE_METHODS
+        if role in MANAGER_ROLES:
+            return True
+        if role == User.Role.SALES_REP:
+            return (
+                getattr(obj, 'owner_id', None) == request.user.id
+                or getattr(obj, 'assigned_to_id', None) == request.user.id
+            )
         return False
 
 

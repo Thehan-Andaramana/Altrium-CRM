@@ -5,7 +5,7 @@ from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Subquery
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import generics, status, viewsets
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -25,6 +25,7 @@ from .models import (
 )
 from .permissions import (
     ApprovalRequestPermission,
+    ArchivableOwnedResourcePermission,
     CompanyPermission,
     ManagementRolePermission,
     ManagementWritePermission,
@@ -47,6 +48,46 @@ from .serializers import (
 
 def _user_payload(user):
     return {'id': user.id, 'username': user.username, 'role': user.role}
+
+
+def _apply_archived_filter(queryset, request, view):
+    # archive/unarchive act on a record regardless of its current archived
+    # state, so they need to bypass this filter entirely. DELETE also needs
+    # to see archived records -- that's the only state SYSTEM_ADMIN is ever
+    # allowed to delete, and has_object_permission (not this filter) is what
+    # actually rejects a DELETE on a non-archived record.
+    if view.action in ('archive', 'unarchive') or request.method == 'DELETE':
+        return queryset
+    if request.query_params.get('include_archived', '').lower() == 'true':
+        return queryset
+    return queryset.filter(is_archived=False)
+
+
+def _do_archive(request, instance, serializer_class):
+    reason = (request.data.get('archive_reason') or '').strip()
+    if not reason:
+        return Response({'archive_reason': 'A reason is required to archive.'}, status=status.HTTP_400_BAD_REQUEST)
+    if instance.is_archived:
+        return Response({'detail': 'Already archived.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    instance.is_archived = True
+    instance.archived_by = request.user
+    instance.archived_at = timezone.now()
+    instance.archive_reason = reason
+    instance.save()
+    return Response(serializer_class(instance, context={'request': request}).data)
+
+
+def _do_unarchive(request, instance, serializer_class):
+    if not instance.is_archived:
+        return Response({'detail': 'Not archived.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    instance.is_archived = False
+    instance.archived_by = None
+    instance.archived_at = None
+    instance.archive_reason = ''
+    instance.save()
+    return Response(serializer_class(instance, context={'request': request}).data)
 
 
 @api_view(['GET'])
@@ -89,13 +130,39 @@ class CompanyViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # Every role can read every company (reps just can't write to ones
-        # they don't own -- see CompanyPermission); nothing to filter here.
-        return Company.objects.select_related('owner')
+        # they don't own -- see CompanyPermission); nothing to role-filter.
+        queryset = Company.objects.select_related('owner')
+        return _apply_archived_filter(queryset, self.request, self)
+
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        company = self.get_object()
+        response = _do_archive(request, company, CompanySerializer)
+        if response.status_code == status.HTTP_200_OK:
+            # Cascades to the company's leads and projects.
+            cascade_reason = f'Cascaded from company archive: {company.archive_reason}'
+            company.leads.filter(is_archived=False).update(
+                is_archived=True,
+                archived_by=request.user,
+                archived_at=company.archived_at,
+                archive_reason=cascade_reason,
+            )
+            company.projects.filter(is_archived=False).update(
+                is_archived=True,
+                archived_by=request.user,
+                archived_at=company.archived_at,
+                archive_reason=cascade_reason,
+            )
+        return response
+
+    @action(detail=True, methods=['post'])
+    def unarchive(self, request, pk=None):
+        return _do_unarchive(request, self.get_object(), CompanySerializer)
 
 
 class LeadViewSet(viewsets.ModelViewSet):
     serializer_class = LeadSerializer
-    permission_classes = [IsAuthenticated, RoleBasedAccess]
+    permission_classes = [IsAuthenticated, ArchivableOwnedResourcePermission]
     filterset_fields = ['status', 'assigned_to', 'company']
     search_fields = ['company__name']
     ordering_fields = ['created_at']
@@ -119,7 +186,15 @@ class LeadViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(assigned_to=user)
-        return queryset
+        return _apply_archived_filter(queryset, self.request, self)
+
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        return _do_archive(request, self.get_object(), LeadSerializer)
+
+    @action(detail=True, methods=['post'])
+    def unarchive(self, request, pk=None):
+        return _do_unarchive(request, self.get_object(), LeadSerializer)
 
 
 class ContactViewSet(viewsets.ModelViewSet):
@@ -154,7 +229,7 @@ class InteractionViewSet(viewsets.ModelViewSet):
 
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
-    permission_classes = [IsAuthenticated, RoleBasedAccess]
+    permission_classes = [IsAuthenticated, ArchivableOwnedResourcePermission]
     filterset_fields = ['company']
     ordering_fields = ['created_at']
     ordering = ['-created_at']
@@ -172,7 +247,15 @@ class ProjectViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(company__owner=user)
-        return queryset
+        return _apply_archived_filter(queryset, self.request, self)
+
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        return _do_archive(request, self.get_object(), ProjectSerializer)
+
+    @action(detail=True, methods=['post'])
+    def unarchive(self, request, pk=None):
+        return _do_unarchive(request, self.get_object(), ProjectSerializer)
 
 
 class PhaseRequirementViewSet(viewsets.ModelViewSet):
@@ -225,7 +308,7 @@ class DashboardView(APIView):
         now = timezone.now()
         cold_lead_days = SystemSettings.load().cold_lead_days
 
-        leads = Lead.objects.select_related('company', 'contact', 'assigned_to').annotate(
+        leads = Lead.objects.filter(is_archived=False).select_related('company', 'contact', 'assigned_to').annotate(
             deal_value=Max('company__deals__value'),
             interaction_count=Count('interactions', distinct=True),
         )
