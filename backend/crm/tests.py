@@ -1,11 +1,8 @@
-import shutil
-import tempfile
 from decimal import Decimal
 
-from django.conf import settings
-from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.reverse import reverse
 from rest_framework.test import APIClient, APITestCase
@@ -140,10 +137,9 @@ class ApprovalRequestConstraintTests(TestCase):
     def setUp(self):
         self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
         self.company = Company.objects.create(name='Acme', owner=self.rep)
-        self.lead = Lead.objects.create(company=self.company, assigned_to=self.rep)
         self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
-        self.deal = Deal.objects.create(company=self.company, contact=self.contact, value=1000, assigned_to=self.rep)
-        self.project = Project.objects.create(company=self.company, deal=self.deal)
+        self.lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        self.project = self.lead.project
 
     def test_rejects_both_lead_and_project_set(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -191,18 +187,23 @@ class ApprovalRequestConstraintTests(TestCase):
         self.assertIsNotNone(second.pk)
 
 
-class ProjectPhaseTransitionTests(APITestCase):
+class ProjectRequirementsTestMixin:
     def setUp(self):
-        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
         self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
         self.company = Company.objects.create(name='Acme', owner=self.rep)
         self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
+        # A Deal already exists on the company, but Project.deal starts out
+        # unlinked -- it's only connected once Phase 1 completes.
         self.deal = Deal.objects.create(
             company=self.company, contact=self.contact, value=Decimal('1000.00'), assigned_to=self.rep,
         )
-        self.project = Project.objects.create(company=self.company, deal=self.deal)
+        self.lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        self.project = self.lead.project
         self.client.force_authenticate(self.manager)
 
+
+class ProjectPhaseTransitionTests(ProjectRequirementsTestMixin, APITestCase):
     def _approve_signoff(self, request_type):
         approval = ApprovalRequest.objects.create(
             request_type=request_type,
@@ -217,6 +218,11 @@ class ProjectPhaseTransitionTests(APITestCase):
         url = reverse('project-detail', args=[self.project.id])
         return self.client.patch(url, fields, format='json')
 
+    def test_phase_1_starts_in_progress_on_lead_creation(self):
+        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.IN_PROGRESS)
+        self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.NOT_STARTED)
+        self.assertEqual(self.project.lead, self.lead)
+
     def test_phase_2_cannot_start_while_phase_1_incomplete(self):
         response = self._patch_project(phase_2_status=Project.PhaseStatus.IN_PROGRESS)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -227,15 +233,18 @@ class ProjectPhaseTransitionTests(APITestCase):
         response = self._patch_project(phase_1_status=Project.PhaseStatus.COMPLETE)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.project.refresh_from_db()
-        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.NOT_STARTED)
+        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.IN_PROGRESS)
 
     def test_maintenance_flips_true_once_all_phases_complete(self):
         self._approve_signoff(ApprovalRequest.RequestType.PHASE_1_SIGNOFF)
         response = self._patch_project(phase_1_status=Project.PhaseStatus.COMPLETE)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-        response = self._patch_project(phase_2_status=Project.PhaseStatus.IN_PROGRESS)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Phase 2 auto-advances to IN_PROGRESS as a side effect of Phase 1
+        # completing, so no explicit PATCH is needed to start it.
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.IN_PROGRESS)
+
         self._approve_signoff(ApprovalRequest.RequestType.PHASE_2_SIGNOFF)
         response = self._patch_project(phase_2_status=Project.PhaseStatus.COMPLETE)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -288,19 +297,6 @@ class DashboardScopingTests(APITestCase):
         self.assertIn(self.lead2.id, ids)
 
 
-class ProjectRequirementsTestMixin:
-    def setUp(self):
-        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
-        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
-        self.company = Company.objects.create(name='Acme', owner=self.rep)
-        self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
-        self.deal = Deal.objects.create(
-            company=self.company, contact=self.contact, value=Decimal('1000.00'), assigned_to=self.rep,
-        )
-        self.project = Project.objects.create(company=self.company, deal=self.deal)
-        self.client.force_authenticate(self.manager)
-
-
 class ProjectProgressTests(ProjectRequirementsTestMixin, APITestCase):
     def test_default_requirements_are_generated_on_creation(self):
         self.assertEqual(self.project.requirements.filter(phase=1).count(), 4)
@@ -317,7 +313,7 @@ class ProjectProgressTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(response.data['overall_progress'], 0)
 
         phase1_ids = list(self.project.requirements.filter(phase=1).values_list('id', flat=True))[:2]
-        PhaseRequirement.objects.filter(pk__in=phase1_ids).update(is_complete=True)
+        PhaseRequirement.objects.filter(pk__in=phase1_ids).update(status=PhaseRequirement.Status.COMPLETED)
 
         response = self.client.get(url)
         self.assertEqual(response.data['phase_progress'][1], {'completed': 2, 'total': 4, 'percent': 50})
@@ -331,10 +327,10 @@ class ProjectRequirementGateTests(ProjectRequirementsTestMixin, APITestCase):
         response = self.client.patch(url, {'phase_1_status': Project.PhaseStatus.AWAITING_APPROVAL}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.project.refresh_from_db()
-        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.NOT_STARTED)
+        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.IN_PROGRESS)
 
     def test_can_move_to_awaiting_approval_once_all_requirements_complete(self):
-        self.project.requirements.filter(phase=1).update(is_complete=True)
+        self.project.requirements.filter(phase=1).update(status=PhaseRequirement.Status.COMPLETED)
         url = reverse('project-detail', args=[self.project.id])
         response = self.client.patch(url, {'phase_1_status': Project.PhaseStatus.AWAITING_APPROVAL}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -431,23 +427,137 @@ class InteractionOutcomeTests(APITestCase):
         self.assertEqual(self.lead.status, Lead.Status.HOT)
 
 
-@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
-class PhaseRequirementUploadTests(ProjectRequirementsTestMixin, APITestCase):
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(settings.MEDIA_ROOT, ignore_errors=True)
-        super().tearDownClass()
+class PhaseRequirementConfirmationTests(ProjectRequirementsTestMixin, APITestCase):
+    def _manager_task(self, **kwargs):
+        return PhaseRequirement.objects.create(
+            project=self.project,
+            phase=1,
+            label='Manager Gate',
+            confirmation_authority=PhaseRequirement.ConfirmationAuthority.MANAGER,
+            **kwargs,
+        )
 
-    def test_uploading_document_marks_requirement_complete(self):
-        requirement = self.project.requirements.get(phase=1, label='Signed MSA')
+    def test_rep_authority_task_completes_immediately(self):
+        requirement = self.project.requirements.filter(
+            confirmation_authority=PhaseRequirement.ConfirmationAuthority.REP,
+        ).first()
+        self.client.force_authenticate(self.rep)
         url = reverse('phaserequirement-detail', args=[requirement.id])
-        upload = SimpleUploadedFile('msa.pdf', b'file contents', content_type='application/pdf')
-
-        response = self.client.patch(url, {'document': upload}, format='multipart')
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         requirement.refresh_from_db()
-        self.assertTrue(requirement.is_complete)
-        self.assertEqual(requirement.completed_by, self.manager)
-        self.assertIsNotNone(requirement.completed_at)
-        self.assertTrue(requirement.document.name)
+        self.assertEqual(requirement.status, PhaseRequirement.Status.COMPLETED)
+        self.assertIsNone(requirement.confirmed_by)
+        self.assertTrue(requirement.is_confirmed_complete)
+        self.assertEqual(requirement.updated_by, self.rep)
+
+    def test_manager_authority_task_awaits_confirmation_when_rep_completes_it(self):
+        requirement = self._manager_task()
+        self.client.force_authenticate(self.rep)
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        requirement.refresh_from_db()
+        self.assertEqual(requirement.status, PhaseRequirement.Status.COMPLETED)
+        self.assertIsNone(requirement.confirmed_by)
+        self.assertFalse(requirement.is_confirmed_complete)
+
+    def test_manager_confirms_manager_authority_task(self):
+        requirement = self._manager_task(status=PhaseRequirement.Status.COMPLETED)
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        # self.client is already authenticated as self.manager (mixin setUp).
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        requirement.refresh_from_db()
+        self.assertEqual(requirement.confirmed_by, self.manager)
+        self.assertIsNotNone(requirement.confirmed_at)
+        self.assertTrue(requirement.is_confirmed_complete)
+
+    def test_rep_cannot_confirm_manager_authority_task(self):
+        requirement = self._manager_task()
+        self.client.force_authenticate(self.rep)
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        requirement.refresh_from_db()
+        # The rep's action is accepted (status changes), but it does not
+        # confirm the task -- confirmation requires a management role.
+        self.assertEqual(requirement.status, PhaseRequirement.Status.COMPLETED)
+        self.assertIsNone(requirement.confirmed_by)
+        self.assertFalse(requirement.is_confirmed_complete)
+
+    def test_rep_cannot_patch_confirmed_by_directly(self):
+        requirement = self._manager_task()
+        self.client.force_authenticate(self.rep)
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'confirmed_by': self.rep.id}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        requirement.refresh_from_db()
+        self.assertIsNone(requirement.confirmed_by)
+
+    def test_rep_cannot_patch_confirmed_at_directly(self):
+        requirement = self._manager_task()
+        self.client.force_authenticate(self.rep)
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'confirmed_at': timezone.now().isoformat()}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        requirement.refresh_from_db()
+        self.assertIsNone(requirement.confirmed_at)
+
+    def test_not_applicable_tasks_excluded_from_progress(self):
+        phase1 = list(self.project.requirements.filter(phase=1))
+        for requirement in phase1[:-1]:
+            requirement.status = PhaseRequirement.Status.NOT_APPLICABLE
+            requirement.save()
+        phase1[-1].status = PhaseRequirement.Status.COMPLETED
+        phase1[-1].save()
+
+        url = reverse('project-detail', args=[self.project.id])
+        response = self.client.get(url)
+        self.assertEqual(response.data['phase_progress'][1], {'completed': 1, 'total': 1, 'percent': 100})
+
+
+class ProjectPhase1DealAdvanceTests(ProjectRequirementsTestMixin, APITestCase):
+    def _complete_phase_1(self):
+        self.project.requirements.filter(phase=1).update(status=PhaseRequirement.Status.COMPLETED)
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            project=self.project,
+            requested_by=self.rep,
+        )
+        approve_url = reverse('approvalrequest-detail', args=[approval.id])
+        approve_response = self.client.patch(approve_url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+
+        project_url = reverse('project-detail', args=[self.project.id])
+        response = self.client.patch(project_url, {'phase_1_status': Project.PhaseStatus.COMPLETE}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_phase_1_complete_closes_existing_deal_and_advances_phase_2(self):
+        self.assertIsNone(self.project.deal)
+
+        self._complete_phase_1()
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.deal, self.deal)
+        self.deal.refresh_from_db()
+        self.assertEqual(self.deal.stage, Deal.Stage.CLOSED_WON)
+        self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.IN_PROGRESS)
+
+    def test_phase_1_complete_creates_deal_when_none_exists_on_company(self):
+        self.deal.delete()
+        self.assertFalse(Deal.objects.filter(company=self.company).exists())
+
+        self._complete_phase_1()
+
+        self.project.refresh_from_db()
+        deal = Deal.objects.get(company=self.company)
+        self.assertEqual(self.project.deal, deal)
+        self.assertEqual(deal.stage, Deal.Stage.CLOSED_WON)
+        self.assertIsNone(deal.value)
+        self.assertEqual(deal.assigned_to, self.lead.assigned_to)
+        self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.IN_PROGRESS)

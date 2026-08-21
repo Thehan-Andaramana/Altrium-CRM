@@ -30,6 +30,7 @@ from crm.views import (
     LeadViewSet,
     PhaseRequirementViewSet,
     ProjectViewSet,
+    RequirementTemplateViewSet,
     SystemSettingsView,
     UserViewSet,
 )
@@ -43,6 +44,7 @@ router.register('users', UserViewSet, basename='user')
 router.register('projects', ProjectViewSet, basename='project')
 router.register('approvals', ApprovalRequestViewSet, basename='approvalrequest')
 router.register('requirements', PhaseRequirementViewSet, basename='phaserequirement')
+router.register('requirement-templates', RequirementTemplateViewSet, basename='requirementtemplate')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

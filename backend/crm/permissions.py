@@ -105,3 +105,12 @@ class SystemSettingsPermission(BasePermission):
         if request.method in SAFE_METHODS:
             return True
         return request.user.role in self.MANAGE_ROLES
+
+
+class ManagementWritePermission(BasePermission):
+    """GET is open to any authenticated user; writes are restricted to management roles."""
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        return request.user.role in FULL_ACCESS_ROLES

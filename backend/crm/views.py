@@ -19,6 +19,7 @@ from .models import (
     Lead,
     PhaseRequirement,
     Project,
+    RequirementTemplate,
     SystemSettings,
     User,
 )
@@ -26,6 +27,7 @@ from .permissions import (
     ApprovalRequestPermission,
     CompanyPermission,
     ManagementRolePermission,
+    ManagementWritePermission,
     RoleBasedAccess,
     SystemSettingsPermission,
 )
@@ -37,6 +39,7 @@ from .serializers import (
     LeadSerializer,
     PhaseRequirementSerializer,
     ProjectSerializer,
+    RequirementTemplateSerializer,
     SystemSettingsSerializer,
     UserSummarySerializer,
 )
@@ -101,13 +104,16 @@ class LeadViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         # Neither Lead nor Deal has a direct FK to the other; both link to a
         # Contact, so that's used as the bridge to find "this lead's deal".
+        # Project *does* now link directly to Lead (a Project auto-generates
+        # whenever a Lead is created), so has_project no longer needs that
+        # bridge -- though that also means it's ~always true going forward.
         matching_deals = Deal.objects.filter(contact_id=OuterRef('contact_id')).order_by('-id')
         queryset = (
             Lead.objects.select_related('assigned_to', 'company', 'contact')
             .annotate(
                 interaction_count=Count('interactions', distinct=True),
                 deal_stage=Subquery(matching_deals.values('stage')[:1]),
-                has_project=Exists(Project.objects.filter(deal__contact_id=OuterRef('contact_id'))),
+                has_project=Exists(Project.objects.filter(lead_id=OuterRef('pk'))),
             )
         )
         user = self.request.user
@@ -160,7 +166,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             to_attr='pending_requests',
         )
         queryset = (
-            Project.objects.select_related('company', 'deal')
+            Project.objects.select_related('company', 'deal', 'lead')
             .prefetch_related('requirements', pending_requests)
         )
         user = self.request.user
@@ -178,11 +184,20 @@ class PhaseRequirementViewSet(viewsets.ModelViewSet):
     ordering = ['phase']
 
     def get_queryset(self):
-        queryset = PhaseRequirement.objects.select_related('project__company', 'completed_by')
+        queryset = PhaseRequirement.objects.select_related('project__company', 'updated_by', 'confirmed_by')
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(project__company__owner=user)
         return queryset
+
+
+class RequirementTemplateViewSet(viewsets.ModelViewSet):
+    serializer_class = RequirementTemplateSerializer
+    permission_classes = [IsAuthenticated, ManagementWritePermission]
+    filterset_fields = ['phase', 'is_active']
+    ordering_fields = ['phase', 'order']
+    ordering = ['phase', 'order']
+    queryset = RequirementTemplate.objects.all()
 
 
 class ApprovalRequestViewSet(viewsets.ModelViewSet):

@@ -96,6 +96,18 @@ class Lead(models.Model):
     def __str__(self):
         return f'{self.company} lead ({self.status})'
 
+    def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        super().save(*args, **kwargs)
+        if is_new:
+            # Project is defined later in this module; that's fine since
+            # this only resolves at call time, well after import.
+            Project.objects.create(
+                lead=self,
+                company=self.company,
+                phase_1_status=Project.PhaseStatus.IN_PROGRESS,
+            )
+
 
 class Deal(models.Model):
     class Stage(models.TextChoices):
@@ -114,6 +126,8 @@ class Deal(models.Model):
     contact = models.ForeignKey(
         Contact,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='deals',
     )
     stage = models.CharField(
@@ -121,7 +135,7 @@ class Deal(models.Model):
         choices=Stage.choices,
         default=Stage.NEW_LEAD,
     )
-    value = models.DecimalField(max_digits=12, decimal_places=2)
+    value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     assigned_to = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -191,6 +205,29 @@ class Interaction(models.Model):
             )
 
 
+class RequirementTemplate(models.Model):
+    class ConfirmationAuthority(models.TextChoices):
+        REP = 'REP', 'Rep'
+        MANAGER = 'MANAGER', 'Manager'
+
+    phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(3)])
+    label = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    order = models.PositiveIntegerField(default=0)
+    confirmation_authority = models.CharField(
+        max_length=8,
+        choices=ConfirmationAuthority.choices,
+        default=ConfirmationAuthority.REP,
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['phase', 'order', 'id']
+
+    def __str__(self):
+        return f'{self.label} (phase {self.phase})'
+
+
 class Project(models.Model):
     class PhaseStatus(models.TextChoices):
         NOT_STARTED = 'NOT_STARTED', 'Not Started'
@@ -198,6 +235,11 @@ class Project(models.Model):
         AWAITING_APPROVAL = 'AWAITING_APPROVAL', 'Awaiting Approval'
         COMPLETE = 'COMPLETE', 'Complete'
 
+    lead = models.OneToOneField(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name='project',
+    )
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
@@ -206,6 +248,8 @@ class Project(models.Model):
     deal = models.ForeignKey(
         Deal,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='projects',
     )
     current_phase = models.PositiveSmallIntegerField(
@@ -218,12 +262,6 @@ class Project(models.Model):
     maintenance = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
-    DEFAULT_REQUIREMENT_LABELS = {
-        1: ['Signed MSA', 'Signed SOW', 'Requirements Document', 'Scope Confirmation'],
-        2: ['Technical Specification', 'Development Sign-off', 'QA Report'],
-        3: ['Client Acceptance Document', 'Final Invoice', 'Handover Note'],
-    }
 
     def __str__(self):
         return f'Project for {self.company} (phase {self.current_phase})'
@@ -241,13 +279,27 @@ class Project(models.Model):
             # PhaseRequirement is defined later in this module; that's fine
             # since this only resolves at call time, well after import.
             PhaseRequirement.objects.bulk_create([
-                PhaseRequirement(project=self, phase=phase, label=label)
-                for phase, labels in self.DEFAULT_REQUIREMENT_LABELS.items()
-                for label in labels
+                PhaseRequirement(
+                    project=self,
+                    phase=template.phase,
+                    label=template.label,
+                    confirmation_authority=template.confirmation_authority,
+                )
+                for template in RequirementTemplate.objects.filter(is_active=True).order_by('phase', 'order')
             ])
 
 
 class PhaseRequirement(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        IN_PROGRESS = 'IN_PROGRESS', 'In Progress'
+        COMPLETED = 'COMPLETED', 'Completed'
+        NOT_APPLICABLE = 'NOT_APPLICABLE', 'Not Applicable'
+
+    class ConfirmationAuthority(models.TextChoices):
+        REP = 'REP', 'Rep'
+        MANAGER = 'MANAGER', 'Manager'
+
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
@@ -255,16 +307,29 @@ class PhaseRequirement(models.Model):
     )
     phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(3)])
     label = models.CharField(max_length=255)
-    is_complete = models.BooleanField(default=False)
-    document = models.FileField(upload_to='phase_documents/', blank=True, null=True)
-    completed_by = models.ForeignKey(
+    status = models.CharField(max_length=14, choices=Status.choices, default=Status.PENDING)
+    notes = models.TextField(blank=True)
+    confirmation_authority = models.CharField(
+        max_length=8,
+        choices=ConfirmationAuthority.choices,
+        default=ConfirmationAuthority.REP,
+    )
+    updated_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='completed_requirements',
+        related_name='updated_requirements',
     )
-    completed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='confirmed_requirements',
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['phase', 'id']
@@ -277,6 +342,14 @@ class PhaseRequirement(models.Model):
         # Lets RoleBasedAccess.has_object_permission scope this exactly like
         # a Company/Project, without a bespoke permission class.
         return self.project.company.owner_id
+
+    @property
+    def is_confirmed_complete(self):
+        if self.status != self.Status.COMPLETED:
+            return False
+        if self.confirmation_authority == self.ConfirmationAuthority.MANAGER:
+            return self.confirmed_by_id is not None
+        return True
 
 
 class ApprovalRequest(models.Model):
