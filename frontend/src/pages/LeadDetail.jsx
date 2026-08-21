@@ -15,6 +15,7 @@ import Spinner from 'react-bootstrap/Spinner'
 import { useParams } from 'react-router-dom'
 import { get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import ArchiveButton from '../components/ArchiveButton.jsx'
 
 const STATUS_BADGE_VARIANT = {
   HOT: 'warning',
@@ -304,7 +305,7 @@ function PhaseTracker({ leadId }) {
       setLoadingProject(true)
       setProjectError(null)
       try {
-        const data = await get(`/api/projects/?lead=${leadId}`)
+        const data = await get(`/api/projects/?lead=${leadId}&include_archived=true`)
         if (!cancelled) setProject(data[0] ?? null)
       } catch {
         if (!cancelled) setProjectError('Failed to load project.')
@@ -342,7 +343,7 @@ function PhaseTracker({ leadId }) {
   }, [project])
 
   async function refreshProject() {
-    const refreshed = await get(`/api/projects/${project.id}/`)
+    const refreshed = await get(`/api/projects/${project.id}/?include_archived=true`)
     setProject(refreshed)
   }
 
@@ -394,7 +395,17 @@ function PhaseTracker({ leadId }) {
 
   return (
     <div className="mb-4">
-      <h2 className="h5 mb-3">Project Phases</h2>
+      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h2 className="h5 mb-0">
+          Project Phases
+          {project?.is_archived && (
+            <Badge bg="secondary" className="ms-2 align-middle">
+              Archived
+            </Badge>
+          )}
+        </h2>
+        {project && <ArchiveButton resource="project" record={project} onArchived={refreshProject} />}
+      </div>
 
       {loadingProject ? (
         <div className="d-flex justify-content-center py-4">
@@ -477,7 +488,7 @@ export default function LeadDetail() {
       setLoadingLead(true)
       setLeadError(null)
       try {
-        const data = await get(`/api/leads/${id}/`)
+        const data = await get(`/api/leads/${id}/?include_archived=true`)
         if (!cancelled) setLead(data)
       } catch {
         if (!cancelled) setLeadError('Failed to load lead.')
@@ -491,6 +502,11 @@ export default function LeadDetail() {
       cancelled = true
     }
   }, [id])
+
+  async function refreshLead() {
+    const data = await get(`/api/leads/${id}/?include_archived=true`)
+    setLead(data)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -522,7 +538,7 @@ export default function LeadDetail() {
       await post('/api/interactions/', { lead: Number(id), type, outcome, notes })
       setNotes('')
       const [leadData, interactionsData] = await Promise.all([
-        get(`/api/leads/${id}/`),
+        get(`/api/leads/${id}/?include_archived=true`),
         get(`/api/interactions/?lead=${id}`),
       ])
       setLead(leadData)
@@ -548,12 +564,22 @@ export default function LeadDetail() {
         <>
           <div className="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
             <div>
-              <h1 className="h3 mb-1">{lead.company_name ?? '—'}</h1>
+              <h1 className="h3 mb-1">
+                {lead.company_name ?? '—'}
+                {lead.is_archived && (
+                  <Badge bg="secondary" className="ms-2 align-middle">
+                    Archived
+                  </Badge>
+                )}
+              </h1>
               <p className="text-body-secondary mb-0">{lead.contact_name ?? 'No contact'}</p>
             </div>
-            <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">
-              {lead.status}
-            </Badge>
+            <div className="d-flex align-items-center gap-2">
+              <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">
+                {lead.status}
+              </Badge>
+              <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} />
+            </div>
           </div>
 
           <Row className="mb-4 gy-2">

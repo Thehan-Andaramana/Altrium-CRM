@@ -171,6 +171,11 @@ function UserActions({ theme, onToggleTheme, user, canSeeSettings, onLogout }) {
             System Settings
           </NavDropdown.Item>
         )}
+        {canSeeSettings && (
+          <NavDropdown.Item as={NavLink} to="/templates">
+            Requirement Templates
+          </NavDropdown.Item>
+        )}
         <NavDropdown.Divider />
         <NavDropdown.Item onClick={onLogout}>Logout</NavDropdown.Item>
       </NavDropdown>

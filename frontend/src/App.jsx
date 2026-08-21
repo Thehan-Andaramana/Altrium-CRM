@@ -9,6 +9,7 @@ import LeadDetail from './pages/LeadDetail.jsx'
 import Leads from './pages/Leads.jsx'
 import Login from './pages/Login.jsx'
 import Preferences from './pages/Preferences.jsx'
+import RequirementTemplates from './pages/RequirementTemplates.jsx'
 import Settings from './pages/Settings.jsx'
 
 function RequireAuth() {
@@ -38,6 +39,7 @@ function AppRoutes() {
           <Route path="/leads/:id" element={<LeadDetail />} />
           <Route path="/preferences" element={<Preferences />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/templates" element={<RequirementTemplates />} />
         </Route>
       </Route>
     </Routes>

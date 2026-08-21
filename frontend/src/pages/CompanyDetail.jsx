@@ -11,8 +11,11 @@ import Spinner from 'react-bootstrap/Spinner'
 import { Link, useParams } from 'react-router-dom'
 import { get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import ArchiveButton from '../components/ArchiveButton.jsx'
 
-const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
+// Company update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
+// SYSTEM_ADMIN is read-only for companies (see CompanyPermission, backend).
+const MANAGER_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER'])
 
 const STATUS_BADGE_VARIANT = {
   HOT: 'warning',
@@ -22,7 +25,7 @@ const STATUS_BADGE_VARIANT = {
 export default function CompanyDetail() {
   const { id } = useParams()
   const { user } = useAuth()
-  const canEditOwner = MANAGEMENT_ROLES.has(user?.role)
+  const canEditOwner = MANAGER_ROLES.has(user?.role)
 
   const [company, setCompany] = useState(null)
   const [loadingCompany, setLoadingCompany] = useState(true)
@@ -45,7 +48,7 @@ export default function CompanyDetail() {
       setLoadingCompany(true)
       setCompanyError(null)
       try {
-        const data = await get(`/api/companies/${id}/`)
+        const data = await get(`/api/companies/${id}/?include_archived=true`)
         if (!cancelled) setCompany(data)
       } catch {
         if (!cancelled) setCompanyError('Failed to load company.')
@@ -59,6 +62,11 @@ export default function CompanyDetail() {
       cancelled = true
     }
   }, [id])
+
+  async function refreshCompany() {
+    const data = await get(`/api/companies/${id}/?include_archived=true`)
+    setCompany(data)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -153,7 +161,17 @@ export default function CompanyDetail() {
 
   return (
     <Container style={{ maxWidth: '56rem' }}>
-      <h1 className="h3 mb-3">{company.name}</h1>
+      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h1 className="h3 mb-0">
+          {company.name}
+          {company.is_archived && (
+            <Badge bg="secondary" className="ms-2 align-middle">
+              Archived
+            </Badge>
+          )}
+        </h1>
+        <ArchiveButton resource="company" record={company} onArchived={refreshCompany} />
+      </div>
 
       {ownerError && <Alert variant="danger">{ownerError}</Alert>}
 
