@@ -1,4 +1,5 @@
 from django.contrib.auth.models import AbstractUser
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -169,6 +170,109 @@ class Interaction(models.Model):
             last_activity_at=self.occurred_at,
             status=Lead.Status.HOT,
         )
+
+
+class Project(models.Model):
+    class PhaseStatus(models.TextChoices):
+        NOT_STARTED = 'NOT_STARTED', 'Not Started'
+        IN_PROGRESS = 'IN_PROGRESS', 'In Progress'
+        AWAITING_APPROVAL = 'AWAITING_APPROVAL', 'Awaiting Approval'
+        COMPLETE = 'COMPLETE', 'Complete'
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name='projects',
+    )
+    deal = models.ForeignKey(
+        Deal,
+        on_delete=models.CASCADE,
+        related_name='projects',
+    )
+    current_phase = models.PositiveSmallIntegerField(
+        default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(3)],
+    )
+    phase_1_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
+    phase_2_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
+    phase_3_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
+    maintenance = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'Project for {self.company} (phase {self.current_phase})'
+
+    @property
+    def owner_id(self):
+        # Lets RoleBasedAccess.has_object_permission scope this exactly like
+        # a Company, without a bespoke permission class.
+        return self.company.owner_id
+
+
+class ApprovalRequest(models.Model):
+    class RequestType(models.TextChoices):
+        ARCHIVE_LEAD = 'ARCHIVE_LEAD', 'Archive Lead'
+        PHASE_1_SIGNOFF = 'PHASE_1_SIGNOFF', 'Phase 1 Signoff'
+        PHASE_2_SIGNOFF = 'PHASE_2_SIGNOFF', 'Phase 2 Signoff'
+        PHASE_3_SIGNOFF = 'PHASE_3_SIGNOFF', 'Phase 3 Signoff'
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        APPROVED = 'APPROVED', 'Approved'
+        REJECTED = 'REJECTED', 'Rejected'
+
+    request_type = models.CharField(max_length=20, choices=RequestType.choices)
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='approval_requests',
+    )
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='approval_requests',
+    )
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='approval_requests_made',
+    )
+    decided_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approval_requests_decided',
+    )
+    status = models.CharField(max_length=8, choices=Status.choices, default=Status.PENDING)
+    reason = models.TextField(blank=True)
+    decision_note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(lead__isnull=False, project__isnull=True)
+                    | models.Q(lead__isnull=True, project__isnull=False)
+                ),
+                name='approvalrequest_exactly_one_target',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.get_request_type_display()} ({self.status})'
+
+    @property
+    def target(self):
+        return self.lead or self.project
 
 
 class SystemSettings(models.Model):

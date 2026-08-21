@@ -20,9 +20,12 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.routers import DefaultRouter
 
 from crm.views import (
+    ApprovalRequestViewSet,
     CompanyViewSet,
+    DashboardView,
     InteractionViewSet,
     LeadViewSet,
+    ProjectViewSet,
     SystemSettingsView,
     UserViewSet,
 )
@@ -32,11 +35,14 @@ router.register('companies', CompanyViewSet, basename='company')
 router.register('leads', LeadViewSet, basename='lead')
 router.register('interactions', InteractionViewSet, basename='interaction')
 router.register('users', UserViewSet, basename='user')
+router.register('projects', ProjectViewSet, basename='project')
+router.register('approvals', ApprovalRequestViewSet, basename='approvalrequest')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('crm.urls')),
     path('api/settings/', SystemSettingsView.as_view(), name='system-settings'),
+    path('api/dashboard/', DashboardView.as_view(), name='dashboard'),
     path('api/', include(router.urls)),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path(

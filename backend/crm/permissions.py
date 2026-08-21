@@ -43,6 +43,29 @@ class ManagementRolePermission(BasePermission):
         return request.user.role in FULL_ACCESS_ROLES
 
 
+class ApprovalRequestPermission(BasePermission):
+    """
+    SALES_REP: may create requests and only read their own.
+    Management roles: may read all and PATCH status (approve/reject), but
+    never decide a request they submitted themselves.
+    """
+
+    def has_permission(self, request, view):
+        if view.action == 'create':
+            return True
+        if request.method in SAFE_METHODS:
+            return True
+        return request.user.role in FULL_ACCESS_ROLES
+
+    def has_object_permission(self, request, view, obj):
+        role = request.user.role
+        if request.method in SAFE_METHODS:
+            return role in FULL_ACCESS_ROLES or obj.requested_by_id == request.user.id
+        # Only PATCH reaches here -- has_permission already blocked everyone
+        # else, and the viewset doesn't offer PUT/DELETE.
+        return obj.requested_by_id != request.user.id
+
+
 class SystemSettingsPermission(BasePermission):
     """GET is open to any authenticated user; PATCH is restricted to management roles."""
 
