@@ -56,6 +56,12 @@ class Contact(models.Model):
     def __str__(self):
         return self.name
 
+    @property
+    def owner_id(self):
+        # Lets RoleBasedAccess.has_object_permission scope this exactly like
+        # a Company, without a bespoke permission class.
+        return self.company.owner_id
+
 
 class Lead(models.Model):
     class Status(models.TextChoices):
@@ -133,6 +139,13 @@ class Interaction(models.Model):
         MEETING = 'MEETING', 'Meeting'
         NOTE = 'NOTE', 'Note'
 
+    class Outcome(models.TextChoices):
+        RESPONDED = 'RESPONDED', 'Responded'
+        NO_ANSWER = 'NO_ANSWER', 'No Answer'
+        MISSED_CALL = 'MISSED_CALL', 'Missed Call'
+        LEFT_MESSAGE = 'LEFT_MESSAGE', 'Left Message'
+        BOUNCED = 'BOUNCED', 'Bounced'
+
     lead = models.ForeignKey(
         Lead,
         on_delete=models.CASCADE,
@@ -141,6 +154,11 @@ class Interaction(models.Model):
     type = models.CharField(
         max_length=8,
         choices=Type.choices,
+    )
+    outcome = models.CharField(
+        max_length=12,
+        choices=Outcome.choices,
+        default=Outcome.RESPONDED,
     )
     notes = models.TextField(blank=True)
     occurred_at = models.DateTimeField(default=timezone.now)
@@ -164,12 +182,13 @@ class Interaction(models.Model):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        # QuerySet.update() bypasses Lead.last_activity_at's auto_now, so
-        # occurred_at (which may be backdated) sticks instead of "now".
-        Lead.objects.filter(pk=self.lead_id).update(
-            last_activity_at=self.occurred_at,
-            status=Lead.Status.HOT,
-        )
+        if self.outcome == Interaction.Outcome.RESPONDED:
+            # QuerySet.update() bypasses Lead.last_activity_at's auto_now, so
+            # occurred_at (which may be backdated) sticks instead of "now".
+            Lead.objects.filter(pk=self.lead_id).update(
+                last_activity_at=self.occurred_at,
+                status=Lead.Status.HOT,
+            )
 
 
 class Project(models.Model):
@@ -200,6 +219,12 @@ class Project(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    DEFAULT_REQUIREMENT_LABELS = {
+        1: ['Signed MSA', 'Signed SOW', 'Requirements Document', 'Scope Confirmation'],
+        2: ['Technical Specification', 'Development Sign-off', 'QA Report'],
+        3: ['Client Acceptance Document', 'Final Invoice', 'Handover Note'],
+    }
+
     def __str__(self):
         return f'Project for {self.company} (phase {self.current_phase})'
 
@@ -208,6 +233,50 @@ class Project(models.Model):
         # Lets RoleBasedAccess.has_object_permission scope this exactly like
         # a Company, without a bespoke permission class.
         return self.company.owner_id
+
+    def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        super().save(*args, **kwargs)
+        if is_new:
+            # PhaseRequirement is defined later in this module; that's fine
+            # since this only resolves at call time, well after import.
+            PhaseRequirement.objects.bulk_create([
+                PhaseRequirement(project=self, phase=phase, label=label)
+                for phase, labels in self.DEFAULT_REQUIREMENT_LABELS.items()
+                for label in labels
+            ])
+
+
+class PhaseRequirement(models.Model):
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='requirements',
+    )
+    phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(3)])
+    label = models.CharField(max_length=255)
+    is_complete = models.BooleanField(default=False)
+    document = models.FileField(upload_to='phase_documents/', blank=True, null=True)
+    completed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='completed_requirements',
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['phase', 'id']
+
+    def __str__(self):
+        return f'{self.label} (phase {self.phase})'
+
+    @property
+    def owner_id(self):
+        # Lets RoleBasedAccess.has_object_permission scope this exactly like
+        # a Company/Project, without a bespoke permission class.
+        return self.project.company.owner_id
 
 
 class ApprovalRequest(models.Model):
@@ -264,6 +333,21 @@ class ApprovalRequest(models.Model):
                     | models.Q(lead__isnull=True, project__isnull=False)
                 ),
                 name='approvalrequest_exactly_one_target',
+            ),
+            models.UniqueConstraint(
+                fields=['project', 'request_type'],
+                # Literal 'PENDING' rather than Status.PENDING: nested class
+                # bodies (Meta here) don't see names from the enclosing
+                # class body, so Status isn't in scope at this point.
+                condition=models.Q(status='PENDING'),
+                name='approvalrequest_one_pending_per_project_type',
+                # DRF's ModelSerializer auto-derives a condition-aware
+                # UniqueTogetherValidator from this constraint (including
+                # this message), so this is what actually surfaces from the
+                # API -- no separate serializer-level check needed.
+                violation_error_message=(
+                    'A pending approval request of this type already exists for this project.'
+                ),
             ),
         ]
 

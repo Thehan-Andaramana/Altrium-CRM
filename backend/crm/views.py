@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth import authenticate, login, logout
-from django.db.models import Count, F, Max
+from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Subquery
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import generics, status, viewsets
@@ -10,9 +10,21 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ApprovalRequest, Company, Interaction, Lead, Project, SystemSettings, User
+from .models import (
+    ApprovalRequest,
+    Company,
+    Contact,
+    Deal,
+    Interaction,
+    Lead,
+    PhaseRequirement,
+    Project,
+    SystemSettings,
+    User,
+)
 from .permissions import (
     ApprovalRequestPermission,
+    CompanyPermission,
     ManagementRolePermission,
     RoleBasedAccess,
     SystemSettingsPermission,
@@ -20,8 +32,10 @@ from .permissions import (
 from .serializers import (
     ApprovalRequestSerializer,
     CompanySerializer,
+    ContactSerializer,
     InteractionSerializer,
     LeadSerializer,
+    PhaseRequirementSerializer,
     ProjectSerializer,
     SystemSettingsSerializer,
     UserSummarySerializer,
@@ -64,36 +78,56 @@ def me(request):
 
 class CompanyViewSet(viewsets.ModelViewSet):
     serializer_class = CompanySerializer
-    permission_classes = [IsAuthenticated, RoleBasedAccess]
+    permission_classes = [IsAuthenticated, CompanyPermission]
     filterset_fields = ['industry']
     search_fields = ['name']
     ordering_fields = ['created_at']
     ordering = ['-created_at']
 
     def get_queryset(self):
-        queryset = Company.objects.select_related('owner')
-        user = self.request.user
-        if user.role == User.Role.SALES_REP:
-            queryset = queryset.filter(owner=user)
-        return queryset
+        # Every role can read every company (reps just can't write to ones
+        # they don't own -- see CompanyPermission); nothing to filter here.
+        return Company.objects.select_related('owner')
 
 
 class LeadViewSet(viewsets.ModelViewSet):
     serializer_class = LeadSerializer
     permission_classes = [IsAuthenticated, RoleBasedAccess]
-    filterset_fields = ['status', 'assigned_to']
+    filterset_fields = ['status', 'assigned_to', 'company']
     search_fields = ['company__name']
     ordering_fields = ['created_at']
     ordering = ['-created_at']
 
     def get_queryset(self):
+        # Neither Lead nor Deal has a direct FK to the other; both link to a
+        # Contact, so that's used as the bridge to find "this lead's deal".
+        matching_deals = Deal.objects.filter(contact_id=OuterRef('contact_id')).order_by('-id')
         queryset = (
             Lead.objects.select_related('assigned_to', 'company', 'contact')
-            .annotate(interaction_count=Count('interactions', distinct=True))
+            .annotate(
+                interaction_count=Count('interactions', distinct=True),
+                deal_stage=Subquery(matching_deals.values('stage')[:1]),
+                has_project=Exists(Project.objects.filter(deal__contact_id=OuterRef('contact_id'))),
+            )
         )
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(assigned_to=user)
+        return queryset
+
+
+class ContactViewSet(viewsets.ModelViewSet):
+    serializer_class = ContactSerializer
+    permission_classes = [IsAuthenticated, RoleBasedAccess]
+    filterset_fields = ['company']
+    ordering_fields = ['name']
+    ordering = ['name']
+
+    def get_queryset(self):
+        queryset = Contact.objects.select_related('company')
+        user = self.request.user
+        if user.role == User.Role.SALES_REP:
+            queryset = queryset.filter(company__owner=user)
         return queryset
 
 
@@ -120,10 +154,34 @@ class ProjectViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
 
     def get_queryset(self):
-        queryset = Project.objects.select_related('company', 'deal')
+        pending_requests = Prefetch(
+            'approval_requests',
+            queryset=ApprovalRequest.objects.filter(status=ApprovalRequest.Status.PENDING),
+            to_attr='pending_requests',
+        )
+        queryset = (
+            Project.objects.select_related('company', 'deal')
+            .prefetch_related('requirements', pending_requests)
+        )
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(company__owner=user)
+        return queryset
+
+
+class PhaseRequirementViewSet(viewsets.ModelViewSet):
+    serializer_class = PhaseRequirementSerializer
+    permission_classes = [IsAuthenticated, RoleBasedAccess]
+    http_method_names = ['get', 'patch', 'head', 'options']
+    filterset_fields = ['project', 'phase']
+    ordering_fields = ['phase']
+    ordering = ['phase']
+
+    def get_queryset(self):
+        queryset = PhaseRequirement.objects.select_related('project__company', 'completed_by')
+        user = self.request.user
+        if user.role == User.Role.SALES_REP:
+            queryset = queryset.filter(project__company__owner=user)
         return queryset
 
 

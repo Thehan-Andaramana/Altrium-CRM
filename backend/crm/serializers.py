@@ -2,7 +2,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import ApprovalRequest, Company, Interaction, Lead, Project, SystemSettings, User
+from .models import ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, Project, SystemSettings, User
 from .permissions import FULL_ACCESS_ROLES
 
 
@@ -37,18 +37,31 @@ class CompanySerializer(serializers.ModelSerializer):
         return company
 
 
+class ContactSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Contact
+        fields = ['id', 'company', 'name', 'email', 'phone', 'job_title']
+
+
 class LeadSerializer(serializers.ModelSerializer):
     assigned_to = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
     assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True, default=None)
     company_name = serializers.CharField(source='company.name', read_only=True, default=None)
     contact_name = serializers.CharField(source='contact.name', read_only=True, default=None)
     interaction_count = serializers.IntegerField(read_only=True, default=0)
+    # Populated via a queryset annotation (see LeadViewSet.get_queryset) that
+    # matches this lead's contact to a Deal, since neither model has a direct
+    # FK to the other. Falls back to these defaults where that annotation
+    # isn't present (e.g. the dashboard's lead queryset).
+    deal_stage = serializers.CharField(read_only=True, default=None)
+    has_project = serializers.BooleanField(read_only=True, default=False)
 
     class Meta:
         model = Lead
         fields = [
             'id', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
             'last_activity_at', 'assigned_to', 'assigned_to_username', 'interaction_count',
+            'deal_stage', 'has_project',
         ]
         read_only_fields = ['created_at', 'last_activity_at']
 
@@ -73,7 +86,9 @@ class InteractionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Interaction
-        fields = ['id', 'lead', 'type', 'notes', 'occurred_at', 'created_by', 'created_by_username']
+        fields = [
+            'id', 'lead', 'type', 'outcome', 'notes', 'occurred_at', 'created_by', 'created_by_username',
+        ]
         read_only_fields = ['created_by']
 
     def create(self, validated_data):
@@ -85,6 +100,9 @@ class InteractionSerializer(serializers.ModelSerializer):
 
 class ProjectSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='company.name', read_only=True, default=None)
+    phase_progress = serializers.SerializerMethodField()
+    overall_progress = serializers.SerializerMethodField()
+    pending_approval_requests = serializers.SerializerMethodField()
 
     PHASE_FIELDS = ['phase_1_status', 'phase_2_status', 'phase_3_status']
     PHASE_SIGNOFF_TYPES = {
@@ -98,9 +116,37 @@ class ProjectSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'company', 'company_name', 'deal', 'current_phase',
             'phase_1_status', 'phase_2_status', 'phase_3_status',
-            'maintenance', 'created_at', 'updated_at',
+            'maintenance', 'phase_progress', 'overall_progress', 'pending_approval_requests',
+            'created_at', 'updated_at',
         ]
         read_only_fields = ['maintenance', 'created_at', 'updated_at']
+
+    @staticmethod
+    def _percent(completed, total):
+        return round(completed / total * 100) if total else 0
+
+    def get_phase_progress(self, obj):
+        progress = {}
+        for phase in (1, 2, 3):
+            requirements = [r for r in obj.requirements.all() if r.phase == phase]
+            total = len(requirements)
+            completed = sum(1 for r in requirements if r.is_complete)
+            progress[phase] = {'completed': completed, 'total': total, 'percent': self._percent(completed, total)}
+        return progress
+
+    def get_overall_progress(self, obj):
+        requirements = list(obj.requirements.all())
+        completed = sum(1 for r in requirements if r.is_complete)
+        return self._percent(completed, len(requirements))
+
+    def get_pending_approval_requests(self, obj):
+        # Prefer the prefetch set up by ProjectViewSet.get_queryset; fall
+        # back to a live query for instances that didn't go through it (e.g.
+        # the object returned straight from a create()/update() call).
+        pending = getattr(obj, 'pending_requests', None)
+        if pending is None:
+            pending = obj.approval_requests.filter(status=ApprovalRequest.Status.PENDING)
+        return [r.request_type for r in pending]
 
     def update(self, instance, validated_data):
         for phase_num, field_name in enumerate(self.PHASE_FIELDS, start=1):
@@ -116,6 +162,13 @@ class ProjectSerializer(serializers.ModelSerializer):
                 if prev_effective != Project.PhaseStatus.COMPLETE:
                     raise serializers.ValidationError({
                         field_name: f'Phase {phase_num} cannot start until phase {phase_num - 1} is complete.',
+                    })
+
+            if new_status == Project.PhaseStatus.AWAITING_APPROVAL:
+                incomplete = instance.requirements.filter(phase=phase_num, is_complete=False).exists()
+                if incomplete:
+                    raise serializers.ValidationError({
+                        field_name: f'Phase {phase_num} still has incomplete requirements.',
                     })
 
             if new_status == Project.PhaseStatus.COMPLETE:
@@ -140,6 +193,26 @@ class ProjectSerializer(serializers.ModelSerializer):
                 project.save(update_fields=['maintenance'])
 
         return project
+
+
+class PhaseRequirementSerializer(serializers.ModelSerializer):
+    completed_by_username = serializers.CharField(source='completed_by.username', read_only=True, default=None)
+
+    class Meta:
+        model = PhaseRequirement
+        fields = [
+            'id', 'project', 'phase', 'label', 'is_complete', 'document',
+            'completed_by', 'completed_by_username', 'completed_at',
+        ]
+        read_only_fields = ['project', 'phase', 'label', 'is_complete', 'completed_by', 'completed_at']
+
+    def update(self, instance, validated_data):
+        if 'document' in validated_data:
+            request = self.context.get('request')
+            instance.is_complete = True
+            instance.completed_by = request.user if request else None
+            instance.completed_at = timezone.now()
+        return super().update(instance, validated_data)
 
 
 class ApprovalRequestSerializer(serializers.ModelSerializer):
@@ -173,6 +246,10 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'lead': 'ARCHIVE_LEAD requests must target a lead.'})
             if request_type != ApprovalRequest.RequestType.ARCHIVE_LEAD and project is None:
                 raise serializers.ValidationError({'project': 'Phase signoff requests must target a project.'})
+            # No manual duplicate-pending check here: ModelSerializer already
+            # derives a condition-aware UniqueTogetherValidator from the
+            # model's UniqueConstraint (see ApprovalRequest.Meta), which runs
+            # before this method and raises first with the same message.
         else:
             new_status = attrs.get('status')
             if new_status and new_status == ApprovalRequest.Status.PENDING:

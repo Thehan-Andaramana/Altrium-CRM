@@ -36,6 +36,32 @@ class RoleBasedAccess(BasePermission):
         return False
 
 
+class CompanyPermission(BasePermission):
+    """
+    Like RoleBasedAccess, except SALES_REP gets read access to every company
+    (not just ones they own) -- they can open any company read-only, but
+    only write to ones they own.
+    """
+
+    def has_permission(self, request, view):
+        role = request.user.role
+        if role == User.Role.DELIVERY_LEAD:
+            return request.method in SAFE_METHODS
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        role = request.user.role
+        if role == User.Role.DELIVERY_LEAD:
+            return request.method in SAFE_METHODS
+        if role in FULL_ACCESS_ROLES:
+            return True
+        if role == User.Role.SALES_REP:
+            if request.method in SAFE_METHODS:
+                return True
+            return obj.owner_id == request.user.id
+        return False
+
+
 class ManagementRolePermission(BasePermission):
     """Restricts a view to SALES_MANAGER, EXECUTIVE_MANAGER, and SYSTEM_ADMIN."""
 

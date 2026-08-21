@@ -14,6 +14,8 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
@@ -22,9 +24,11 @@ from rest_framework.routers import DefaultRouter
 from crm.views import (
     ApprovalRequestViewSet,
     CompanyViewSet,
+    ContactViewSet,
     DashboardView,
     InteractionViewSet,
     LeadViewSet,
+    PhaseRequirementViewSet,
     ProjectViewSet,
     SystemSettingsView,
     UserViewSet,
@@ -32,11 +36,13 @@ from crm.views import (
 
 router = DefaultRouter()
 router.register('companies', CompanyViewSet, basename='company')
+router.register('contacts', ContactViewSet, basename='contact')
 router.register('leads', LeadViewSet, basename='lead')
 router.register('interactions', InteractionViewSet, basename='interaction')
 router.register('users', UserViewSet, basename='user')
 router.register('projects', ProjectViewSet, basename='project')
 router.register('approvals', ApprovalRequestViewSet, basename='approvalrequest')
+router.register('requirements', PhaseRequirementViewSet, basename='phaserequirement')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -51,3 +57,6 @@ urlpatterns = [
         name='swagger-ui',
     ),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

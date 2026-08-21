@@ -8,8 +8,11 @@ function getCookie(name) {
 }
 
 async function request(method, url, body) {
+  const isFormData = body instanceof FormData
   const headers = {}
-  if (body !== undefined) {
+  if (body !== undefined && !isFormData) {
+    // Leave Content-Type unset for FormData -- the browser fills in the
+    // multipart boundary itself, which it can only do if we don't set it.
     headers['Content-Type'] = 'application/json'
   }
   if (!CSRF_SAFE_METHODS.has(method)) {
@@ -23,7 +26,7 @@ async function request(method, url, body) {
     method,
     credentials: 'include',
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body === undefined ? undefined : isFormData ? body : JSON.stringify(body),
   })
 
   if (!response.ok) {

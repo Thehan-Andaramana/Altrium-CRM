@@ -3,6 +3,7 @@ import Alert from 'react-bootstrap/Alert'
 import Form from 'react-bootstrap/Form'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
+import { Link } from 'react-router-dom'
 import { get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 
@@ -132,7 +133,9 @@ export default function Companies() {
           <tbody>
             {companies.map((company) => (
               <tr key={company.id}>
-                <td>{company.name}</td>
+                <td>
+                  <Link to={`/companies/${company.id}`}>{company.name}</Link>
+                </td>
                 <td>{company.industry || '—'}</td>
                 <td>
                   {company.website ? (
