@@ -263,12 +263,12 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
     class Meta:
         model = PhaseRequirement
         fields = [
-            'id', 'project', 'phase', 'label', 'status', 'notes', 'confirmation_authority',
+            'id', 'project', 'phase', 'label', 'description', 'status', 'notes', 'confirmation_authority',
             'updated_by', 'updated_by_username', 'updated_at',
             'confirmed_by', 'confirmed_by_username', 'confirmed_at',
         ]
         read_only_fields = [
-            'project', 'phase', 'label', 'confirmation_authority',
+            'project', 'phase', 'label', 'description', 'confirmation_authority',
             'updated_by', 'updated_at', 'confirmed_by', 'confirmed_at',
         ]
 

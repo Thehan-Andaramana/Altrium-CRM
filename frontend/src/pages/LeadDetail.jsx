@@ -8,11 +8,13 @@ import Col from 'react-bootstrap/Col'
 import Container from 'react-bootstrap/Container'
 import Form from 'react-bootstrap/Form'
 import ListGroup from 'react-bootstrap/ListGroup'
+import Modal from 'react-bootstrap/Modal'
 import ProgressBar from 'react-bootstrap/ProgressBar'
 import Row from 'react-bootstrap/Row'
 import Spinner from 'react-bootstrap/Spinner'
 import { useParams } from 'react-router-dom'
 import { get, patch, post } from '../api'
+import { useAuth } from '../AuthContext.jsx'
 
 const STATUS_BADGE_VARIANT = {
   HOT: 'warning',
@@ -58,75 +60,216 @@ const PHASE_STATUS_LABELS = {
   COMPLETE: 'Complete',
 }
 
-function RequirementItem({ requirement, onUpload, uploading }) {
-  if (requirement.is_complete) {
-    const filename = requirement.document ? requirement.document.split('/').pop() : null
+const TASK_STATUS_OPTIONS = [
+  { value: 'PENDING', label: 'Pending' },
+  { value: 'IN_PROGRESS', label: 'In Progress' },
+  { value: 'COMPLETED', label: 'Completed' },
+  { value: 'NOT_APPLICABLE', label: 'Not Applicable' },
+]
+
+const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
+
+// "confirmed" / "awaiting" / "pending" / "not_applicable" -- derived client
+// side from status + confirmation_authority + confirmed_by, mirroring the
+// server's PhaseRequirement.is_confirmed_complete.
+function getTaskState(task) {
+  if (task.status === 'NOT_APPLICABLE') {
+    return 'not_applicable'
+  }
+  if (task.status === 'COMPLETED') {
+    const confirmed = task.confirmation_authority === 'REP' || Boolean(task.confirmed_by)
+    return confirmed ? 'confirmed' : 'awaiting'
+  }
+  return 'pending'
+}
+
+function CheckIcon(props) {
+  return (
+    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" aria-hidden="true" {...props}>
+      <path d="M4 8.3 6.8 11l5.2-6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function ClockIcon(props) {
+  return (
+    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" aria-hidden="true" {...props}>
+      <circle cx="8" cy="8" r="6.3" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M8 4.8V8l2.3 1.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function CircleIcon(props) {
+  return (
+    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" aria-hidden="true" {...props}>
+      <circle cx="8" cy="8" r="6.3" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
+function DashIcon(props) {
+  return (
+    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" aria-hidden="true" {...props}>
+      <path d="M4 8h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function TaskStatusIcon({ state }) {
+  if (state === 'confirmed') {
     return (
-      <ListGroup.Item className="d-flex justify-content-between align-items-start gap-2">
-        <div>
-          <div className="text-decoration-line-through text-body-secondary">{requirement.label}</div>
-          {filename && (
-            <div className="small text-body-secondary">
-              {filename} · {requirement.completed_by_username ?? 'Unknown'}
-              {requirement.completed_at && (
-                <> · {formatDistanceToNow(new Date(requirement.completed_at), { addSuffix: true })}</>
-              )}
-            </div>
-          )}
-        </div>
-        <Badge bg="success">Done</Badge>
-      </ListGroup.Item>
+      <span className="text-success" title="Confirmed">
+        <CheckIcon />
+      </span>
     )
   }
-
+  if (state === 'awaiting') {
+    return (
+      <span className="text-warning" title="Awaiting confirmation">
+        <ClockIcon />
+      </span>
+    )
+  }
+  if (state === 'not_applicable') {
+    return (
+      <span className="text-body-secondary" title="Not applicable">
+        <DashIcon />
+      </span>
+    )
+  }
   return (
-    <ListGroup.Item>
-      <div className="d-flex justify-content-between align-items-center gap-2 mb-2">
-        <span>{requirement.label}</span>
-        <Badge bg="secondary">Pending</Badge>
-      </div>
-      <Form.Control
-        type="file"
-        size="sm"
-        disabled={uploading}
-        onChange={(event) => {
-          const file = event.target.files?.[0]
-          if (file) onUpload(requirement.id, file)
-        }}
-      />
+    <span className="text-body-secondary" title="Pending">
+      <CircleIcon />
+    </span>
+  )
+}
+
+function TaskRow({ task, onOpen }) {
+  const state = getTaskState(task)
+  return (
+    <ListGroup.Item action onClick={() => onOpen(task)} className="d-flex align-items-center gap-2">
+      <TaskStatusIcon state={state} />
+      <span className={`flex-grow-1 ${state === 'not_applicable' ? 'text-decoration-line-through text-body-secondary' : ''}`}>
+        {task.label}
+      </span>
+      <Badge bg={task.confirmation_authority === 'MANAGER' ? 'info' : 'secondary'}>
+        {task.confirmation_authority === 'MANAGER' ? 'Manager' : 'Rep'}
+      </Badge>
     </ListGroup.Item>
   )
 }
 
-function PhaseCard({ phaseNum, status, progress, requirements, uploadingId, onUpload, pendingSignoff, onRequestSignoff }) {
+function TaskDetailForm({ task, canConfirm, saving, error, onSave, onConfirm, onHide }) {
+  // Keyed by task.id from the parent, so switching tasks remounts this with
+  // fresh initial state instead of needing an effect to resync it.
+  const [draftStatus, setDraftStatus] = useState(task.status)
+  const [draftNotes, setDraftNotes] = useState(task.notes ?? '')
+
+  const awaitingConfirmation =
+    task.status === 'COMPLETED' && task.confirmation_authority === 'MANAGER' && !task.confirmed_by
+
+  return (
+    <>
+      <Modal.Header closeButton>
+        <Modal.Title as="h2" className="h5 mb-0">
+          {task.label}
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {task.description && <p className="text-body-secondary">{task.description}</p>}
+        {error && <Alert variant="danger">{error}</Alert>}
+        <Form.Group className="mb-3" controlId="task-status">
+          <Form.Label>Status</Form.Label>
+          <Form.Select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
+            {TASK_STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Form.Select>
+        </Form.Group>
+        <Form.Group className="mb-3" controlId="task-notes">
+          <Form.Label>Notes</Form.Label>
+          <Form.Control
+            as="textarea"
+            rows={3}
+            value={draftNotes}
+            onChange={(event) => setDraftNotes(event.target.value)}
+          />
+        </Form.Group>
+        <div className="text-body-secondary small">
+          {task.updated_by_username ? (
+            <>
+              Last updated by {task.updated_by_username}
+              {task.updated_at && (
+                <> · {formatDistanceToNow(new Date(task.updated_at), { addSuffix: true })}</>
+              )}
+            </>
+          ) : (
+            'Not yet updated.'
+          )}
+        </div>
+      </Modal.Body>
+      <Modal.Footer>
+        {canConfirm && awaitingConfirmation && (
+          <Button variant="outline-success" className="me-auto" disabled={saving} onClick={onConfirm}>
+            Confirm
+          </Button>
+        )}
+        <Button variant="secondary" onClick={onHide} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" disabled={saving} onClick={() => onSave(draftStatus, draftNotes)}>
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </Modal.Footer>
+    </>
+  )
+}
+
+function TaskDetailModal({ task, canConfirm, saving, error, onSave, onConfirm, onHide }) {
+  return (
+    <Modal show={Boolean(task)} onHide={onHide} centered>
+      {task && (
+        <TaskDetailForm
+          key={task.id}
+          task={task}
+          canConfirm={canConfirm}
+          saving={saving}
+          error={error}
+          onSave={onSave}
+          onConfirm={onConfirm}
+          onHide={onHide}
+        />
+      )}
+    </Modal>
+  )
+}
+
+function PhaseCard({ phaseNum, status, progress, tasks, onOpenTask, pendingSignoff, onRequestSignoff }) {
   const allComplete = progress.total > 0 && progress.completed === progress.total
   const canRequestSignoff = allComplete && status !== 'COMPLETE'
 
   return (
-    <Card className="h-100">
+    <Card className="mb-3">
       <Card.Header className="d-flex justify-content-between align-items-center">
-        <span>Phase {phaseNum}</span>
+        <span className="fw-semibold">Phase {phaseNum}</span>
         <Badge bg={PHASE_STATUS_BADGE_VARIANT[status] ?? 'secondary'}>
           {PHASE_STATUS_LABELS[status] ?? status}
         </Badge>
       </Card.Header>
-      <Card.Body className="d-flex flex-column">
+      <Card.Body>
         <ProgressBar now={progress.percent} label={`${progress.percent}%`} className="mb-3" />
         <ListGroup variant="flush" className="mb-3">
-          {requirements.map((requirement) => (
-            <RequirementItem
-              key={requirement.id}
-              requirement={requirement}
-              onUpload={onUpload}
-              uploading={uploadingId === requirement.id}
-            />
+          {tasks.map((task) => (
+            <TaskRow key={task.id} task={task} onOpen={onOpenTask} />
           ))}
         </ListGroup>
         {canRequestSignoff && (
           <Button
             size="sm"
             variant="outline-primary"
-            className="mt-auto"
             disabled={pendingSignoff}
             onClick={() => onRequestSignoff(phaseNum)}
           >
@@ -138,16 +281,21 @@ function PhaseCard({ phaseNum, status, progress, requirements, uploadingId, onUp
   )
 }
 
-function PhaseTracker({ companyId }) {
+function PhaseTracker({ leadId }) {
+  const { user } = useAuth()
+  const canConfirm = MANAGEMENT_ROLES.has(user?.role)
+
   const [project, setProject] = useState(null)
   const [loadingProject, setLoadingProject] = useState(true)
   const [projectError, setProjectError] = useState(null)
 
-  const [requirements, setRequirements] = useState([])
+  const [tasks, setTasks] = useState([])
 
-  const [uploadingId, setUploadingId] = useState(null)
-  const [uploadError, setUploadError] = useState(null)
   const [signoffError, setSignoffError] = useState(null)
+
+  const [activeTask, setActiveTask] = useState(null)
+  const [taskSaving, setTaskSaving] = useState(false)
+  const [taskError, setTaskError] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -156,7 +304,7 @@ function PhaseTracker({ companyId }) {
       setLoadingProject(true)
       setProjectError(null)
       try {
-        const data = await get(`/api/projects/?company=${companyId}`)
+        const data = await get(`/api/projects/?lead=${leadId}`)
         if (!cancelled) setProject(data[0] ?? null)
       } catch {
         if (!cancelled) setProjectError('Failed to load project.')
@@ -169,45 +317,66 @@ function PhaseTracker({ companyId }) {
     return () => {
       cancelled = true
     }
-  }, [companyId])
+  }, [leadId])
 
   useEffect(() => {
     let cancelled = false
 
-    async function fetchRequirements() {
+    async function fetchTasks() {
       if (!project) {
-        setRequirements([])
+        setTasks([])
         return
       }
       try {
         const data = await get(`/api/requirements/?project=${project.id}`)
-        if (!cancelled) setRequirements(data)
+        if (!cancelled) setTasks(data)
       } catch {
-        if (!cancelled) setRequirements([])
+        if (!cancelled) setTasks([])
       }
     }
 
-    fetchRequirements()
+    fetchTasks()
     return () => {
       cancelled = true
     }
   }, [project])
 
-  async function handleUpload(requirementId, file) {
-    setUploadingId(requirementId)
-    setUploadError(null)
+  async function refreshProject() {
+    const refreshed = await get(`/api/projects/${project.id}/`)
+    setProject(refreshed)
+  }
+
+  async function applyTaskUpdate(payload) {
+    if (!activeTask) return
+    setTaskSaving(true)
+    setTaskError(null)
     try {
-      const formData = new FormData()
-      formData.append('document', file)
-      const updated = await patch(`/api/requirements/${requirementId}/`, formData)
-      setRequirements((prev) => prev.map((r) => (r.id === requirementId ? updated : r)))
-      const refreshedProject = await get(`/api/projects/${project.id}/`)
-      setProject(refreshedProject)
+      const updated = await patch(`/api/requirements/${activeTask.id}/`, payload)
+      setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+      await refreshProject()
+      setActiveTask(null)
     } catch {
-      setUploadError('Failed to upload document.')
+      setTaskError('Failed to save the task.')
     } finally {
-      setUploadingId(null)
+      setTaskSaving(false)
     }
+  }
+
+  function handleSaveTask(taskStatus, notes) {
+    applyTaskUpdate({ status: taskStatus, notes })
+  }
+
+  function handleConfirmTask() {
+    applyTaskUpdate({ status: 'COMPLETED' })
+  }
+
+  function openTask(task) {
+    setTaskError(null)
+    setActiveTask(task)
+  }
+
+  function closeTaskModal() {
+    setActiveTask(null)
   }
 
   async function handleRequestSignoff(phaseNum) {
@@ -217,8 +386,7 @@ function PhaseTracker({ companyId }) {
         request_type: `PHASE_${phaseNum}_SIGNOFF`,
         project: project.id,
       })
-      const refreshedProject = await get(`/api/projects/${project.id}/`)
-      setProject(refreshedProject)
+      await refreshProject()
     } catch {
       setSignoffError(`Failed to request phase ${phaseNum} sign-off.`)
     }
@@ -237,22 +405,19 @@ function PhaseTracker({ companyId }) {
       ) : projectError ? (
         <Alert variant="danger">{projectError}</Alert>
       ) : !project ? (
-        <Row className="g-3">
+        <div className="d-flex flex-column gap-3">
           {PHASE_NUMBERS.map((phaseNum) => (
-            <Col md={4} key={phaseNum}>
-              <Card className="h-100 opacity-50">
-                <Card.Header>Phase {phaseNum}</Card.Header>
-                <Card.Body>
-                  <p className="text-body-secondary mb-0">Phases begin once the deal is Closed-Won.</p>
-                </Card.Body>
-              </Card>
-            </Col>
+            <Card key={phaseNum} className="opacity-50">
+              <Card.Header>Phase {phaseNum}</Card.Header>
+              <Card.Body>
+                <p className="text-body-secondary mb-0">Phases begin once the deal is Closed-Won.</p>
+              </Card.Body>
+            </Card>
           ))}
-        </Row>
+        </div>
       ) : (
         <>
           {signoffError && <Alert variant="danger">{signoffError}</Alert>}
-          {uploadError && <Alert variant="danger">{uploadError}</Alert>}
           <div className="mb-3">
             <div className="d-flex justify-content-between small text-body-secondary mb-1">
               <span>Overall progress</span>
@@ -260,24 +425,30 @@ function PhaseTracker({ companyId }) {
             </div>
             <ProgressBar now={project.overall_progress} />
           </div>
-          <Row className="g-3">
-            {PHASE_NUMBERS.map((phaseNum) => (
-              <Col md={4} key={phaseNum}>
-                <PhaseCard
-                  phaseNum={phaseNum}
-                  status={project[`phase_${phaseNum}_status`]}
-                  progress={project.phase_progress[phaseNum]}
-                  requirements={requirements.filter((r) => r.phase === phaseNum)}
-                  uploadingId={uploadingId}
-                  onUpload={handleUpload}
-                  pendingSignoff={project.pending_approval_requests?.includes(`PHASE_${phaseNum}_SIGNOFF`)}
-                  onRequestSignoff={handleRequestSignoff}
-                />
-              </Col>
-            ))}
-          </Row>
+          {PHASE_NUMBERS.map((phaseNum) => (
+            <PhaseCard
+              key={phaseNum}
+              phaseNum={phaseNum}
+              status={project[`phase_${phaseNum}_status`]}
+              progress={project.phase_progress[phaseNum]}
+              tasks={tasks.filter((t) => t.phase === phaseNum)}
+              onOpenTask={openTask}
+              pendingSignoff={project.pending_approval_requests?.includes(`PHASE_${phaseNum}_SIGNOFF`)}
+              onRequestSignoff={handleRequestSignoff}
+            />
+          ))}
         </>
       )}
+
+      <TaskDetailModal
+        task={activeTask}
+        canConfirm={canConfirm}
+        saving={taskSaving}
+        error={taskError}
+        onSave={handleSaveTask}
+        onConfirm={handleConfirmTask}
+        onHide={closeTaskModal}
+      />
     </div>
   )
 }
@@ -404,7 +575,7 @@ export default function LeadDetail() {
             </Col>
           </Row>
 
-          <PhaseTracker companyId={lead.company} />
+          <PhaseTracker leadId={lead.id} />
 
           <Card className="mb-4">
             <Card.Body>

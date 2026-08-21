@@ -230,7 +230,7 @@ class InteractionViewSet(viewsets.ModelViewSet):
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated, ArchivableOwnedResourcePermission]
-    filterset_fields = ['company']
+    filterset_fields = ['company', 'lead']
     ordering_fields = ['created_at']
     ordering = ['-created_at']
 

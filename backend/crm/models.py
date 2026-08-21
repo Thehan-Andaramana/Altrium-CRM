@@ -313,6 +313,7 @@ class Project(models.Model):
                     project=self,
                     phase=template.phase,
                     label=template.label,
+                    description=template.description,
                     confirmation_authority=template.confirmation_authority,
                 )
                 for template in RequirementTemplate.objects.filter(is_active=True).order_by('phase', 'order')
@@ -337,6 +338,7 @@ class PhaseRequirement(models.Model):
     )
     phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(3)])
     label = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
     status = models.CharField(max_length=14, choices=Status.choices, default=Status.PENDING)
     notes = models.TextField(blank=True)
     confirmation_authority = models.CharField(
