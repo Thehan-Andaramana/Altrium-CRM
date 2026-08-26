@@ -27,14 +27,14 @@ function UpDownIcon({ direction, ...props }) {
   )
 }
 
-function TemplateFormFields({ label, setLabel, description, setDescription }) {
+function TemplateFormFields({ label, setLabel, description, setDescription, durationDays, setDurationDays }) {
   return (
     <>
       <Form.Group className="mb-3" controlId="template-label">
         <Form.Label>Label</Form.Label>
         <Form.Control value={label} onChange={(event) => setLabel(event.target.value)} required />
       </Form.Group>
-      <Form.Group controlId="template-description">
+      <Form.Group className="mb-3" controlId="template-description">
         <Form.Label>Description</Form.Label>
         <Form.Control
           as="textarea"
@@ -42,6 +42,20 @@ function TemplateFormFields({ label, setLabel, description, setDescription }) {
           value={description}
           onChange={(event) => setDescription(event.target.value)}
         />
+      </Form.Group>
+      <Form.Group controlId="template-duration">
+        <Form.Label>Default duration (days)</Form.Label>
+        <Form.Control
+          type="number"
+          min="1"
+          step="1"
+          placeholder="No deadline"
+          value={durationDays}
+          onChange={(event) => setDurationDays(event.target.value)}
+        />
+        <Form.Text className="text-body-secondary">
+          Days from the phase's start until this task is due. Leave blank for no deadline.
+        </Form.Text>
       </Form.Group>
     </>
   )
@@ -52,12 +66,15 @@ function EditTemplateForm({ template, saving, error, onSave, onHide }) {
   // this with fresh initial state instead of needing an effect to resync it.
   const [label, setLabel] = useState(template.label)
   const [description, setDescription] = useState(template.description ?? '')
+  const [durationDays, setDurationDays] = useState(
+    template.default_duration_days != null ? String(template.default_duration_days) : '',
+  )
 
   return (
     <Form
       onSubmit={(event) => {
         event.preventDefault()
-        onSave({ label, description })
+        onSave({ label, description, durationDays })
       }}
     >
       <Modal.Header closeButton>
@@ -72,6 +89,8 @@ function EditTemplateForm({ template, saving, error, onSave, onHide }) {
           setLabel={setLabel}
           description={description}
           setDescription={setDescription}
+          durationDays={durationDays}
+          setDurationDays={setDurationDays}
         />
       </Modal.Body>
       <Modal.Footer>
@@ -99,13 +118,14 @@ function EditTemplateModal({ template, saving, error, onSave, onHide }) {
 function AddTemplateModal({ phase, saving, error, onSave, onHide }) {
   const [label, setLabel] = useState('')
   const [description, setDescription] = useState('')
+  const [durationDays, setDurationDays] = useState('')
 
   return (
     <Modal show onHide={onHide} centered>
       <Form
         onSubmit={(event) => {
           event.preventDefault()
-          onSave({ label, description })
+          onSave({ label, description, durationDays })
         }}
       >
         <Modal.Header closeButton>
@@ -120,6 +140,8 @@ function AddTemplateModal({ phase, saving, error, onSave, onHide }) {
             setLabel={setLabel}
             description={description}
             setDescription={setDescription}
+            durationDays={durationDays}
+            setDurationDays={setDurationDays}
           />
         </Modal.Body>
         <Modal.Footer>
@@ -145,6 +167,7 @@ function TemplateRow({
   onToggleActive,
   onAuthorityChange,
   onClientFacingChange,
+  onDurationChange,
 }) {
   return (
     <ListGroup.Item className="d-flex align-items-center gap-2">
@@ -180,6 +203,36 @@ function TemplateRow({
           )}
         </div>
         {template.description && <div className="text-body-secondary small">{template.description}</div>}
+      </div>
+      <div className="d-flex align-items-center gap-1">
+        <Form.Label htmlFor={`duration-${template.id}`} className="mb-0 small text-nowrap">
+          Due after
+        </Form.Label>
+        <Form.Control
+          // Uncontrolled + keyed on the committed value, so typing doesn't
+          // fire a PATCH (and disable the field) after every keystroke --
+          // only on blur/Enter. The key forces it to pick up external
+          // changes (a successful save, or someone else's edit) by remounting.
+          key={template.default_duration_days ?? 'none'}
+          id={`duration-${template.id}`}
+          type="number"
+          size="sm"
+          min="1"
+          step="1"
+          style={{ width: '4.5rem' }}
+          placeholder="None"
+          defaultValue={template.default_duration_days ?? ''}
+          disabled={busy}
+          onBlur={(event) => onDurationChange(template, event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              event.target.blur()
+            }
+          }}
+          aria-label={`Due after (days) for ${template.label}`}
+        />
+        <span className="small text-body-secondary text-nowrap">days</span>
       </div>
       <Form.Select
         size="sm"
@@ -341,11 +394,33 @@ export default function RequirementTemplates() {
     }
   }
 
-  async function handleEditSave(payload) {
+  async function handleDurationChange(template, rawValue) {
+    const parsed = rawValue === '' ? null : Number(rawValue)
+    if (parsed === (template.default_duration_days ?? null)) {
+      return
+    }
+    setBusyId(template.id)
+    setRowError(null)
+    try {
+      const updated = await patch(`/api/requirement-templates/${template.id}/`, {
+        default_duration_days: parsed,
+      })
+      setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+    } catch {
+      setRowError('Failed to update the due-after duration.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function handleEditSave({ durationDays, ...payload }) {
     setEditSaving(true)
     setEditError(null)
     try {
-      const updated = await patch(`/api/requirement-templates/${editingTemplate.id}/`, payload)
+      const updated = await patch(`/api/requirement-templates/${editingTemplate.id}/`, {
+        ...payload,
+        default_duration_days: durationDays === '' ? null : Number(durationDays),
+      })
       setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
       setEditingTemplate(null)
     } catch {
@@ -355,7 +430,7 @@ export default function RequirementTemplates() {
     }
   }
 
-  async function handleAddSave(payload) {
+  async function handleAddSave({ durationDays, ...payload }) {
     setAddSaving(true)
     setAddError(null)
     try {
@@ -363,6 +438,7 @@ export default function RequirementTemplates() {
       const maxOrder = siblings.reduce((max, t) => Math.max(max, t.order), 0)
       const created = await post('/api/requirement-templates/', {
         ...payload,
+        default_duration_days: durationDays === '' ? null : Number(durationDays),
         phase: addPhase,
         order: maxOrder + 1,
         confirmation_authority: 'REP',
@@ -419,6 +495,7 @@ export default function RequirementTemplates() {
                         onToggleActive={handleToggleActive}
                         onAuthorityChange={handleAuthorityChange}
                         onClientFacingChange={handleClientFacingChange}
+                        onDurationChange={handleDurationChange}
                       />
                     ))}
                   </ListGroup>
