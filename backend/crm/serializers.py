@@ -294,6 +294,33 @@ class ProjectSerializer(serializers.ModelSerializer):
 
         return project
 
+    @classmethod
+    def complete_phase(cls, project, phase_num):
+        # Shared by the manual "PATCH phase_N_status=COMPLETE" path (via
+        # update(), once an approved signoff already exists) and by
+        # ApprovalRequestSerializer approving that same signoff automatically
+        # -- same completion + downstream effects either way. A no-op if the
+        # phase is already complete, so approving a signoff after someone
+        # already completed it manually (or vice versa) is harmless.
+        field_name = cls.PHASE_FIELDS[phase_num - 1]
+        if getattr(project, field_name) == Project.PhaseStatus.COMPLETE:
+            return project
+
+        setattr(project, field_name, Project.PhaseStatus.COMPLETE)
+        project.save(update_fields=[field_name])
+
+        if phase_num == 1:
+            cls._advance_after_phase_1_complete(project)
+        elif phase_num == 2:
+            if project.phase_3_status == Project.PhaseStatus.NOT_STARTED:
+                project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
+                project.save(update_fields=['phase_3_status'])
+        elif phase_num == 3 and not project.maintenance:
+            project.maintenance = True
+            project.save(update_fields=['maintenance'])
+
+        return project
+
     @staticmethod
     def _advance_after_phase_1_complete(project):
         deal = project.deal or Deal.objects.filter(company=project.company).order_by('-id').first()
@@ -404,6 +431,12 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
     company_name = serializers.SerializerMethodField()
     phase_number = serializers.SerializerMethodField()
 
+    PHASE_SIGNOFF_PHASE_NUMBERS = {
+        ApprovalRequest.RequestType.PHASE_1_SIGNOFF: 1,
+        ApprovalRequest.RequestType.PHASE_2_SIGNOFF: 2,
+        ApprovalRequest.RequestType.PHASE_3_SIGNOFF: 3,
+    }
+
     class Meta:
         model = ApprovalRequest
         fields = [
@@ -484,30 +517,53 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
         new_status = validated_data.get('status')
         if new_status and new_status != instance.status:
             request = self.context['request']
-            instance.decided_by = request.user
-            instance.decided_at = timezone.now()
-            if new_status == ApprovalRequest.Status.APPROVED:
-                self._apply_approval_side_effect(instance, request)
+            with transaction.atomic():
+                instance.decided_by = request.user
+                instance.decided_at = timezone.now()
+                if new_status == ApprovalRequest.Status.APPROVED:
+                    self._apply_approval_side_effect(instance, request)
+                elif new_status == ApprovalRequest.Status.REJECTED:
+                    self._apply_rejection_side_effect(instance)
+                return super().update(instance, validated_data)
         return super().update(instance, validated_data)
 
-    @staticmethod
-    def _apply_approval_side_effect(instance, request):
-        if instance.request_type != ApprovalRequest.RequestType.ARCHIVE_LEAD:
+    @classmethod
+    def _apply_approval_side_effect(cls, instance, request):
+        if instance.request_type == ApprovalRequest.RequestType.ARCHIVE_LEAD:
+            lead = instance.lead
+            if lead is None or lead.is_archived:
+                return
+            lead.is_archived = True
+            lead.archived_by = request.user
+            lead.archived_at = timezone.now()
+            lead.archive_reason = instance.reason or 'Archived via an approved archive request.'
+            lead.save()
+            ActivityEvent.record(
+                lead,
+                ActivityEvent.Category.DESTRUCTIVE,
+                f'Lead archived: {lead.archive_reason}',
+                actor=request.user,
+            )
             return
-        lead = instance.lead
-        if lead is None or lead.is_archived:
+
+        # Phase sign-off requests: approving one completes that phase on the
+        # linked Project (and its downstream effects), the same way approving
+        # an ARCHIVE_LEAD request archives the lead above.
+        phase_num = cls.PHASE_SIGNOFF_PHASE_NUMBERS.get(instance.request_type)
+        if phase_num is None or instance.project is None:
             return
-        lead.is_archived = True
-        lead.archived_by = request.user
-        lead.archived_at = timezone.now()
-        lead.archive_reason = instance.reason or 'Archived via an approved archive request.'
-        lead.save()
-        ActivityEvent.record(
-            lead,
-            ActivityEvent.Category.DESTRUCTIVE,
-            f'Lead archived: {lead.archive_reason}',
-            actor=request.user,
-        )
+        ProjectSerializer.complete_phase(instance.project, phase_num)
+
+    @classmethod
+    def _apply_rejection_side_effect(cls, instance):
+        phase_num = cls.PHASE_SIGNOFF_PHASE_NUMBERS.get(instance.request_type)
+        if phase_num is None or instance.project is None:
+            return
+        project = instance.project
+        field_name = ProjectSerializer.PHASE_FIELDS[phase_num - 1]
+        if getattr(project, field_name) == Project.PhaseStatus.AWAITING_APPROVAL:
+            setattr(project, field_name, Project.PhaseStatus.IN_PROGRESS)
+            project.save(update_fields=[field_name])
 
 
 class ActivityEventSerializer(serializers.ModelSerializer):

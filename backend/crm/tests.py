@@ -566,6 +566,83 @@ class ProjectPhase1DealAdvanceTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.IN_PROGRESS)
 
 
+class ApprovalPhaseSignoffAutoCompletionTests(ProjectRequirementsTestMixin, APITestCase):
+    def _create_signoff(self, request_type):
+        return ApprovalRequest.objects.create(
+            request_type=request_type, project=self.project, requested_by=self.rep,
+        )
+
+    def _decide(self, approval, decision):
+        url = reverse('approvalrequest-detail', args=[approval.id])
+        payload = {'status': decision}
+        if decision == ApprovalRequest.Status.REJECTED:
+            payload['decision_note'] = 'Needs rework'
+        return self.client.patch(url, payload, format='json')
+
+    def test_approving_phase_1_signoff_completes_phase_1_and_advances_deal_and_phase_2(self):
+        self.assertIsNone(self.project.deal)
+        approval = self._create_signoff(ApprovalRequest.RequestType.PHASE_1_SIGNOFF)
+
+        response = self._decide(approval, ApprovalRequest.Status.APPROVED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.COMPLETE)
+        self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.IN_PROGRESS)
+        self.assertEqual(self.project.deal, self.deal)
+        self.deal.refresh_from_db()
+        self.assertEqual(self.deal.stage, Deal.Stage.CLOSED_WON)
+
+    def test_approving_phase_2_signoff_completes_phase_2_and_advances_phase_3(self):
+        self.project.phase_1_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_2_status = Project.PhaseStatus.IN_PROGRESS
+        self.project.save()
+        approval = self._create_signoff(ApprovalRequest.RequestType.PHASE_2_SIGNOFF)
+
+        response = self._decide(approval, ApprovalRequest.Status.APPROVED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.COMPLETE)
+        self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.IN_PROGRESS)
+
+    def test_approving_phase_3_signoff_completes_phase_3_and_sets_maintenance(self):
+        self.project.phase_1_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_2_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
+        self.project.save()
+        approval = self._create_signoff(ApprovalRequest.RequestType.PHASE_3_SIGNOFF)
+
+        response = self._decide(approval, ApprovalRequest.Status.APPROVED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.COMPLETE)
+        self.assertTrue(self.project.maintenance)
+
+    def test_rejecting_phase_signoff_returns_awaiting_approval_phase_to_in_progress(self):
+        self.project.phase_1_status = Project.PhaseStatus.AWAITING_APPROVAL
+        self.project.save()
+        approval = self._create_signoff(ApprovalRequest.RequestType.PHASE_1_SIGNOFF)
+
+        response = self._decide(approval, ApprovalRequest.Status.REJECTED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.IN_PROGRESS)
+
+    def test_rejecting_phase_signoff_leaves_in_progress_phase_unchanged(self):
+        # phase_1_status is already IN_PROGRESS from Lead creation -- rejection
+        # should not error or touch it when it was never AWAITING_APPROVAL.
+        approval = self._create_signoff(ApprovalRequest.RequestType.PHASE_1_SIGNOFF)
+
+        response = self._decide(approval, ApprovalRequest.Status.REJECTED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.IN_PROGRESS)
+
+
 class ArchiveTestMixin:
     def setUp(self):
         self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
