@@ -1,466 +1,210 @@
 # Altrium CRM
 
-Customer Relationship Management and Sales Pipeline Management System.
+Sales pipeline and project lifecycle management. Django REST API + React SPA + PostgreSQL.
 
-Built as a university group project using Agile/Scrum over two sprints.
-
-**Stack:** Django REST Framework API + React SPA + PostgreSQL
+University group project — Agile/Scrum, two sprints.
 
 ---
 
-## Table of contents
+## Quick start
 
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [First-time setup](#first-time-setup)
-- [Running the project](#running-the-project)
-- [Ports and configuration](#ports-and-configuration)
-- [Project structure](#project-structure)
-- [Data model](#data-model)
-- [Roles and permissions](#roles-and-permissions)
-- [API reference](#api-reference)
-- [Testing](#testing)
-- [Common tasks](#common-tasks)
-- [Troubleshooting](#troubleshooting)
-- [Current status](#current-status)
-
----
-
-## Architecture
-
-```
-React SPA (Vite, port 3000)
-        │
-        │  requests to /api/* are proxied by Vite
-        ▼
-Django + DRF (port 8000 by default)
-        │
-        ▼
-PostgreSQL 16 (Docker, port 5432 by default)
-```
-
-**Why the proxy matters.** Vite forwards `/api` requests to Django, so the
-browser treats everything as one origin. That means no CORS configuration and
-no JWT tokens — Django's normal session cookie handles authentication. The
-same pattern is used in production via a `vercel.json` rewrite.
-
----
-
-## Prerequisites
-
-Install these before anything else. On Windows, `winget` handles all of them:
-
-```powershell
-winget install Git.Git
-winget install Python.Python.3.12
-winget install OpenJS.NodeJS.LTS
-winget install Docker.DockerDesktop
-```
-
-Restart your machine after installing Docker Desktop — it needs WSL2, which
-only activates on reboot.
-
-Verify everything (in a **new** terminal, so PATH updates are picked up):
-
-```powershell
-git --version
-python --version
-node --version
-docker --version
-```
-
----
-
-## First-time setup
-
-### 1. Clone and open
+**You need:** Docker Desktop running, Python 3.12, Node.js, Git.
 
 ```powershell
 git clone https://github.com/Thehan-Andaramana/Altrium-CRM.git
 cd Altrium-CRM
-code .
-```
 
-### 2. Allow virtual environments to activate (Windows only, once per machine)
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-Answer `Y`. Without this, PowerShell refuses to run the venv activation
-script.
-
-### 3. Create your environment files
-
-None of these are committed — each developer makes their own from the
-`.example` files.
-
-```powershell
+# 1. Environment files (not committed — make your own)
 Copy-Item .env.example .env
 Copy-Item backend\.env.example backend\.env
 Copy-Item frontend\.env.example frontend\.env
-```
 
-Then open `backend/.env` and set a `SECRET_KEY` (any long random string is
-fine for local development).
-
-> **Important:** `DB_PORT` in the root `.env` and the port inside
-> `DATABASE_URL` in `backend/.env` must be the same number. A mismatch means
-> Docker serves the database on one port while Django knocks on another, and
-> the error message won't make that obvious.
-
-### 4. Start the database
-
-```powershell
+# 2. Database
 docker compose up -d
-docker compose ps
-```
 
-Wait until STATUS shows `Up`. Docker Desktop must be running.
-
-### 5. Set up the backend
-
-```powershell
+# 3. Backend
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py createsuperuser
-```
+python manage.py seed_demo
 
-Your prompt should show `(.venv)` after activation. Every new terminal needs
-this activation again before `manage.py` commands will work.
-
-### 6. Set up the frontend
-
-```powershell
+# 4. Frontend
 cd ..\frontend
 npm install
 ```
 
----
+**Then run it** — VS Code: `Ctrl+Shift+P` → Run Task → **Start Altrium CRM**.
 
-## Running the project
-
-Three terminals, all with Docker Desktop running.
-
-**Terminal 1 — database**
+Or three terminals:
 
 ```powershell
-docker compose up -d
+docker compose up -d                                                       # terminal 1
+cd backend; .\.venv\Scripts\Activate.ps1; python manage.py runserver 9000  # terminal 2
+cd frontend; npm run dev                                                   # terminal 3
 ```
 
-**Terminal 2 — backend**
-
-```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
-python manage.py runserver
-```
-
-**Terminal 3 — frontend**
-
-```powershell
-cd frontend
-npm run dev
-```
-
-Then open:
-
-| URL | What it is |
+| | |
 |---|---|
-| http://localhost:3000 | React app |
-| http://localhost:8000/admin | Django admin |
-| http://localhost:8000/api/docs | Swagger API documentation |
+| **App** | http://localhost:3000 |
+| Django admin | http://127.0.0.1:9000/admin |
+| API docs (Swagger) | http://127.0.0.1:9000/api/docs |
 
-Stop a server with `Ctrl + C`. Stop the database with `docker compose down`
-(your data is kept). `docker compose down -v` deletes the data too.
+**Test logins** — password `testpass123`:
 
----
-
-## Ports and configuration
-
-**Defaults:** Postgres `5432`, Django `8000`, Vite `3000`.
-
-If a port is already taken — by another project, or by a Windows reserved
-range — override it. Nothing committed needs editing.
-
-| Port | Set in | Variable |
-|---|---|---|
-| Postgres | root `.env` | `DB_PORT` |
-| Django | command line | `python manage.py runserver 9000` |
-| Vite | `frontend/.env` | `FRONTEND_PORT` |
-
-Changing the Postgres port means updating **two** files: `DB_PORT` in the root
-`.env`, and the port inside `DATABASE_URL` in `backend/.env`.
-
-Changing the Django port means updating `BACKEND_URL` in `frontend/.env` so
-the Vite proxy still finds it.
-
-### Environment files
-
-| File | Read by | Contains |
-|---|---|---|
-| `.env` (root) | Docker Compose | `DB_PORT` |
-| `backend/.env` | Django | `DATABASE_URL`, `SECRET_KEY`, `DEBUG` |
-| `frontend/.env` | Vite | `FRONTEND_PORT`, `BACKEND_URL` |
-
-All three are gitignored. The matching `.env.example` files are committed and
-document what's required.
+| User | Role |
+|---|---|
+| `rep1`, `rep2` | Sales Rep |
+| `mgr1` | Sales Manager |
 
 ---
 
-## Project structure
+## Something broken?
+
+**`ports are not available`** — Windows reserves TCP ranges for Hyper-V, and they
+change on every reboot. Check what's blocked:
+
+```powershell
+netsh interface ipv4 show excludedportrange protocol=tcp
+```
+
+Pick a free port, set `DB_PORT` in the root `.env`, and update `DATABASE_URL` in
+`backend/.env` to match. **Both files, same number** — a mismatch is the most
+common cause of connection errors.
+
+**`Connection refused`** — Docker Desktop not running, container not up
+(`docker compose ps`), or the port mismatch above.
+
+**`manage.py` not recognised** — virtual environment not active. Your prompt
+should show `(.venv)`. Run `.\.venv\Scripts\Activate.ps1`.
+
+**Vite `EACCES: permission denied`** — same port problem. Set `FRONTEND_PORT`
+in `frontend/.env`.
+
+**404 at `localhost:9000/`** — expected. It's an API-only backend; use `/admin`
+or `/api/docs`.
+
+**`python` opens the Microsoft Store** — search "Manage app execution aliases"
+in the Start menu and turn off `python.exe` and `python3.exe`.
+
+---
+
+## Common commands
+
+```powershell
+python manage.py test crm          # run the test suite
+python manage.py makemigrations    # after changing a model
+python manage.py migrate
+python manage.py seed_demo         # top up demo data (safe to re-run)
+docker compose down -v             # wipe the database completely
+```
+
+**After pulling teammates' changes:** `pip install -r requirements.txt`,
+`python manage.py migrate`, and `npm install` — in case dependencies or models
+moved.
+
+VS Code tasks exist for all of these: `Ctrl+Shift+P` → Run Task.
+
+---
+
+## How it works
 
 ```
-Altrium-CRM/
-├── backend/
-│   ├── config/           Django settings, root urls, wsgi
-│   ├── crm/              Application: models, serializers, views, permissions
-│   ├── manage.py
-│   ├── requirements.txt
-│   └── .env.example
-├── frontend/
-│   ├── src/
-│   ├── vite.config.js    Dev server port + /api proxy
-│   ├── package.json
-│   └── .env.example
-├── docker-compose.yml    PostgreSQL 16
-├── .env.example
-├── MEETINGS.md           Timestamped meeting and stand-up log
-└── README.md
+React SPA (port 3000)  ──/api/*──►  Django + DRF (port 9000)  ──►  PostgreSQL (Docker)
+```
+
+Vite proxies `/api` to Django, so the browser sees one origin. That means no
+CORS setup and no JWT — Django's session cookie handles auth.
+
+**Repo layout:**
+
+```
+backend/config/     Django settings and root urls
+backend/crm/        Models, serializers, views, permissions, tests
+frontend/src/       React pages, components, contexts
+docker-compose.yml  PostgreSQL 16
+.github/workflows/  CI — runs tests on every push
 ```
 
 ---
 
 ## Data model
 
-| Model | Key fields | Relationships |
-|---|---|---|
-| `User` | username, `role` | Custom model extending AbstractUser |
-| `Company` | name, industry, website, `owner` | Owned by a User; has many Contacts |
-| `Contact` | name, email, phone, job_title | Belongs to a Company |
-| `Lead` | `status` (HOT/COLD), `last_activity_at`, `assigned_to` | Links to Company, optionally Contact |
-| `Deal` | `stage`, `value`, `assigned_to` | Links to Company and Contact |
-| `SystemSettings` | `cold_lead_days` (default 14) | Singleton — only one row exists |
+**Company** → has many **Contacts** and **Leads**.
+**Lead** → auto-creates a **Project** on save. Links to a **Deal**.
+**Project** → has three phases, each with **PhaseRequirement** tasks generated
+from **RequirementTemplate**.
 
-**Pipeline stages:** NEW_LEAD → CONTACTED → PROPOSAL → NEGOTIATION →
-CLOSED_WON / CLOSED_LOST
+**Phase lifecycle** — phases begin when the Lead is created, not after the deal
+closes. Phase 1 is pre-sale (proposals, contracts, requirement discussion);
+completing it closes the Deal as CLOSED_WON and starts Phase 2 (build). Phase 3
+is client sign-off. After Phase 3, the project enters maintenance.
+
+Phases advance only via an approved **ApprovalRequest** — the rep requests
+sign-off, a manager approves.
+
+**Hot / Cold** — a lead goes COLD after `cold_lead_days` (default 14,
+configurable in Settings) with no client contact. Only interactions with outcome
+RESPONDED, and completion of tasks marked `client_facing`, count as client
+contact. Internal work is tracked separately as `last_internal_activity_at`.
 
 ---
 
-## Roles and permissions
+## Roles
 
-Five roles, set on the `User` model:
-
-| Role | Companies and Leads |
+| Role | Can do |
 |---|---|
-| `SALES_REP` | Sees and edits only records they own or are assigned. Can create new ones — always auto-assigned to themselves. **Cannot** reassign ownership. |
-| `SALES_MANAGER` | Full access to all records. Can assign and reassign accounts between reps. |
-| `EXECUTIVE_MANAGER` | Full access to all records. |
-| `DELIVERY_LEAD` | Read-only access to all records. |
-| `SYSTEM_ADMIN` | Full access. Administrative functions. |
+| **Sales Rep** | Create and edit own leads. Read any company. Log interactions, update phase tasks, request sign-offs and archives. |
+| **Sales Manager** | Everything above, plus create/edit/archive companies, leads and projects, reassign owners, confirm manager-authority tasks, approve requests, edit templates and settings. |
+| **Executive Manager** | As Sales Manager. Also approves requests raised by a Sales Manager. |
+| **Delivery Lead** | Read-only across all records. |
+| **System Admin** | Read-only on records. Can hard-delete already-archived records. Manages templates and settings. |
 
-**Account reassignment.** When a Sales Manager changes a Company's `owner`,
-all related Leads and Deals are reassigned to the new owner in a single
-database transaction.
-
-**Cold lead threshold.** Leads with no activity for `cold_lead_days` are
-marked COLD. The default is 14 days, configurable at `/api/settings/` by
-managers and above.
-
-Permission rules are enforced in DRF serializers and querysets, not just in
-the UI — a direct API call cannot bypass them.
-
----
-
-## API reference
-
-All endpoints require authentication via session cookie.
-
-### Authentication
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/api/auth/csrf/` | Sets the `csrftoken` cookie. Call before login. |
-| POST | `/api/auth/login/` | Accepts `{username, password}`. Returns `{id, username, role}`. 401 on failure. |
-| POST | `/api/auth/logout/` | Clears the session. |
-| GET | `/api/auth/me/` | Current user, or 401 if not logged in. |
-
-### Resources
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET, POST | `/api/companies/` | List and create companies |
-| GET, PUT, PATCH, DELETE | `/api/companies/{id}/` | Single company |
-| GET, POST | `/api/leads/` | List and create leads |
-| GET, PUT, PATCH, DELETE | `/api/leads/{id}/` | Single lead |
-| GET | `/api/settings/` | Read system settings |
-| PATCH | `/api/settings/` | Update settings (managers and above only) |
-
-**Filtering and search:**
-
-```
-/api/companies/?industry=IT&search=colombo
-/api/leads/?status=HOT&assigned_to=3
-```
-
-Full interactive documentation at `/api/docs`.
+Enforced in DRF permission classes and querysets — a direct API call can't
+bypass them.
 
 ---
 
 ## Testing
 
 ```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
 python manage.py test crm
 ```
 
-Frontend tests are not set up yet — see [Current status](#current-status).
+GitHub Actions runs the full suite plus a frontend build on every push and pull
+request. Check the **Actions** tab for results.
 
 ---
 
-## Common tasks
+## Contributing
 
-**After pulling changes from a teammate:**
-
-```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt    # in case dependencies changed
-python manage.py migrate           # in case models changed
-
-cd ..\frontend
-npm install                        # in case packages changed
-```
-
-**After changing a model:**
+Branch per feature, PR before merge — no direct commits to `main`.
 
 ```powershell
-python manage.py makemigrations
-python manage.py migrate
+git checkout -b feature/short-description
+# work, commit
+git push -u origin feature/short-description
 ```
 
-**Reset the database completely:**
+Then open a pull request into `develop` on GitHub and request a reviewer.
 
-```powershell
-docker compose down -v
-docker compose up -d
-cd backend
-python manage.py migrate
-python manage.py createsuperuser
-```
-
-**Adding a package:**
-
-```powershell
-# backend
-pip install <package>
-pip freeze > requirements.txt
-
-# frontend
-npm install <package>
-```
-
-Commit the updated `requirements.txt` or `package.json` so teammates get it.
+`main` receives `develop` only when a sprint is complete and stable.
 
 ---
 
-## Troubleshooting
+## Status
 
-### `ports are not available` when starting Docker
+**Working:** auth with five roles, company/contact/lead/deal CRUD, three-phase
+project tracking with manager-editable task templates and approval gates,
+interaction logging with outcomes, combined activity timeline, soft archiving
+with approval workflow, role-scoped dashboard, global search, dark/light theming
+with font and density preferences.
 
-Windows reserves TCP port ranges for Hyper-V/WSL2, and **these ranges change
-on every reboot**. If your port falls inside one, Docker can't bind to it.
+**Not built:** drag-and-drop pipeline board, executive dashboards, document
+uploads, deployment (dropped — runs locally, hosted on GitHub only).
 
-Check the current reserved ranges:
-
-```powershell
-netsh interface ipv4 show excludedportrange protocol=tcp
-```
-
-Pick a port outside every listed range and set it in the root `.env`
-(`DB_PORT`), then update `DATABASE_URL` in `backend/.env` to match.
-
-Ports above 15000 are usually safe.
-
-### Django can't connect: `Connection refused`
-
-Three things to check, in order:
-
-1. Is Docker Desktop running?
-2. Is the container up? `docker compose ps` should show STATUS `Up`
-3. Do `DB_PORT` (root `.env`) and `DATABASE_URL` (`backend/.env`) use the
-   same port?
-
-Number 3 is the most common cause.
-
-### Vite fails with `EACCES: permission denied`
-
-Same Windows reserved-range problem as above. Set `FRONTEND_PORT` in
-`frontend/.env` to a port outside the excluded ranges.
-
-### `django-admin` or `manage.py` not recognised
-
-The virtual environment isn't active. Your prompt should show `(.venv)`:
-
-```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
-```
-
-Every new terminal needs this.
-
-### `python` opens the Microsoft Store
-
-Windows' placeholder alias is intercepting the command. Search "Manage app
-execution aliases" in the Start menu and turn off `python.exe` and
-`python3.exe`.
-
-### 404 at `http://localhost:8000/`
-
-Expected. This is an API-only backend — nothing is mapped to the root path.
-Use `/admin` or `/api/docs`. Django's 404 page lists every route it knows
-about, which is useful for checking whether an endpoint registered.
-
----
-
-## Current status
-
-**Sprint 1, in progress.**
-
-### Working
-
-- PostgreSQL running in Docker
-- Custom User model with five roles
-- Company, Contact, Lead, Deal, SystemSettings models
-- Django admin with CRUD for all models
-- Session authentication endpoints for the React SPA
-- Company and Lead APIs with role-based access control
-- Configurable cold-lead threshold
-- Account reassignment with cascade to related records
-- Swagger API documentation at `/api/docs`
-
-### Not built yet
-
-- React pages — the frontend is scaffolded (Vite, Bootstrap, React Router
-  installed) but no application pages exist yet
-- Contact and Deal API endpoints
-- Interaction logging
-- Audit logging via `django-auditlog` (installed, not yet wired up)
-- Automated cold-lead job (planned as a GitHub Actions scheduled workflow)
-- File uploads via Cloudinary — deferred to Sprint 2
-- Frontend tests with Vitest
-- CI pipeline
-- Deployment to Vercel and Render
-
-### Notes for whoever picks this up
-
-- Check `MEETINGS.md` for the most recent handover notes.
-- `CLAUDE.md` in the repo root gives Claude Code context on the project —
-  worth keeping current as the codebase grows.
-- Read the diffs before accepting AI-generated code. The permission rules
-  in particular have been hand-verified; a plausible-looking change can
-  silently reintroduce a privilege escalation.
+**Notes for whoever picks this up:** check `MEETINGS.md` for handover notes, and
+read the diff before accepting AI-generated code — the permission rules have
+been hand-verified and a plausible-looking change can silently reintroduce a
+privilege escalation.
