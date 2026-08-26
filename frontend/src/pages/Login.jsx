@@ -21,7 +21,7 @@ export default function Login() {
     setSubmitting(true)
     try {
       await login(username, password)
-      navigate('/companies', { replace: true })
+      navigate('/', { replace: true })
     } catch {
       setError('Invalid username or password.')
     } finally {
