@@ -20,6 +20,7 @@ const REQUEST_TYPE_LABELS = {
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
   PHASE_3_SIGNOFF: 'Phase 3 Signoff',
+  STATUS_OVERRIDE: 'Status Override',
 }
 
 function LeadListItem({ lead, extra }) {
@@ -127,9 +128,13 @@ function ApprovalsCard({ count, items, canDecide, actioningId, actionError, onDe
                     </div>
                     <div className="text-body-secondary small">
                       {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
-                      {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''} · Requested by{' '}
+                      {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''}
+                      {approval.requested_status ? ` → ${approval.requested_status}` : ''} · Requested by{' '}
                       {approval.requested_by_username ?? 'Unknown'}
                     </div>
+                    {approval.reason && (
+                      <div className="text-body-secondary small fst-italic">{approval.reason}</div>
+                    )}
                   </div>
                   {canDecide && (
                     <div className="d-flex gap-1 flex-shrink-0">
@@ -159,6 +164,52 @@ function ApprovalsCard({ count, items, canDecide, actioningId, actionError, onDe
         <div className="mt-auto p-3 pt-2">
           <Link to="/approvals">View all</Link>
         </div>
+      </Card.Body>
+    </Card>
+  )
+}
+
+function OverdueCard({ count, items }) {
+  const visible = items.slice(0, LIST_LIMIT)
+  const remaining = count - visible.length
+
+  return (
+    <Card className="h-100" border="danger">
+      <Card.Header className="d-flex justify-content-between align-items-center">
+        <span>Overdue</span>
+        <Badge bg="danger">{count}</Badge>
+      </Card.Header>
+      <Card.Body className="d-flex flex-column p-0">
+        {visible.length === 0 ? (
+          <p className="text-body-secondary p-3 mb-0">No overdue tasks.</p>
+        ) : (
+          <ListGroup variant="flush">
+            {visible.map((task) => {
+              // A date-only string ("2026-09-05") parses as UTC midnight if
+              // handed to `new Date()` directly, which can read as the wrong
+              // day depending on the viewer's timezone -- pin to local midnight.
+              const daysOverdue = task.effective_due_date
+                ? differenceInCalendarDays(new Date(), new Date(`${task.effective_due_date}T00:00:00`))
+                : null
+              return (
+                <ListGroup.Item key={task.id} className="d-flex justify-content-between align-items-center gap-2">
+                  <div>
+                    <Link to={`/leads/${task.lead_id}`}>{task.lead_name ?? 'Unnamed lead'}</Link>
+                    <div className="text-body-secondary small">{task.label}</div>
+                  </div>
+                  {daysOverdue != null && (
+                    <Badge bg="danger" pill>
+                      {daysOverdue} {daysOverdue === 1 ? 'day' : 'days'} overdue
+                    </Badge>
+                  )}
+                </ListGroup.Item>
+              )
+            })}
+          </ListGroup>
+        )}
+        {remaining > 0 && (
+          <div className="mt-auto p-3 pt-2 text-body-secondary small">+{remaining} more</div>
+        )}
       </Card.Body>
     </Card>
   )
@@ -235,7 +286,7 @@ export default function Home() {
   return (
     <>
       <h1 className="h3 mb-3">Dashboard</h1>
-      <Row xs={1} md={2} xl={4} className="g-3">
+      <Row xs={1} md={2} xl={3} className="g-3">
         <Col>
           <LeadCard
             title="Hot Leads"
@@ -271,6 +322,9 @@ export default function Home() {
             actionError={actionError}
             onDecide={handleDecision}
           />
+        </Col>
+        <Col>
+          <OverdueCard count={dashboard.overdue_tasks.count} items={dashboard.overdue_tasks.results} />
         </Col>
       </Row>
     </>

@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth import authenticate, login, logout
+from django.db import IntegrityError
 from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Q, Subquery
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -29,6 +30,7 @@ from .permissions import (
     ArchivableOwnedResourcePermission,
     CompanyPermission,
     ContactPermission,
+    FULL_ACCESS_ROLES,
     ManagementRolePermission,
     ManagementWritePermission,
     RoleBasedAccess,
@@ -251,6 +253,72 @@ class LeadViewSet(viewsets.ModelViewSet):
         ]
         return Response(entries)
 
+    @action(detail=True, methods=['post'])
+    def set_status(self, request, pk=None):
+        lead = self.get_object()
+        new_status = request.data.get('status')
+        reason = (request.data.get('reason') or '').strip()
+
+        if new_status not in (Lead.Status.HOT, Lead.Status.COLD):
+            return Response({'status': 'Must be HOT or COLD.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not reason:
+            return Response({'reason': 'A reason is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.user.role in FULL_ACCESS_ROLES:
+            # has_object_permission already confirmed this role may apply it
+            # immediately (see ArchivableOwnedResourcePermission.set_status).
+            lead.status = new_status
+            lead.status_override = new_status
+            lead.status_override_reason = reason
+            lead.status_override_by = request.user
+            lead.status_override_at = timezone.now()
+            lead.save()
+            ActivityEvent.record(
+                lead, ActivityEvent.Category.ADMINISTRATIVE,
+                f'Status manually set to {new_status}: {reason}', actor=request.user,
+            )
+            return Response(LeadSerializer(lead, context={'request': request}).data)
+
+        # A SALES_REP on their own lead (the only other case
+        # has_object_permission allows here) -- raise an approval request
+        # instead of applying it directly.
+        try:
+            approval = ApprovalRequest.objects.create(
+                request_type=ApprovalRequest.RequestType.STATUS_OVERRIDE,
+                lead=lead,
+                requested_by=request.user,
+                requested_status=new_status,
+                reason=reason,
+            )
+        except IntegrityError:
+            return Response(
+                {'detail': 'A pending status override request already exists for this lead.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ActivityEvent.record(
+            lead, ActivityEvent.Category.ADMINISTRATIVE,
+            f'Status override to {new_status} requested: {reason}', actor=request.user,
+        )
+        return Response(
+            ApprovalRequestSerializer(approval, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['post'])
+    def clear_status_override(self, request, pk=None):
+        lead = self.get_object()
+        if lead.status_override is None:
+            return Response({'detail': 'This lead has no active status override.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        description = f'Status override cleared (was {lead.status_override}: {lead.status_override_reason})'
+        lead.status_override = None
+        lead.status_override_reason = ''
+        lead.status_override_by = None
+        lead.status_override_at = None
+        lead.save()
+        ActivityEvent.record(lead, ActivityEvent.Category.ADMINISTRATIVE, description, actor=request.user)
+        return Response(LeadSerializer(lead, context={'request': request}).data)
+
 
 class ContactViewSet(viewsets.ModelViewSet):
     serializer_class = ContactSerializer
@@ -358,7 +426,9 @@ class PhaseRequirementViewSet(viewsets.ModelViewSet):
     ordering = ['phase']
 
     def get_queryset(self):
-        queryset = PhaseRequirement.objects.select_related('project__company', 'updated_by', 'confirmed_by')
+        queryset = PhaseRequirement.objects.select_related(
+            'project__company', 'project__lead__contact', 'updated_by', 'confirmed_by',
+        )
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(project__company__owner=user)
@@ -413,9 +483,21 @@ class DashboardView(APIView):
             'requested_by', 'decided_by',
         )
 
+        # is_overdue depends on confirmation state (REP vs MANAGER authority),
+        # which isn't a simple column comparison -- narrow to candidates that
+        # could possibly be overdue in the DB, then finish precisely in
+        # Python via the model property, same approach as phase/overall
+        # progress in ProjectSerializer.
+        overdue_candidates = (
+            PhaseRequirement.objects.select_related('project__company', 'project__lead__contact')
+            .exclude(status=PhaseRequirement.Status.NOT_APPLICABLE)
+            .filter(Q(due_date__isnull=False) | Q(committed_date__isnull=False))
+        )
+
         if user.role == User.Role.SALES_REP:
             leads = leads.filter(assigned_to=user)
             approvals = approvals.filter(requested_by=user)
+            overdue_candidates = overdue_candidates.filter(project__company__owner=user)
 
         hot_leads_qs = leads.filter(status=Lead.Status.HOT).order_by(F('deal_value').desc(nulls_last=True))
         cold_leads_qs = leads.filter(status=Lead.Status.COLD).order_by('-last_activity_at')
@@ -425,6 +507,10 @@ class DashboardView(APIView):
             last_activity_at__lte=now - timedelta(days=max(cold_lead_days - 3, 0)),
         ).order_by('last_activity_at')
         pending_approvals_qs = approvals.filter(status=ApprovalRequest.Status.PENDING).order_by('-created_at')
+        overdue_tasks = sorted(
+            (r for r in overdue_candidates if r.is_overdue),
+            key=lambda r: r.effective_due_date,
+        )
 
         ctx = {'request': request}
         return Response({
@@ -443,6 +529,10 @@ class DashboardView(APIView):
             'pending_approvals': {
                 'count': pending_approvals_qs.count(),
                 'results': ApprovalRequestSerializer(pending_approvals_qs, many=True, context=ctx).data,
+            },
+            'overdue_tasks': {
+                'count': len(overdue_tasks),
+                'results': PhaseRequirementSerializer(overdue_tasks, many=True, context=ctx).data,
             },
         })
 
