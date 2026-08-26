@@ -855,7 +855,6 @@ class PhaseActivityEventTests(ProjectRequirementsTestMixin, APITestCase):
         super().setUp()
         self.lead.status = Lead.Status.COLD
         self.lead.save()
-        self.original_last_activity_at = self.lead.last_activity_at
         self.requirement = self.project.requirements.filter(
             phase=1, confirmation_authority=PhaseRequirement.ConfirmationAuthority.REP,
         ).first()
@@ -869,15 +868,9 @@ class PhaseActivityEventTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertIn(self.requirement.label, event.description)
         self.assertEqual(event.actor, self.manager)
 
-    def test_completing_a_task_does_not_flip_a_cold_lead_to_hot(self):
-        url = reverse('phaserequirement-detail', args=[self.requirement.id])
-        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-        self.lead.refresh_from_db()
-        self.assertEqual(self.lead.status, Lead.Status.COLD)
-        self.assertEqual(self.lead.last_activity_at, self.original_last_activity_at)
-        self.assertIsNotNone(self.lead.last_internal_activity_at)
+    # Whether completing a task flips a COLD lead to HOT is now conditional
+    # on client_facing (see ClientFacingTaskActivityTests below) -- this
+    # class only covers the ActivityEvent/timeline side of task completion.
 
     def test_task_activity_event_appears_in_the_timeline(self):
         url = reverse('phaserequirement-detail', args=[self.requirement.id])
