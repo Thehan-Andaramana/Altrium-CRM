@@ -16,6 +16,7 @@ import { useParams } from 'react-router-dom'
 import { get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
+import NewContactInline from '../components/NewContactInline.jsx'
 
 const STATUS_BADGE_VARIANT = {
   HOT: 'warning',
@@ -70,6 +71,44 @@ const TASK_STATUS_OPTIONS = [
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 
+// Lead create/update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
+// SYSTEM_ADMIN is read-only for leads (see ArchivableOwnedResourcePermission, backend).
+const MANAGER_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER'])
+
+const REQUEST_TYPE_LABELS = {
+  ARCHIVE_LEAD: 'Archive Lead',
+  PHASE_1_SIGNOFF: 'Phase 1 Signoff',
+  PHASE_2_SIGNOFF: 'Phase 2 Signoff',
+  PHASE_3_SIGNOFF: 'Phase 3 Signoff',
+}
+
+const APPROVAL_STATUS_BORDER = {
+  PENDING: 'border-warning',
+  APPROVED: 'border-success',
+  REJECTED: 'border-danger',
+}
+
+const APPROVAL_STATUS_BADGE_VARIANT = {
+  PENDING: 'warning',
+  APPROVED: 'success',
+  REJECTED: 'danger',
+}
+
+const ACTIVITY_CATEGORY_LABELS = {
+  DESTRUCTIVE: 'Destructive',
+  ADMINISTRATIVE: 'Administrative',
+  PHASE: 'Phase',
+}
+
+// Requested-but-not-yet-actioned destructive events (currently just an
+// archive request) read as amber; everything else destructive (archived,
+// unarchived, ...) reads as red, matching a completed/irreversible action.
+const ACTIVITY_CATEGORY_BADGE_VARIANT = {
+  DESTRUCTIVE: 'danger',
+  ADMINISTRATIVE: 'primary',
+  PHASE: 'secondary',
+}
+
 // "confirmed" / "awaiting" / "pending" / "not_applicable" -- derived client
 // side from status + confirmation_authority + confirmed_by, mirroring the
 // server's PhaseRequirement.is_confirmed_complete.
@@ -82,6 +121,16 @@ function getTaskState(task) {
     return confirmed ? 'confirmed' : 'awaiting'
   }
   return 'pending'
+}
+
+function WarningIcon(props) {
+  return (
+    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" aria-hidden="true" {...props}>
+      <path d="M8 1.5 15 14H1L8 1.5Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M8 6.2v3.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="8" cy="11.5" r="0.8" fill="currentColor" />
+    </svg>
+  )
 }
 
 function CheckIcon(props) {
@@ -143,6 +192,34 @@ function TaskStatusIcon({ state }) {
     <span className="text-body-secondary" title="Pending">
       <CircleIcon />
     </span>
+  )
+}
+
+function ActivityEventRow({ entry }) {
+  const isArchiveRequest =
+    entry.event_category === 'DESTRUCTIVE' && entry.description.startsWith('Archive requested')
+  const variant = isArchiveRequest
+    ? 'warning'
+    : (ACTIVITY_CATEGORY_BADGE_VARIANT[entry.event_category] ?? 'secondary')
+
+  return (
+    <ListGroup.Item className={`border-start border-4 border-${variant}`}>
+      <div className="d-flex justify-content-between align-items-center mb-1">
+        <div className="d-flex gap-2 align-items-center">
+          {entry.event_category === 'DESTRUCTIVE' && (
+            <span className={`text-${variant}`} title="Destructive">
+              <WarningIcon />
+            </span>
+          )}
+          <Badge bg={variant}>{ACTIVITY_CATEGORY_LABELS[entry.event_category] ?? entry.event_category}</Badge>
+        </div>
+        <span className="text-body-secondary small">
+          {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
+        </span>
+      </div>
+      <p className="mb-1">{entry.description}</p>
+      <div className="text-body-secondary small">By {entry.actor_username ?? 'System'}</div>
+    </ListGroup.Item>
   )
 }
 
@@ -464,22 +541,144 @@ function PhaseTracker({ leadId }) {
   )
 }
 
+function EditLeadForm({ lead, contacts, salesReps, canEditAssignedTo, saving, error, onSave, onHide, onContactCreated }) {
+  // Keyed by lead.id from the parent, so reopening remounts this with fresh
+  // initial state instead of needing an effect to resync it.
+  const [status, setStatus] = useState(lead.status)
+  const [contactId, setContactId] = useState(lead.contact ?? '')
+  const [assignedTo, setAssignedTo] = useState(lead.assigned_to ?? '')
+
+  function handleContactCreated(contact) {
+    onContactCreated(contact)
+    setContactId(String(contact.id))
+  }
+
+  return (
+    <Form
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSave({ status, contactId, assignedTo })
+      }}
+    >
+      <Modal.Header closeButton>
+        <Modal.Title as="h2" className="h5 mb-0">
+          Edit Lead
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {error && <Alert variant="danger">{error}</Alert>}
+        <Form.Group className="mb-3" controlId="edit-lead-status">
+          <Form.Label>Status</Form.Label>
+          <Form.Select value={status} onChange={(event) => setStatus(event.target.value)}>
+            <option value="HOT">Hot</option>
+            <option value="COLD">Cold</option>
+          </Form.Select>
+        </Form.Group>
+        <Form.Group className="mb-3" controlId="edit-lead-contact">
+          <Form.Label>Contact</Form.Label>
+          <Form.Select value={contactId} onChange={(event) => setContactId(event.target.value)}>
+            <option value="">No contact</option>
+            {contacts.map((contact) => (
+              <option key={contact.id} value={contact.id}>
+                {contact.name}
+              </option>
+            ))}
+          </Form.Select>
+          <NewContactInline companyId={lead.company} onCreated={handleContactCreated} />
+        </Form.Group>
+        <Form.Group controlId="edit-lead-assigned">
+          <Form.Label>Assigned rep</Form.Label>
+          {canEditAssignedTo ? (
+            <Form.Select value={assignedTo} onChange={(event) => setAssignedTo(event.target.value)}>
+              {salesReps.map((rep) => (
+                <option key={rep.id} value={rep.id}>
+                  {rep.username}
+                </option>
+              ))}
+            </Form.Select>
+          ) : (
+            <div>{lead.assigned_to_username ?? 'Unassigned'}</div>
+          )}
+        </Form.Group>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onHide} disabled={saving}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" disabled={saving}>
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </Modal.Footer>
+    </Form>
+  )
+}
+
+function EditLeadModal({ show, lead, contacts, salesReps, canEditAssignedTo, onHide, onSaved, onContactCreated }) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleSave({ status, contactId, assignedTo }) {
+    setSaving(true)
+    setError(null)
+    try {
+      const payload = { status, contact: contactId ? Number(contactId) : null }
+      if (canEditAssignedTo) {
+        payload.assigned_to = Number(assignedTo)
+      }
+      const updated = await patch(`/api/leads/${lead.id}/`, payload)
+      onSaved(updated)
+      onHide()
+    } catch {
+      setError('Failed to save lead.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal show={show} onHide={onHide} centered>
+      <EditLeadForm
+        key={lead.id}
+        lead={lead}
+        contacts={contacts}
+        salesReps={salesReps}
+        canEditAssignedTo={canEditAssignedTo}
+        saving={saving}
+        error={error}
+        onSave={handleSave}
+        onHide={onHide}
+        onContactCreated={onContactCreated}
+      />
+    </Modal>
+  )
+}
+
 export default function LeadDetail() {
   const { id } = useParams()
+  const { user } = useAuth()
 
   const [lead, setLead] = useState(null)
   const [loadingLead, setLoadingLead] = useState(true)
   const [leadError, setLeadError] = useState(null)
 
-  const [interactions, setInteractions] = useState([])
-  const [loadingInteractions, setLoadingInteractions] = useState(true)
-  const [interactionsError, setInteractionsError] = useState(null)
+  const [timelineEntries, setTimelineEntries] = useState([])
+  const [loadingTimeline, setLoadingTimeline] = useState(true)
+  const [timelineError, setTimelineError] = useState(null)
+
+  const [contacts, setContacts] = useState([])
+  const [salesReps, setSalesReps] = useState([])
+  const [showEditModal, setShowEditModal] = useState(false)
 
   const [type, setType] = useState('CALL')
   const [outcome, setOutcome] = useState('RESPONDED')
   const [notes, setNotes] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
+
+  const canEdit =
+    Boolean(lead) &&
+    (MANAGER_ROLES.has(user?.role) || (user?.role === 'SALES_REP' && lead.assigned_to === user.id))
+  const canEditAssignedTo = MANAGER_ROLES.has(user?.role)
 
   useEffect(() => {
     let cancelled = false
@@ -511,38 +710,82 @@ export default function LeadDetail() {
   useEffect(() => {
     let cancelled = false
 
-    async function fetchInteractions() {
-      setLoadingInteractions(true)
-      setInteractionsError(null)
+    async function fetchTimeline() {
+      setLoadingTimeline(true)
+      setTimelineError(null)
       try {
-        const data = await get(`/api/interactions/?lead=${id}`)
-        if (!cancelled) setInteractions(data)
+        const data = await get(`/api/leads/${id}/timeline/`)
+        if (!cancelled) setTimelineEntries(data)
       } catch {
-        if (!cancelled) setInteractionsError('Failed to load interactions.')
+        if (!cancelled) setTimelineError('Failed to load timeline.')
       } finally {
-        if (!cancelled) setLoadingInteractions(false)
+        if (!cancelled) setLoadingTimeline(false)
       }
     }
 
-    fetchInteractions()
+    fetchTimeline()
     return () => {
       cancelled = true
     }
   }, [id])
+
+  async function refreshTimeline() {
+    const data = await get(`/api/leads/${id}/timeline/`)
+    setTimelineEntries(data)
+  }
+
+  const leadCompanyId = lead?.company
+
+  useEffect(() => {
+    if (!leadCompanyId) {
+      return
+    }
+    let cancelled = false
+
+    async function fetchContacts() {
+      try {
+        const data = await get(`/api/contacts/?company=${leadCompanyId}`)
+        if (!cancelled) setContacts(data)
+      } catch {
+        if (!cancelled) setContacts([])
+      }
+    }
+
+    fetchContacts()
+    return () => {
+      cancelled = true
+    }
+  }, [leadCompanyId])
+
+  useEffect(() => {
+    if (!canEditAssignedTo) {
+      return
+    }
+    let cancelled = false
+
+    async function fetchSalesReps() {
+      try {
+        const data = await get('/api/users/?role=SALES_REP')
+        if (!cancelled) setSalesReps(data)
+      } catch {
+        // Assigned-rep dropdown just falls back to "no reps available".
+      }
+    }
+
+    fetchSalesReps()
+    return () => {
+      cancelled = true
+    }
+  }, [canEditAssignedTo])
 
   async function handleSubmit(event) {
     event.preventDefault()
     setSubmitting(true)
     setSubmitError(null)
     try {
-      await post('/api/interactions/', { lead: Number(id), type, outcome, notes })
+      await post('/api/interactions/', { lead: Number(id), type, notes, ...(type !== 'NOTE' && { outcome }) })
       setNotes('')
-      const [leadData, interactionsData] = await Promise.all([
-        get(`/api/leads/${id}/?include_archived=true`),
-        get(`/api/interactions/?lead=${id}`),
-      ])
-      setLead(leadData)
-      setInteractions(interactionsData)
+      await Promise.all([refreshLead(), refreshTimeline()])
     } catch {
       setSubmitError('Failed to log interaction.')
     } finally {
@@ -578,24 +821,50 @@ export default function LeadDetail() {
               <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">
                 {lead.status}
               </Badge>
+              {canEdit && (
+                <Button variant="outline-secondary" size="sm" onClick={() => setShowEditModal(true)}>
+                  Edit
+                </Button>
+              )}
               <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} />
             </div>
           </div>
 
+          {canEdit && showEditModal && (
+            <EditLeadModal
+              show={showEditModal}
+              lead={lead}
+              contacts={contacts}
+              salesReps={salesReps}
+              canEditAssignedTo={canEditAssignedTo}
+              onHide={() => setShowEditModal(false)}
+              onSaved={setLead}
+              onContactCreated={(contact) => setContacts((prev) => [...prev, contact])}
+            />
+          )}
+
           <Row className="mb-4 gy-2">
-            <Col sm={4}>
+            <Col sm={6} md={3}>
               <div className="text-body-secondary small">Assigned to</div>
               <div>{lead.assigned_to_username ?? 'Unassigned'}</div>
             </Col>
-            <Col sm={4}>
-              <div className="text-body-secondary small">Last activity</div>
+            <Col sm={6} md={3}>
+              <div className="text-body-secondary small">Last client contact</div>
               <div>
                 {lead.last_activity_at
                   ? formatDistanceToNow(new Date(lead.last_activity_at), { addSuffix: true })
                   : '—'}
               </div>
             </Col>
-            <Col sm={4}>
+            <Col sm={6} md={3}>
+              <div className="text-body-secondary small">Last internal activity</div>
+              <div>
+                {lead.last_internal_activity_at
+                  ? formatDistanceToNow(new Date(lead.last_internal_activity_at), { addSuffix: true })
+                  : '—'}
+              </div>
+            </Col>
+            <Col sm={6} md={3}>
               <div className="text-body-secondary small">Interactions</div>
               <div>{lead.interaction_count ?? 0}</div>
             </Col>
@@ -623,22 +892,24 @@ export default function LeadDetail() {
                       </Form.Select>
                     </Form.Group>
                   </Col>
-                  <Col sm={3}>
-                    <Form.Group controlId="interaction-outcome">
-                      <Form.Label>Outcome</Form.Label>
-                      <Form.Select
-                        value={outcome}
-                        onChange={(event) => setOutcome(event.target.value)}
-                        required
-                      >
-                        {OUTCOME_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </Form.Select>
-                    </Form.Group>
-                  </Col>
+                  {type !== 'NOTE' && (
+                    <Col sm={3}>
+                      <Form.Group controlId="interaction-outcome">
+                        <Form.Label>Outcome</Form.Label>
+                        <Form.Select
+                          value={outcome}
+                          onChange={(event) => setOutcome(event.target.value)}
+                          required
+                        >
+                          {OUTCOME_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </Form.Select>
+                      </Form.Group>
+                    </Col>
+                  )}
                   <Col sm={4}>
                     <Form.Group controlId="interaction-notes">
                       <Form.Label>Notes</Form.Label>
@@ -661,37 +932,65 @@ export default function LeadDetail() {
           </Card>
 
           <h2 className="h5 mb-3">Timeline</h2>
-          {loadingInteractions ? (
+          {loadingTimeline ? (
             <div className="d-flex justify-content-center py-4">
               <Spinner animation="border" role="status">
                 <span className="visually-hidden">Loading…</span>
               </Spinner>
             </div>
-          ) : interactionsError ? (
-            <Alert variant="danger">{interactionsError}</Alert>
-          ) : interactions.length === 0 ? (
-            <p className="text-body-secondary">No interactions logged yet.</p>
+          ) : timelineError ? (
+            <Alert variant="danger">{timelineError}</Alert>
+          ) : timelineEntries.length === 0 ? (
+            <p className="text-body-secondary">Nothing logged yet.</p>
           ) : (
             <ListGroup>
-              {interactions.map((interaction) => (
-                <ListGroup.Item key={interaction.id}>
-                  <div className="d-flex justify-content-between align-items-center mb-1">
-                    <div className="d-flex gap-2">
-                      <Badge bg="info">{interaction.type}</Badge>
-                      <Badge bg={OUTCOME_BADGE_VARIANT[interaction.outcome] ?? 'secondary'}>
-                        {interaction.outcome}
-                      </Badge>
+              {timelineEntries.map((entry) =>
+                entry.entry_type === 'ACTIVITY_EVENT' ? (
+                  <ActivityEventRow key={`activity-${entry.id}`} entry={entry} />
+                ) : entry.entry_type === 'APPROVAL_REQUEST' ? (
+                  <ListGroup.Item
+                    key={`approval-${entry.id}`}
+                    className={`border-start border-4 ${APPROVAL_STATUS_BORDER[entry.status] ?? ''}`}
+                  >
+                    <div className="d-flex justify-content-between align-items-center mb-1">
+                      <div className="d-flex gap-2 align-items-center">
+                        <span className="fw-semibold">
+                          {REQUEST_TYPE_LABELS[entry.request_type] ?? entry.request_type}
+                        </span>
+                        <Badge bg={APPROVAL_STATUS_BADGE_VARIANT[entry.status] ?? 'secondary'}>{entry.status}</Badge>
+                      </div>
+                      <span className="text-body-secondary small">
+                        {formatDistanceToNow(new Date(entry.created_at), { addSuffix: true })}
+                      </span>
                     </div>
-                    <span className="text-body-secondary small">
-                      {formatDistanceToNow(new Date(interaction.occurred_at), { addSuffix: true })}
-                    </span>
-                  </div>
-                  {interaction.notes && <p className="mb-1">{interaction.notes}</p>}
-                  <div className="text-body-secondary small">
-                    Logged by {interaction.created_by_username ?? 'Unknown'}
-                  </div>
-                </ListGroup.Item>
-              ))}
+                    {entry.reason && <p className="mb-1">{entry.reason}</p>}
+                    {entry.status === 'REJECTED' && entry.decision_note && (
+                      <p className="mb-1 fst-italic">{entry.decision_note}</p>
+                    )}
+                    <div className="text-body-secondary small">
+                      Requested by {entry.requested_by_username ?? 'Unknown'}
+                    </div>
+                  </ListGroup.Item>
+                ) : (
+                  <ListGroup.Item key={`interaction-${entry.id}`}>
+                    <div className="d-flex justify-content-between align-items-center mb-1">
+                      <div className="d-flex gap-2">
+                        <Badge bg="info">{entry.type}</Badge>
+                        {entry.outcome && (
+                          <Badge bg={OUTCOME_BADGE_VARIANT[entry.outcome] ?? 'secondary'}>{entry.outcome}</Badge>
+                        )}
+                      </div>
+                      <span className="text-body-secondary small">
+                        {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
+                      </span>
+                    </div>
+                    {entry.notes && <p className="mb-1">{entry.notes}</p>}
+                    <div className="text-body-secondary small">
+                      Logged by {entry.created_by_username ?? 'Unknown'}
+                    </div>
+                  </ListGroup.Item>
+                ),
+              )}
             </ListGroup>
           )}
         </>

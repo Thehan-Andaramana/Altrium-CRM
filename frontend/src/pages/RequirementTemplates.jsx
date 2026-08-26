@@ -7,7 +7,6 @@ import Form from 'react-bootstrap/Form'
 import ListGroup from 'react-bootstrap/ListGroup'
 import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
-import { Navigate } from 'react-router-dom'
 import { get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 
@@ -136,7 +135,17 @@ function AddTemplateModal({ phase, saving, error, onSave, onHide }) {
   )
 }
 
-function TemplateRow({ template, isFirst, isLast, busy, onMove, onEdit, onToggleActive, onAuthorityChange }) {
+function TemplateRow({
+  template,
+  isFirst,
+  isLast,
+  busy,
+  onMove,
+  onEdit,
+  onToggleActive,
+  onAuthorityChange,
+  onClientFacingChange,
+}) {
   return (
     <ListGroup.Item className="d-flex align-items-center gap-2">
       <div className="d-flex flex-column">
@@ -186,6 +195,15 @@ function TemplateRow({ template, isFirst, isLast, busy, onMove, onEdit, onToggle
           </option>
         ))}
       </Form.Select>
+      <Form.Check
+        type="checkbox"
+        id={`client-facing-${template.id}`}
+        label="Client-facing"
+        checked={template.client_facing}
+        disabled={busy}
+        onChange={(event) => onClientFacingChange(template, event.target.checked)}
+        title="Marks this task as representing confirmed client contact -- completing it updates the lead the same way a client interaction does."
+      />
       <Button variant="outline-secondary" size="sm" disabled={busy} onClick={() => onEdit(template)}>
         Edit
       </Button>
@@ -243,10 +261,6 @@ export default function RequirementTemplates() {
       cancelled = true
     }
   }, [allowed])
-
-  if (!allowed) {
-    return <Navigate to="/" replace />
-  }
 
   function templatesForPhase(phase) {
     return templates
@@ -312,6 +326,21 @@ export default function RequirementTemplates() {
     }
   }
 
+  async function handleClientFacingChange(template, clientFacing) {
+    setBusyId(template.id)
+    setRowError(null)
+    try {
+      const updated = await patch(`/api/requirement-templates/${template.id}/`, {
+        client_facing: clientFacing,
+      })
+      setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+    } catch {
+      setRowError('Failed to update the client-facing flag.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   async function handleEditSave(payload) {
     setEditSaving(true)
     setEditError(null)
@@ -349,8 +378,10 @@ export default function RequirementTemplates() {
 
   return (
     <>
-      <h1 className="h3 mb-3">Requirement Templates</h1>
-
+      <p className="text-body-secondary small">
+        "Client-facing" marks a task as representing confirmed client contact — completing one updates the lead
+        the same way logging a client interaction does. Leave it off for internal-only tasks.
+      </p>
       {error && <Alert variant="danger">{error}</Alert>}
       {rowError && <Alert variant="danger">{rowError}</Alert>}
 
@@ -387,6 +418,7 @@ export default function RequirementTemplates() {
                         onEdit={setEditingTemplate}
                         onToggleActive={handleToggleActive}
                         onAuthorityChange={handleAuthorityChange}
+                        onClientFacingChange={handleClientFacingChange}
                       />
                     ))}
                   </ListGroup>

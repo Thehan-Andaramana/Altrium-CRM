@@ -3,6 +3,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
+    ActivityEvent,
     ApprovalRequest,
     Company,
     Contact,
@@ -43,6 +44,7 @@ class CompanySerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
+        request = self.context.get('request')
         owner_changed = 'owner' in validated_data and validated_data['owner'] != instance.owner
         new_owner = validated_data.get('owner')
         with transaction.atomic():
@@ -50,13 +52,27 @@ class CompanySerializer(serializers.ModelSerializer):
             if owner_changed and new_owner is not None:
                 company.leads.update(assigned_to=new_owner)
                 company.deals.update(assigned_to=new_owner)
+                for lead in company.leads.all():
+                    ActivityEvent.record(
+                        lead,
+                        ActivityEvent.Category.ADMINISTRATIVE,
+                        f'Company owner changed to {new_owner.username}; lead reassigned.',
+                        actor=request.user if request else None,
+                    )
         return company
 
 
 class ContactSerializer(serializers.ModelSerializer):
+    company_name = serializers.CharField(source='company.name', read_only=True, default=None)
+    archived_by_username = serializers.CharField(source='archived_by.username', read_only=True, default=None)
+
     class Meta:
         model = Contact
-        fields = ['id', 'company', 'name', 'email', 'phone', 'job_title']
+        fields = [
+            'id', 'company', 'company_name', 'name', 'email', 'phone', 'job_title',
+            'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
+        ]
+        read_only_fields = ['is_archived', 'archived_by', 'archived_at', 'archive_reason']
 
 
 class LeadSerializer(serializers.ModelSerializer):
@@ -77,12 +93,13 @@ class LeadSerializer(serializers.ModelSerializer):
         model = Lead
         fields = [
             'id', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
-            'last_activity_at', 'assigned_to', 'assigned_to_username', 'interaction_count',
-            'deal_stage', 'has_project',
+            'last_activity_at', 'last_internal_activity_at', 'assigned_to', 'assigned_to_username',
+            'interaction_count', 'deal_stage', 'has_project',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
         ]
         read_only_fields = [
-            'created_at', 'last_activity_at', 'is_archived', 'archived_by', 'archived_at', 'archive_reason',
+            'created_at', 'last_activity_at', 'last_internal_activity_at',
+            'is_archived', 'archived_by', 'archived_at', 'archive_reason',
         ]
 
     def __init__(self, *args, **kwargs):
@@ -100,6 +117,28 @@ class LeadSerializer(serializers.ModelSerializer):
                 validated_data['assigned_to'] = request.user
         return super().create(validated_data)
 
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        changes = []
+        if 'status' in validated_data and validated_data['status'] != instance.status:
+            changes.append(f"status changed to {validated_data['status']}")
+        if 'contact' in validated_data and validated_data['contact'] != instance.contact:
+            changes.append('contact changed')
+        if 'assigned_to' in validated_data and validated_data['assigned_to'] != instance.assigned_to:
+            new_assignee = validated_data['assigned_to']
+            changes.append(f'assigned to {new_assignee.username}' if new_assignee else 'unassigned')
+
+        lead = super().update(instance, validated_data)
+
+        if changes and request:
+            ActivityEvent.record(
+                lead,
+                ActivityEvent.Category.ADMINISTRATIVE,
+                'Lead updated: ' + '; '.join(changes),
+                actor=request.user,
+            )
+        return lead
+
 
 class InteractionSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, default=None)
@@ -110,6 +149,15 @@ class InteractionSerializer(serializers.ModelSerializer):
             'id', 'lead', 'type', 'outcome', 'notes', 'occurred_at', 'created_by', 'created_by_username',
         ]
         read_only_fields = ['created_by']
+
+    def validate(self, attrs):
+        itype = attrs.get('type', getattr(self.instance, 'type', None))
+        outcome = attrs.get('outcome', serializers.empty)
+        if itype == Interaction.Type.NOTE:
+            if outcome not in (serializers.empty, None):
+                raise serializers.ValidationError({'outcome': 'NOTE interactions cannot have an outcome.'})
+            attrs['outcome'] = None
+        return attrs
 
     def create(self, validated_data):
         request = self.context.get('request')
@@ -178,10 +226,12 @@ class ProjectSerializer(serializers.ModelSerializer):
         return [r.request_type for r in pending]
 
     def update(self, instance, validated_data):
+        request = self.context.get('request')
         phase_1_newly_complete = (
             validated_data.get('phase_1_status') == Project.PhaseStatus.COMPLETE
             and instance.phase_1_status != Project.PhaseStatus.COMPLETE
         )
+        changed_phases = []
 
         for phase_num, field_name in enumerate(self.PHASE_FIELDS, start=1):
             if field_name not in validated_data:
@@ -189,6 +239,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             new_status = validated_data[field_name]
             if new_status == getattr(instance, field_name):
                 continue
+            changed_phases.append((phase_num, new_status))
 
             if new_status == Project.PhaseStatus.IN_PROGRESS and phase_num > 1:
                 prev_field = self.PHASE_FIELDS[phase_num - 2]
@@ -222,6 +273,16 @@ class ProjectSerializer(serializers.ModelSerializer):
                     })
 
         project = super().update(instance, validated_data)
+
+        if request and changed_phases:
+            for phase_num, new_status in changed_phases:
+                ActivityEvent.record(
+                    project.lead,
+                    ActivityEvent.Category.PHASE,
+                    f'Phase {phase_num} moved to {new_status}',
+                    actor=request.user,
+                )
+            Lead.objects.filter(pk=project.lead_id).update(last_internal_activity_at=timezone.now())
 
         if phase_1_newly_complete:
             self._advance_after_phase_1_complete(project)
@@ -263,12 +324,13 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
     class Meta:
         model = PhaseRequirement
         fields = [
-            'id', 'project', 'phase', 'label', 'description', 'status', 'notes', 'confirmation_authority',
+            'id', 'project', 'phase', 'label', 'description', 'status', 'notes',
+            'confirmation_authority', 'client_facing',
             'updated_by', 'updated_by_username', 'updated_at',
             'confirmed_by', 'confirmed_by_username', 'confirmed_at',
         ]
         read_only_fields = [
-            'project', 'phase', 'label', 'description', 'confirmation_authority',
+            'project', 'phase', 'label', 'description', 'confirmation_authority', 'client_facing',
             'updated_by', 'updated_at', 'confirmed_by', 'confirmed_at',
         ]
 
@@ -287,10 +349,12 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         user = request.user if request else None
         new_status = validated_data.get('status', instance.status)
+        status_changing = 'status' in validated_data and validated_data['status'] != instance.status
 
         if 'status' in validated_data or 'notes' in validated_data:
             validated_data['updated_by'] = user
 
+        newly_confirmed = False
         if new_status == PhaseRequirement.Status.COMPLETED:
             if (
                 instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.MANAGER
@@ -299,31 +363,81 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
             ):
                 validated_data['confirmed_by'] = user
                 validated_data['confirmed_at'] = timezone.now()
+                newly_confirmed = instance.confirmed_by_id is None
         else:
             validated_data['confirmed_by'] = None
             validated_data['confirmed_at'] = None
 
-        return super().update(instance, validated_data)
+        requirement = super().update(instance, validated_data)
+
+        if status_changing and user is not None:
+            description = f'Task "{requirement.label}" marked {requirement.get_status_display()}'
+            if newly_confirmed:
+                description += ' and confirmed'
+            ActivityEvent.record(requirement.project.lead, ActivityEvent.Category.PHASE, description, actor=user)
+
+            lead_id = requirement.project.lead_id
+            if requirement.client_facing and new_status == PhaseRequirement.Status.COMPLETED:
+                # A client-facing task completing is treated exactly like a
+                # RESPONDED interaction -- it's real confirmed client contact,
+                # not just internal progress, so it (and only it) flips HOT.
+                Lead.objects.filter(pk=lead_id).update(last_activity_at=timezone.now(), status=Lead.Status.HOT)
+            else:
+                Lead.objects.filter(pk=lead_id).update(last_internal_activity_at=timezone.now())
+
+        return requirement
 
 
 class RequirementTemplateSerializer(serializers.ModelSerializer):
     class Meta:
         model = RequirementTemplate
-        fields = ['id', 'phase', 'label', 'description', 'order', 'confirmation_authority', 'is_active']
+        fields = [
+            'id', 'phase', 'label', 'description', 'order',
+            'confirmation_authority', 'client_facing', 'is_active',
+        ]
 
 
 class ApprovalRequestSerializer(serializers.ModelSerializer):
     requested_by_username = serializers.CharField(source='requested_by.username', read_only=True, default=None)
     decided_by_username = serializers.CharField(source='decided_by.username', read_only=True, default=None)
+    lead_name = serializers.SerializerMethodField()
+    company_name = serializers.SerializerMethodField()
+    phase_number = serializers.SerializerMethodField()
 
     class Meta:
         model = ApprovalRequest
         fields = [
             'id', 'request_type', 'lead', 'project', 'status', 'reason', 'decision_note',
             'requested_by', 'requested_by_username', 'decided_by', 'decided_by_username',
+            'lead_name', 'company_name', 'phase_number',
             'created_at', 'decided_at',
         ]
         read_only_fields = ['requested_by', 'decided_by', 'created_at', 'decided_at']
+
+    def _resolve_lead(self, obj):
+        if obj.lead is not None:
+            return obj.lead
+        if obj.project is not None:
+            return obj.project.lead
+        return None
+
+    def get_lead_name(self, obj):
+        lead = self._resolve_lead(obj)
+        if lead is None:
+            return None
+        return lead.contact.name if lead.contact_id else f'Lead #{lead.id}'
+
+    def get_company_name(self, obj):
+        if obj.lead is not None:
+            return obj.lead.company.name
+        if obj.project is not None:
+            return obj.project.company.name
+        return None
+
+    def get_phase_number(self, obj):
+        if obj.request_type.startswith('PHASE_') and obj.request_type.endswith('_SIGNOFF'):
+            return int(obj.request_type.split('_')[1])
+        return None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -354,8 +468,17 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        validated_data['requested_by'] = self.context['request'].user
-        return super().create(validated_data)
+        request = self.context['request']
+        validated_data['requested_by'] = request.user
+        approval = super().create(validated_data)
+        if approval.request_type == ApprovalRequest.RequestType.ARCHIVE_LEAD and approval.lead is not None:
+            ActivityEvent.record(
+                approval.lead,
+                ActivityEvent.Category.DESTRUCTIVE,
+                f'Archive requested: {approval.reason}' if approval.reason else 'Archive requested',
+                actor=request.user,
+            )
+        return approval
 
     def update(self, instance, validated_data):
         new_status = validated_data.get('status')
@@ -379,6 +502,20 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
         lead.archived_at = timezone.now()
         lead.archive_reason = instance.reason or 'Archived via an approved archive request.'
         lead.save()
+        ActivityEvent.record(
+            lead,
+            ActivityEvent.Category.DESTRUCTIVE,
+            f'Lead archived: {lead.archive_reason}',
+            actor=request.user,
+        )
+
+
+class ActivityEventSerializer(serializers.ModelSerializer):
+    actor_username = serializers.CharField(source='actor.username', read_only=True, default=None)
+
+    class Meta:
+        model = ActivityEvent
+        fields = ['id', 'category', 'description', 'actor', 'actor_username', 'occurred_at']
 
 
 class UserSummarySerializer(serializers.ModelSerializer):

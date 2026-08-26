@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
@@ -7,7 +8,9 @@ from rest_framework import status
 from rest_framework.reverse import reverse
 from rest_framework.test import APIClient, APITestCase
 
-from .models import ApprovalRequest, Company, Contact, Deal, Interaction, Lead, PhaseRequirement, Project, User
+from .models import (
+    ActivityEvent, ApprovalRequest, Company, Contact, Deal, Interaction, Lead, PhaseRequirement, Project, User,
+)
 
 
 class CompanyOwnerPermissionTests(TestCase):
@@ -845,3 +848,346 @@ class ArchiveLeadApprovalFlowTests(ArchiveTestMixin, APITestCase):
 
         self.lead.refresh_from_db()
         self.assertFalse(self.lead.is_archived)
+
+
+class PhaseActivityEventTests(ProjectRequirementsTestMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.lead.status = Lead.Status.COLD
+        self.lead.save()
+        self.original_last_activity_at = self.lead.last_activity_at
+        self.requirement = self.project.requirements.filter(
+            phase=1, confirmation_authority=PhaseRequirement.ConfirmationAuthority.REP,
+        ).first()
+
+    def test_completing_a_task_creates_a_phase_activity_event(self):
+        url = reverse('phaserequirement-detail', args=[self.requirement.id])
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        event = ActivityEvent.objects.get(lead=self.lead, category=ActivityEvent.Category.PHASE)
+        self.assertIn(self.requirement.label, event.description)
+        self.assertEqual(event.actor, self.manager)
+
+    def test_completing_a_task_does_not_flip_a_cold_lead_to_hot(self):
+        url = reverse('phaserequirement-detail', args=[self.requirement.id])
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+        self.assertEqual(self.lead.last_activity_at, self.original_last_activity_at)
+        self.assertIsNotNone(self.lead.last_internal_activity_at)
+
+    def test_task_activity_event_appears_in_the_timeline(self):
+        url = reverse('phaserequirement-detail', args=[self.requirement.id])
+        self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+
+        timeline_url = reverse('lead-timeline', args=[self.lead.id])
+        response = self.client.get(timeline_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        phase_entries = [e for e in response.data if e['entry_type'] == 'ACTIVITY_EVENT']
+        self.assertEqual(len(phase_entries), 1)
+        self.assertEqual(phase_entries[0]['event_category'], 'PHASE')
+
+
+class ClientFacingTaskActivityTests(ProjectRequirementsTestMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.lead.status = Lead.Status.COLD
+        self.lead.save()
+        self.original_last_activity_at = self.lead.last_activity_at
+
+    def test_client_facing_task_completing_flips_cold_lead_to_hot(self):
+        requirement = self.project.requirements.get(label='Client Proposal Confirmation')
+        self.assertTrue(requirement.client_facing)
+
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.HOT)
+        self.assertGreater(self.lead.last_activity_at, self.original_last_activity_at)
+        # Mutually exclusive with the internal-activity field -- a
+        # client-facing completion is treated exactly like a RESPONDED
+        # interaction, which never touches last_internal_activity_at either.
+        self.assertIsNone(self.lead.last_internal_activity_at)
+
+    def test_internal_task_completing_does_not_flip_cold_lead_to_hot(self):
+        requirement = self.project.requirements.get(label='Technical Specification')
+        self.assertFalse(requirement.client_facing)
+
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+        self.assertEqual(self.lead.last_activity_at, self.original_last_activity_at)
+        self.assertIsNotNone(self.lead.last_internal_activity_at)
+
+
+class ApprovalRequestDetailFieldsTests(APITestCase):
+    def setUp(self):
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
+        self.lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        self.project = self.lead.project
+        self.client.force_authenticate(self.manager)
+
+    def test_archive_lead_request_detail_fields(self):
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD,
+            lead=self.lead,
+            requested_by=self.rep,
+        )
+        url = reverse('approvalrequest-detail', args=[approval.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['lead_name'], 'Jane Doe')
+        self.assertEqual(response.data['company_name'], 'Acme')
+        self.assertEqual(response.data['requested_by_username'], 'rep')
+        self.assertIsNone(response.data['phase_number'])
+
+    def test_phase_signoff_request_detail_fields(self):
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_2_SIGNOFF,
+            project=self.project,
+            requested_by=self.rep,
+        )
+        url = reverse('approvalrequest-detail', args=[approval.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['lead_name'], 'Jane Doe')
+        self.assertEqual(response.data['company_name'], 'Acme')
+        self.assertEqual(response.data['phase_number'], 2)
+
+    def test_lead_name_falls_back_to_lead_number_when_no_contact(self):
+        lead_no_contact = Lead.objects.create(company=self.company, assigned_to=self.rep)
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD,
+            lead=lead_no_contact,
+            requested_by=self.rep,
+        )
+        url = reverse('approvalrequest-detail', args=[approval.id])
+        response = self.client.get(url)
+        self.assertEqual(response.data['lead_name'], f'Lead #{lead_no_contact.id}')
+
+
+class ContactPermissionAndArchiveTests(APITestCase):
+    def setUp(self):
+        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.admin = User.objects.create_user(username='admin1', password='pass', role=User.Role.SYSTEM_ADMIN)
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+
+        # Owned by other_rep, but self.rep has an assigned lead here -- this
+        # is the scenario the "owns a lead" scoping is meant to allow.
+        self.company = Company.objects.create(name='Acme', owner=self.other_rep)
+        Lead.objects.create(company=self.company, assigned_to=self.rep)
+        self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
+
+        # A second company where self.rep has no lead at all.
+        self.other_company = Company.objects.create(name='Globex', owner=self.other_rep)
+        self.other_contact = Contact.objects.create(company=self.other_company, name='John Roe')
+
+    def test_manager_can_create_update_and_archive_any_contact(self):
+        self.client.force_authenticate(self.manager)
+        create = self.client.post(reverse('contact-list'), {
+            'company': self.other_company.id, 'name': 'New Contact',
+        }, format='json')
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+        url = reverse('contact-detail', args=[self.other_contact.id])
+        update = self.client.patch(url, {'job_title': 'CFO'}, format='json')
+        self.assertEqual(update.status_code, status.HTTP_200_OK)
+
+        archive_url = reverse('contact-archive', args=[self.other_contact.id])
+        archive = self.client.post(archive_url, {'archive_reason': 'Left the company'}, format='json')
+        self.assertEqual(archive.status_code, status.HTTP_200_OK)
+        self.other_contact.refresh_from_db()
+        self.assertTrue(self.other_contact.is_archived)
+
+    def test_rep_can_create_and_update_contact_on_company_where_they_own_a_lead(self):
+        self.client.force_authenticate(self.rep)
+        create = self.client.post(reverse('contact-list'), {
+            'company': self.company.id, 'name': 'Another Contact',
+        }, format='json')
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+        url = reverse('contact-detail', args=[self.contact.id])
+        update = self.client.patch(url, {'job_title': 'CFO'}, format='json')
+        self.assertEqual(update.status_code, status.HTTP_200_OK)
+
+    def test_rep_cannot_create_or_update_contact_on_company_with_no_lead(self):
+        self.client.force_authenticate(self.rep)
+        create = self.client.post(reverse('contact-list'), {
+            'company': self.other_company.id, 'name': 'Nope',
+        }, format='json')
+        self.assertEqual(create.status_code, status.HTTP_403_FORBIDDEN)
+
+        url = reverse('contact-detail', args=[self.other_contact.id])
+        update = self.client.patch(url, {'job_title': 'CFO'}, format='json')
+        self.assertEqual(update.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_rep_cannot_archive_contact(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('contact-archive', args=[self.contact.id])
+        response = self.client.post(url, {'archive_reason': 'Nope'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_any_role_can_read_any_contact(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('contact-detail', args=[self.other_contact.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_system_admin_cannot_create_or_archive_but_can_read(self):
+        self.client.force_authenticate(self.admin)
+        create = self.client.post(reverse('contact-list'), {
+            'company': self.company.id, 'name': 'Nope',
+        }, format='json')
+        self.assertEqual(create.status_code, status.HTTP_403_FORBIDDEN)
+
+        archive_url = reverse('contact-archive', args=[self.contact.id])
+        archive = self.client.post(archive_url, {'archive_reason': 'Nope'}, format='json')
+        self.assertEqual(archive.status_code, status.HTTP_403_FORBIDDEN)
+
+        read = self.client.get(reverse('contact-detail', args=[self.contact.id]))
+        self.assertEqual(read.status_code, status.HTTP_200_OK)
+
+    def test_system_admin_can_only_delete_archived_contact(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('contact-detail', args=[self.contact.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.contact.is_archived = True
+        self.contact.save()
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class NoteInteractionOutcomeTests(APITestCase):
+    def setUp(self):
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.lead = Lead.objects.create(company=self.company, assigned_to=self.rep, status=Lead.Status.COLD)
+        self.client.force_authenticate(self.rep)
+
+    def test_note_without_outcome_updates_last_activity_but_not_status(self):
+        occurred_at = timezone.now() - timedelta(days=3)
+        url = reverse('interaction-list')
+        response = self.client.post(url, {
+            'lead': self.lead.id,
+            'type': Interaction.Type.NOTE,
+            'notes': 'Left a voicemail summary.',
+            'occurred_at': occurred_at.isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data['outcome'])
+
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+        self.assertEqual(self.lead.last_activity_at, occurred_at)
+
+    def test_note_with_non_null_outcome_is_rejected(self):
+        url = reverse('interaction-list')
+        response = self.client.post(url, {
+            'lead': self.lead.id,
+            'type': Interaction.Type.NOTE,
+            'outcome': Interaction.Outcome.RESPONDED,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('outcome', response.data)
+
+
+class LeadTimelineTests(APITestCase):
+    def setUp(self):
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
+        self.lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        self.project = self.lead.project
+
+    def test_timeline_merges_interactions_and_approvals_sorted_desc(self):
+        now = timezone.now()
+        older_interaction = Interaction.objects.create(
+            lead=self.lead, type=Interaction.Type.CALL, outcome=Interaction.Outcome.RESPONDED,
+            occurred_at=now - timedelta(days=5), created_by=self.rep,
+        )
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            project=self.project,
+            requested_by=self.rep,
+        )
+        ApprovalRequest.objects.filter(pk=approval.pk).update(created_at=now - timedelta(days=2))
+        newer_interaction = Interaction.objects.create(
+            lead=self.lead, type=Interaction.Type.NOTE, occurred_at=now, created_by=self.rep,
+        )
+
+        self.client.force_authenticate(self.rep)
+        url = reverse('lead-timeline', args=[self.lead.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        entries = response.data
+        self.assertEqual(
+            [(e['entry_type'], e['id']) for e in entries],
+            [
+                ('INTERACTION', newer_interaction.id),
+                ('APPROVAL_REQUEST', approval.id),
+                ('INTERACTION', older_interaction.id),
+            ],
+        )
+        approval_entry = entries[1]
+        self.assertEqual(approval_entry['status'], ApprovalRequest.Status.PENDING)
+        self.assertEqual(approval_entry['reason'], '')
+        self.assertEqual(approval_entry['decision_note'], '')
+
+    def test_rep_cannot_view_another_reps_lead_timeline(self):
+        self.client.force_authenticate(self.other_rep)
+        url = reverse('lead-timeline', args=[self.lead.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ApprovalRequestCrossManagementRoleTests(APITestCase):
+    def setUp(self):
+        self.sales_manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.exec_manager = User.objects.create_user(
+            username='exec', password='pass', role=User.Role.EXECUTIVE_MANAGER,
+        )
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.lead = Lead.objects.create(company=self.company, assigned_to=self.rep)
+
+    def test_executive_manager_can_approve_sales_managers_request(self):
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD,
+            lead=self.lead,
+            requested_by=self.sales_manager,
+        )
+        self.client.force_authenticate(self.exec_manager)
+        url = reverse('approvalrequest-detail', args=[approval.id])
+        response = self.client.patch(url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, ApprovalRequest.Status.APPROVED)
+        self.assertEqual(approval.decided_by, self.exec_manager)
+
+    def test_sales_manager_still_cannot_approve_own_request(self):
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD,
+            lead=self.lead,
+            requested_by=self.sales_manager,
+        )
+        self.client.force_authenticate(self.sales_manager)
+        url = reverse('approvalrequest-detail', args=[approval.id])
+        response = self.client.patch(url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

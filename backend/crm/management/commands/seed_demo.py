@@ -5,13 +5,19 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from crm.models import Company, Contact, Interaction, Lead, User
+from crm.models import ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, User
 
 DEMO_PASSWORD = 'testpass123'
 
 
 class Command(BaseCommand):
-    help = 'Seeds the database with demo CRM data (users, companies, contacts, leads, interactions).'
+    help = (
+        'Seeds the database with demo CRM data (users, companies, contacts, leads, '
+        'interactions, and one lead with a pending phase 1 sign-off request). '
+        'Projects and their phase 1/2/3 requirements are never created directly here -- '
+        'they come from Lead.save() auto-creating a Project, which in turn copies its '
+        'PhaseRequirement rows from whatever RequirementTemplates are currently active.'
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -21,15 +27,19 @@ class Command(BaseCommand):
             'contacts': [0, 0],
             'leads': [0, 0],
             'interactions': [0, 0],
+            'phase_requirements': [0, 0],
+            'approvals': [0, 0],
         }
 
     @transaction.atomic
     def handle(self, *args, **options):
         rep1, rep2, mgr1 = self._seed_users()
+        self._seed_superuser()
         companies = self._seed_companies(rep1, rep2)
         contacts = self._seed_contacts(companies)
         leads = self._seed_leads(companies, contacts, rep1, rep2, mgr1)
         self._seed_interactions(leads, rep1, rep2, mgr1)
+        self._seed_phase1_signoff(leads, mgr1)
 
         self._print_summary()
 
@@ -60,6 +70,22 @@ class Command(BaseCommand):
                 self.stdout.write(f'Created user "{username}" ({role})')
             users[username] = user
         return users['rep1'], users['rep2'], users['mgr1']
+
+    def _seed_superuser(self):
+        user, created = User.objects.get_or_create(
+            username='admin',
+            defaults={
+                'role': User.Role.SYSTEM_ADMIN,
+                'is_staff': True,
+                'is_superuser': True,
+                'email': 'admin@example.com',
+                'password': make_password(DEMO_PASSWORD),
+            },
+        )
+        self._track('users', created)
+        if created:
+            self.stdout.write('Created superuser "admin"')
+        return user
 
     # -- companies -------------------------------------------------------
 
@@ -135,12 +161,18 @@ class Command(BaseCommand):
     # -- leads -------------------------------------------------------------
 
     def _seed_leads(self, companies, contacts, rep1, rep2, mgr1):
+        # Creating a Lead here triggers Lead.save()'s auto-creation of its
+        # Project (and that Project's save() auto-creates its PhaseRequirement
+        # rows from whatever RequirementTemplates are currently active) --
+        # nothing in this command ever creates a Project or PhaseRequirement
+        # directly.
         now = timezone.now()
 
         # (company, contact, status, assigned_to, days_ago, has_interactions)
-        # days_ago backdates last_activity_at only for leads with no interactions
-        # (leads that get interactions have their last_activity_at driven by
-        # Interaction.save(), which also forces status back to HOT).
+        # days_ago backdates last_activity_at only for leads with no RESPONDED
+        # interactions (a RESPONDED interaction drives last_activity_at itself,
+        # via Interaction.save(); NO_ANSWER/MISSED_CALL interactions don't
+        # touch it, so a lead can have those and still be backdated here).
         specs = [
             ('Acme Corp', 'Alice Anderson', Lead.Status.HOT, rep1, 1, True),
             ('Globex Inc', 'Grace Green', Lead.Status.COLD, rep1, 22, False),
@@ -178,34 +210,71 @@ class Command(BaseCommand):
     def _seed_interactions(self, leads, rep1, rep2, mgr1):
         now = timezone.now()
 
-        # (company, contact, type, notes, days_ago, created_by)
+        # (company, contact, type, outcome, notes, days_ago, created_by)
         specs = [
-            ('Acme Corp', 'Alice Anderson', Interaction.Type.CALL,
+            ('Acme Corp', 'Alice Anderson', Interaction.Type.CALL, Interaction.Outcome.RESPONDED,
              'Introductory call, interested in Q3 renewal.', 6, rep1),
-            ('Acme Corp', 'Alice Anderson', Interaction.Type.EMAIL,
+            ('Acme Corp', 'Alice Anderson', Interaction.Type.EMAIL, Interaction.Outcome.RESPONDED,
              'Sent updated pricing sheet.', 1, rep1),
-            ('Globex Inc', 'Gary Hughes', Interaction.Type.MEETING,
+            ('Globex Inc', 'Gary Hughes', Interaction.Type.MEETING, Interaction.Outcome.RESPONDED,
              'Demo with the engineering team.', 4, rep1),
-            ('Umbrella Corp', 'Uma Ramirez', Interaction.Type.CALL,
+            ('Globex Inc', 'Grace Green', Interaction.Type.CALL, Interaction.Outcome.NO_ANSWER,
+             'Tried to follow up on the proposal; no answer.', 10, rep1),
+            ('Initech', 'Peter Gibbons', Interaction.Type.CALL, Interaction.Outcome.MISSED_CALL,
+             'Callback attempt after the initial demo.', 15, rep2),
+            ('Umbrella Corp', 'Uma Ramirez', Interaction.Type.CALL, Interaction.Outcome.RESPONDED,
              'Discussed research partnership scope.', 5, rep2),
-            ('Umbrella Corp', 'Uma Ramirez', Interaction.Type.NOTE,
+            ('Umbrella Corp', 'Uma Ramirez', Interaction.Type.NOTE, Interaction.Outcome.RESPONDED,
              'Follow up after budget approval next quarter.', 2, rep2),
         ]
 
-        for company_name, contact_name, itype, notes, days_ago, created_by in specs:
+        for company_name, contact_name, itype, outcome, notes, days_ago, created_by in specs:
             lead, _has_interactions = leads[(company_name, contact_name)]
             interaction, created = Interaction.objects.get_or_create(
                 lead=lead,
                 type=itype,
                 notes=notes,
                 defaults={
+                    'outcome': outcome,
                     'occurred_at': now - timedelta(days=days_ago),
                     'created_by': created_by,
                 },
             )
             self._track('interactions', created)
             if created:
-                self.stdout.write(f'Created interaction ({itype}) on "{company_name}" / {contact_name}')
+                self.stdout.write(f'Created interaction ({itype}/{outcome}) on "{company_name}" / {contact_name}')
+
+    # -- phase 1 sign-off ----------------------------------------------------
+
+    def _seed_phase1_signoff(self, leads, mgr1):
+        # Gives the manager's approvals queue something to review: complete
+        # every phase 1 requirement on one lead's (auto-created) project, then
+        # raise the same PENDING sign-off request the "Request sign-off"
+        # button in the UI would create.
+        lead, _has_interactions = leads[('Acme Corp', 'Alice Anderson')]
+        project = lead.project
+
+        for requirement in project.requirements.filter(phase=1):
+            if requirement.status == PhaseRequirement.Status.COMPLETED:
+                self._track('phase_requirements', False)
+                continue
+            requirement.status = PhaseRequirement.Status.COMPLETED
+            requirement.updated_by = lead.assigned_to
+            if requirement.confirmation_authority == PhaseRequirement.ConfirmationAuthority.MANAGER:
+                requirement.confirmed_by = mgr1
+                requirement.confirmed_at = timezone.now()
+            requirement.save()
+            self._track('phase_requirements', True)
+
+        approval, created = ApprovalRequest.objects.get_or_create(
+            project=project,
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            status=ApprovalRequest.Status.PENDING,
+            defaults={'requested_by': lead.assigned_to},
+        )
+        self._track('approvals', created)
+        if created:
+            self.stdout.write(f'Created PENDING phase 1 sign-off request for "{lead.company.name}"')
 
     # -- summary -------------------------------------------------------------
 
@@ -218,6 +287,8 @@ class Command(BaseCommand):
             'contacts': 'Contacts',
             'leads': 'Leads',
             'interactions': 'Interactions',
+            'phase_requirements': 'Phase 1 requirements completed',
+            'approvals': 'Approval requests',
         }
         for key, label in labels.items():
             created, existing = self.counts[key]

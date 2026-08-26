@@ -122,9 +122,13 @@ function ApprovalsCard({ count, items, canDecide, actioningId, actionError, onDe
               <ListGroup.Item key={approval.id}>
                 <div className="d-flex justify-content-between align-items-start gap-2">
                   <div>
-                    <div>{REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}</div>
+                    <div>
+                      {approval.company_name ?? '—'} — {approval.lead_name ?? '—'}
+                    </div>
                     <div className="text-body-secondary small">
-                      Requested by {approval.requested_by_username ?? 'Unknown'}
+                      {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
+                      {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''} · Requested by{' '}
+                      {approval.requested_by_username ?? 'Unknown'}
                     </div>
                   </div>
                   {canDecide && (

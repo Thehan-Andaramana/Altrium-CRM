@@ -130,11 +130,17 @@ function NavLinks({ canSeeCompanies, canSeeSettings }) {
       <Nav.Link as={NavLink} to="/" end>
         Home
       </Nav.Link>
+      <Nav.Link as={NavLink} to="/approvals">
+        Approvals
+      </Nav.Link>
       {canSeeCompanies && (
         <Nav.Link as={NavLink} to="/companies">
           Companies
         </Nav.Link>
       )}
+      <Nav.Link as={NavLink} to="/contacts">
+        Contacts
+      </Nav.Link>
       <Nav.Link as={NavLink} to="/leads">
         Pipeline
       </Nav.Link>
@@ -169,11 +175,6 @@ function UserActions({ theme, onToggleTheme, user, canSeeSettings, onLogout }) {
         {canSeeSettings && (
           <NavDropdown.Item as={NavLink} to="/settings">
             System Settings
-          </NavDropdown.Item>
-        )}
-        {canSeeSettings && (
-          <NavDropdown.Item as={NavLink} to="/templates">
-            Requirement Templates
           </NavDropdown.Item>
         )}
         <NavDropdown.Divider />

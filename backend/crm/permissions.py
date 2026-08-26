@@ -1,6 +1,6 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
-from .models import User
+from .models import Lead, User
 
 FULL_ACCESS_ROLES = {
     User.Role.SALES_MANAGER,
@@ -84,6 +84,51 @@ class CompanyPermission(BasePermission):
             if request.method in SAFE_METHODS:
                 return True
             return obj.owner_id == request.user.id
+        return False
+
+
+class ContactPermission(BasePermission):
+    """
+    SALES_REP: read access to every contact, write access (create/update)
+    only on companies where they have an assigned lead.
+    SALES_MANAGER, EXECUTIVE_MANAGER: full access, including archive/unarchive.
+    SYSTEM_ADMIN: read-only, plus hard-delete -- but only of an already
+    archived contact. No create/update/archive/unarchive.
+    DELIVERY_LEAD: read-only access to all records.
+    """
+
+    def has_permission(self, request, view):
+        role = request.user.role
+        if role == User.Role.DELIVERY_LEAD:
+            return request.method in SAFE_METHODS
+        if view.action in ('archive', 'unarchive'):
+            return role in MANAGER_ROLES
+        if request.method == 'DELETE':
+            return role == User.Role.SYSTEM_ADMIN
+        if role == User.Role.SYSTEM_ADMIN:
+            return request.method in SAFE_METHODS
+        if role == User.Role.SALES_REP and view.action == 'create':
+            return Lead.objects.filter(
+                company_id=request.data.get('company'), assigned_to=request.user,
+            ).exists()
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        role = request.user.role
+        if role == User.Role.DELIVERY_LEAD:
+            return request.method in SAFE_METHODS
+        if view.action in ('archive', 'unarchive'):
+            return role in MANAGER_ROLES
+        if request.method == 'DELETE':
+            return role == User.Role.SYSTEM_ADMIN and obj.is_archived
+        if role == User.Role.SYSTEM_ADMIN:
+            return request.method in SAFE_METHODS
+        if role in MANAGER_ROLES:
+            return True
+        if role == User.Role.SALES_REP:
+            if request.method in SAFE_METHODS:
+                return True
+            return obj.company.leads.filter(assigned_to=request.user).exists()
         return False
 
 

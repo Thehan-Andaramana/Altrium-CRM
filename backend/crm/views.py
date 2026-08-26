@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth import authenticate, login, logout
-from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Subquery
+from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Q, Subquery
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import generics, status, viewsets
@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import (
+    ActivityEvent,
     ApprovalRequest,
     Company,
     Contact,
@@ -27,12 +28,14 @@ from .permissions import (
     ApprovalRequestPermission,
     ArchivableOwnedResourcePermission,
     CompanyPermission,
+    ContactPermission,
     ManagementRolePermission,
     ManagementWritePermission,
     RoleBasedAccess,
     SystemSettingsPermission,
 )
 from .serializers import (
+    ActivityEventSerializer,
     ApprovalRequestSerializer,
     CompanySerializer,
     ContactSerializer,
@@ -141,6 +144,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
         if response.status_code == status.HTTP_200_OK:
             # Cascades to the company's leads and projects.
             cascade_reason = f'Cascaded from company archive: {company.archive_reason}'
+            cascaded_lead_ids = list(company.leads.filter(is_archived=False).values_list('id', flat=True))
             company.leads.filter(is_archived=False).update(
                 is_archived=True,
                 archived_by=request.user,
@@ -153,6 +157,15 @@ class CompanyViewSet(viewsets.ModelViewSet):
                 archived_at=company.archived_at,
                 archive_reason=cascade_reason,
             )
+            ActivityEvent.objects.bulk_create([
+                ActivityEvent(
+                    lead_id=lead_id,
+                    category=ActivityEvent.Category.DESTRUCTIVE,
+                    description=f'Lead archived: {cascade_reason}',
+                    actor=request.user,
+                )
+                for lead_id in cascaded_lead_ids
+            ])
         return response
 
     @action(detail=True, methods=['post'])
@@ -190,26 +203,91 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def archive(self, request, pk=None):
-        return _do_archive(request, self.get_object(), LeadSerializer)
+        lead = self.get_object()
+        response = _do_archive(request, lead, LeadSerializer)
+        if response.status_code == status.HTTP_200_OK:
+            ActivityEvent.record(
+                lead, ActivityEvent.Category.DESTRUCTIVE, f'Lead archived: {lead.archive_reason}',
+                actor=request.user,
+            )
+        return response
 
     @action(detail=True, methods=['post'])
     def unarchive(self, request, pk=None):
-        return _do_unarchive(request, self.get_object(), LeadSerializer)
+        lead = self.get_object()
+        response = _do_unarchive(request, lead, LeadSerializer)
+        if response.status_code == status.HTTP_200_OK:
+            ActivityEvent.record(
+                lead, ActivityEvent.Category.DESTRUCTIVE, 'Lead unarchived', actor=request.user,
+            )
+        return response
+
+    @action(detail=True, methods=['get'])
+    def timeline(self, request, pk=None):
+        lead = self.get_object()
+        tagged = [
+            ('INTERACTION', 'INTERACTION', i.occurred_at, i)
+            for i in lead.interactions.select_related('created_by')
+        ] + [
+            ('APPROVAL_REQUEST', 'APPROVAL', a.created_at, a)
+            for a in ApprovalRequest.objects.filter(
+                Q(lead=lead) | Q(project__lead=lead)
+            ).select_related('requested_by', 'decided_by')
+        ] + [
+            ('ACTIVITY_EVENT', e.category, e.occurred_at, e)
+            for e in lead.activity_events.select_related('actor')
+        ]
+        tagged.sort(key=lambda entry: entry[2], reverse=True)
+
+        serializer_map = {
+            'INTERACTION': InteractionSerializer,
+            'APPROVAL_REQUEST': ApprovalRequestSerializer,
+            'ACTIVITY_EVENT': ActivityEventSerializer,
+        }
+        ctx = {'request': request}
+        entries = [
+            {**serializer_map[entry_type](obj, context=ctx).data, 'entry_type': entry_type, 'event_category': event_category}
+            for entry_type, event_category, _timestamp, obj in tagged
+        ]
+        return Response(entries)
 
 
 class ContactViewSet(viewsets.ModelViewSet):
     serializer_class = ContactSerializer
-    permission_classes = [IsAuthenticated, RoleBasedAccess]
+    permission_classes = [IsAuthenticated, ContactPermission]
     filterset_fields = ['company']
     ordering_fields = ['name']
     ordering = ['name']
 
     def get_queryset(self):
+        # Every role can read every contact (reps just can't write to ones on
+        # companies where they don't have an assigned lead -- see
+        # ContactPermission); nothing to role-filter.
         queryset = Contact.objects.select_related('company')
-        user = self.request.user
-        if user.role == User.Role.SALES_REP:
-            queryset = queryset.filter(company__owner=user)
-        return queryset
+        return _apply_archived_filter(queryset, self.request, self)
+
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        contact = self.get_object()
+        response = _do_archive(request, contact, ContactSerializer)
+        if response.status_code == status.HTTP_200_OK:
+            self._record_for_linked_leads(contact, f'Contact archived: {contact.name}', request.user)
+        return response
+
+    @action(detail=True, methods=['post'])
+    def unarchive(self, request, pk=None):
+        contact = self.get_object()
+        response = _do_unarchive(request, contact, ContactSerializer)
+        if response.status_code == status.HTTP_200_OK:
+            self._record_for_linked_leads(contact, f'Contact unarchived: {contact.name}', request.user)
+        return response
+
+    @staticmethod
+    def _record_for_linked_leads(contact, description, actor):
+        # A Contact isn't scoped to one Lead, so every lead currently
+        # pointing at it (usually 0 or 1, occasionally more) gets the entry.
+        for lead in Lead.objects.filter(contact=contact):
+            ActivityEvent.record(lead, ActivityEvent.Category.DESTRUCTIVE, description, actor=actor)
 
 
 class InteractionViewSet(viewsets.ModelViewSet):
@@ -251,11 +329,24 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def archive(self, request, pk=None):
-        return _do_archive(request, self.get_object(), ProjectSerializer)
+        project = self.get_object()
+        response = _do_archive(request, project, ProjectSerializer)
+        if response.status_code == status.HTTP_200_OK:
+            ActivityEvent.record(
+                project.lead, ActivityEvent.Category.DESTRUCTIVE, f'Project archived: {project.archive_reason}',
+                actor=request.user,
+            )
+        return response
 
     @action(detail=True, methods=['post'])
     def unarchive(self, request, pk=None):
-        return _do_unarchive(request, self.get_object(), ProjectSerializer)
+        project = self.get_object()
+        response = _do_unarchive(request, project, ProjectSerializer)
+        if response.status_code == status.HTTP_200_OK:
+            ActivityEvent.record(
+                project.lead, ActivityEvent.Category.DESTRUCTIVE, 'Project unarchived', actor=request.user,
+            )
+        return response
 
 
 class PhaseRequirementViewSet(viewsets.ModelViewSet):
@@ -292,7 +383,11 @@ class ApprovalRequestViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
 
     def get_queryset(self):
-        queryset = ApprovalRequest.objects.select_related('lead', 'project', 'requested_by', 'decided_by')
+        queryset = ApprovalRequest.objects.select_related(
+            'lead', 'lead__company', 'lead__contact',
+            'project', 'project__company', 'project__lead__contact',
+            'requested_by', 'decided_by',
+        )
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(requested_by=user)
@@ -312,7 +407,11 @@ class DashboardView(APIView):
             deal_value=Max('company__deals__value'),
             interaction_count=Count('interactions', distinct=True),
         )
-        approvals = ApprovalRequest.objects.select_related('lead', 'project', 'requested_by', 'decided_by')
+        approvals = ApprovalRequest.objects.select_related(
+            'lead', 'lead__company', 'lead__contact',
+            'project', 'project__company', 'project__lead__contact',
+            'requested_by', 'decided_by',
+        )
 
         if user.role == User.Role.SALES_REP:
             leads = leads.filter(assigned_to=user)

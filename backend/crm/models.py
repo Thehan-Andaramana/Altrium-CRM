@@ -62,15 +62,19 @@ class Contact(models.Model):
     email = models.EmailField(blank=True)
     phone = models.CharField(max_length=32, blank=True)
     job_title = models.CharField(max_length=255, blank=True)
+    is_archived = models.BooleanField(default=False)
+    archived_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='archived_contacts',
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archive_reason = models.TextField(blank=True)
 
     def __str__(self):
         return self.name
-
-    @property
-    def owner_id(self):
-        # Lets RoleBasedAccess.has_object_permission scope this exactly like
-        # a Company, without a bespoke permission class.
-        return self.company.owner_id
 
 
 class Lead(models.Model):
@@ -97,6 +101,7 @@ class Lead(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     last_activity_at = models.DateTimeField(auto_now=True)
+    last_internal_activity_at = models.DateTimeField(null=True, blank=True)
     assigned_to = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -193,6 +198,8 @@ class Interaction(models.Model):
         max_length=12,
         choices=Outcome.choices,
         default=Outcome.RESPONDED,
+        null=True,
+        blank=True,
     )
     notes = models.TextField(blank=True)
     occurred_at = models.DateTimeField(default=timezone.now)
@@ -216,9 +223,11 @@ class Interaction(models.Model):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        if self.outcome == Interaction.Outcome.RESPONDED:
-            # QuerySet.update() bypasses Lead.last_activity_at's auto_now, so
-            # occurred_at (which may be backdated) sticks instead of "now".
+        # QuerySet.update() bypasses Lead.last_activity_at's auto_now, so
+        # occurred_at (which may be backdated) sticks instead of "now".
+        if self.type == Interaction.Type.NOTE:
+            Lead.objects.filter(pk=self.lead_id).update(last_activity_at=self.occurred_at)
+        elif self.outcome == Interaction.Outcome.RESPONDED:
             Lead.objects.filter(pk=self.lead_id).update(
                 last_activity_at=self.occurred_at,
                 status=Lead.Status.HOT,
@@ -239,6 +248,11 @@ class RequirementTemplate(models.Model):
         choices=ConfirmationAuthority.choices,
         default=ConfirmationAuthority.REP,
     )
+    # Marks a task as representing confirmed client contact -- completing one
+    # updates the lead's last_activity_at and sets it HOT, the same as a
+    # RESPONDED interaction (see PhaseRequirementSerializer.update). A task
+    # without it only updates last_internal_activity_at.
+    client_facing = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -315,6 +329,7 @@ class Project(models.Model):
                     label=template.label,
                     description=template.description,
                     confirmation_authority=template.confirmation_authority,
+                    client_facing=template.client_facing,
                 )
                 for template in RequirementTemplate.objects.filter(is_active=True).order_by('phase', 'order')
             ])
@@ -346,6 +361,7 @@ class PhaseRequirement(models.Model):
         choices=ConfirmationAuthority.choices,
         default=ConfirmationAuthority.REP,
     )
+    client_facing = models.BooleanField(default=False)
     updated_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -462,6 +478,44 @@ class ApprovalRequest(models.Model):
     @property
     def target(self):
         return self.lead or self.project
+
+
+class ActivityEvent(models.Model):
+    class Category(models.TextChoices):
+        DESTRUCTIVE = 'DESTRUCTIVE', 'Destructive'
+        ADMINISTRATIVE = 'ADMINISTRATIVE', 'Administrative'
+        PHASE = 'PHASE', 'Phase'
+
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name='activity_events',
+    )
+    category = models.CharField(max_length=20, choices=Category.choices)
+    description = models.TextField()
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='activity_events',
+    )
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-occurred_at']
+
+    def __str__(self):
+        return f'{self.get_category_display()}: {self.description}'
+
+    @classmethod
+    def record(cls, lead, category, description, actor=None):
+        # Purely an audit-log write -- callers decide for themselves whether
+        # (and which of) Lead.last_activity_at/last_internal_activity_at
+        # should also move, since that varies even within a single category
+        # (e.g. a PHASE event from a client_facing task completion vs. any
+        # other task/phase change -- see PhaseRequirementSerializer.update).
+        return cls.objects.create(lead=lead, category=category, description=description, actor=actor)
 
 
 class SystemSettings(models.Model):

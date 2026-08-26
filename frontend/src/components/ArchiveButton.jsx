@@ -15,12 +15,45 @@ const RESOURCE_ENDPOINTS = {
   company: 'companies',
   lead: 'leads',
   project: 'projects',
+  contact: 'contacts',
 }
 
-// Management roles archive Company/Lead/Project directly. SALES_REP has no
-// archive rights at all -- for a Lead specifically, they instead raise an
-// ARCHIVE_LEAD approval request, which a manager approving then archives
-// (see ApprovalRequestSerializer._apply_approval_side_effect on the backend).
+function UnarchiveButton({ resource, record, onArchived }) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleUnarchive() {
+    setSaving(true)
+    setError(null)
+    try {
+      await post(`/api/${RESOURCE_ENDPOINTS[resource]}/${record.id}/unarchive/`)
+      onArchived()
+    } catch {
+      setError('Failed to unarchive.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="d-flex align-items-center gap-2">
+      {error && (
+        <span className="text-danger small" role="alert">
+          {error}
+        </span>
+      )}
+      <Button variant="outline-secondary" size="sm" disabled={saving} onClick={handleUnarchive}>
+        {saving ? 'Unarchiving…' : 'Unarchive'}
+      </Button>
+    </div>
+  )
+}
+
+// Management roles archive Company/Lead/Project/Contact directly, and are
+// the only ones who can unarchive. SALES_REP has no archive rights at all --
+// for a Lead specifically, they instead raise an ARCHIVE_LEAD approval
+// request, which a manager approving then archives (see
+// ApprovalRequestSerializer._apply_approval_side_effect on the backend).
 export default function ArchiveButton({ resource, record, onArchived }) {
   const { user } = useAuth()
   const isManagement = MANAGER_ROLES.has(user?.role)
@@ -31,7 +64,14 @@ export default function ArchiveButton({ resource, record, onArchived }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
-  if (record.is_archived || !(isManagement || canRequestArchive)) {
+  if (record.is_archived) {
+    if (!isManagement) {
+      return null
+    }
+    return <UnarchiveButton resource={resource} record={record} onArchived={onArchived} />
+  }
+
+  if (!(isManagement || canRequestArchive)) {
     return null
   }
 
