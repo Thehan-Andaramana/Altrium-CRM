@@ -80,7 +80,6 @@ const REQUEST_TYPE_LABELS = {
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
   PHASE_3_SIGNOFF: 'Phase 3 Signoff',
-  STATUS_OVERRIDE: 'Status Override',
 }
 
 const APPROVAL_STATUS_BORDER = {
@@ -110,22 +109,10 @@ const ACTIVITY_CATEGORY_BADGE_VARIANT = {
   PHASE: 'secondary',
 }
 
-// A date-only string ("2026-09-05") parses as UTC midnight if handed to
-// `new Date()` directly, which can display as the previous day depending on
-// the viewer's timezone -- pinning it to local midnight avoids that.
-function formatDate(dateStr) {
-  return dateStr ? new Date(`${dateStr}T00:00:00`).toLocaleDateString() : null
-}
-
-// "overdue" / "confirmed" / "awaiting" / "pending" / "not_applicable" --
-// mostly derived client side from status + confirmation_authority +
-// confirmed_by, mirroring the server's PhaseRequirement.is_confirmed_complete,
-// except is_overdue itself which the server already computes (it needs
-// "today", which the client shouldn't be trusted to get right).
+// "confirmed" / "awaiting" / "pending" / "not_applicable" -- derived client
+// side from status + confirmation_authority + confirmed_by, mirroring the
+// server's PhaseRequirement.is_confirmed_complete.
 function getTaskState(task) {
-  if (task.is_overdue) {
-    return 'overdue'
-  }
   if (task.status === 'NOT_APPLICABLE') {
     return 'not_applicable'
   }
@@ -134,15 +121,6 @@ function getTaskState(task) {
     return confirmed ? 'confirmed' : 'awaiting'
   }
   return 'pending'
-}
-
-function LockIcon(props) {
-  return (
-    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" aria-hidden="true" {...props}>
-      <rect x="3.5" y="7.2" width="9" height="6.3" rx="1" stroke="currentColor" strokeWidth="1.3" />
-      <path d="M5.5 7.2V5a2.5 2.5 0 0 1 5 0v2.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  )
 }
 
 function WarningIcon(props) {
@@ -189,13 +167,6 @@ function DashIcon(props) {
 }
 
 function TaskStatusIcon({ state }) {
-  if (state === 'overdue') {
-    return (
-      <span className="text-danger" title="Overdue">
-        <WarningIcon />
-      </span>
-    )
-  }
   if (state === 'confirmed') {
     return (
       <span className="text-success" title="Confirmed">
@@ -254,44 +225,24 @@ function ActivityEventRow({ entry }) {
 
 function TaskRow({ task, onOpen }) {
   const state = getTaskState(task)
-  const isOverdue = state === 'overdue'
   return (
-    <ListGroup.Item
-      action
-      variant={isOverdue ? 'danger' : undefined}
-      onClick={() => onOpen(task)}
-      className="d-flex flex-column gap-1"
-    >
-      <div className="d-flex align-items-center gap-2">
-        <TaskStatusIcon state={state} />
-        <span className={`flex-grow-1 ${state === 'not_applicable' ? 'text-decoration-line-through text-body-secondary' : ''}`}>
-          {task.label}
-        </span>
-        {task.completed_late && (
-          <Badge bg="warning" text="dark">
-            Late
-          </Badge>
-        )}
-        <Badge bg={task.confirmation_authority === 'MANAGER' ? 'info' : 'secondary'}>
-          {task.confirmation_authority === 'MANAGER' ? 'Manager' : 'Rep'}
-        </Badge>
-      </div>
-      {task.effective_due_date && (
-        <div className={isOverdue ? 'small text-danger fw-semibold' : 'small text-body-secondary'}>
-          Due {formatDate(task.effective_due_date)}
-        </div>
-      )}
-      {isOverdue && <div className="small text-danger">Overdue — follow up with the client.</div>}
+    <ListGroup.Item action onClick={() => onOpen(task)} className="d-flex align-items-center gap-2">
+      <TaskStatusIcon state={state} />
+      <span className={`flex-grow-1 ${state === 'not_applicable' ? 'text-decoration-line-through text-body-secondary' : ''}`}>
+        {task.label}
+      </span>
+      <Badge bg={task.confirmation_authority === 'MANAGER' ? 'info' : 'secondary'}>
+        {task.confirmation_authority === 'MANAGER' ? 'Manager' : 'Rep'}
+      </Badge>
     </ListGroup.Item>
   )
 }
 
-function TaskDetailForm({ task, canConfirm, canEditCommittedDate, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailForm({ task, canConfirm, saving, error, onSave, onConfirm, onHide }) {
   // Keyed by task.id from the parent, so switching tasks remounts this with
   // fresh initial state instead of needing an effect to resync it.
   const [draftStatus, setDraftStatus] = useState(task.status)
   const [draftNotes, setDraftNotes] = useState(task.notes ?? '')
-  const [draftCommittedDate, setDraftCommittedDate] = useState(task.committed_date ?? '')
 
   const awaitingConfirmation =
     task.status === 'COMPLETED' && task.confirmation_authority === 'MANAGER' && !task.confirmed_by
@@ -325,32 +276,6 @@ function TaskDetailForm({ task, canConfirm, canEditCommittedDate, saving, error,
             onChange={(event) => setDraftNotes(event.target.value)}
           />
         </Form.Group>
-        <Row className="g-2 mb-3">
-          <Col sm={6}>
-            <Form.Group controlId="task-due-date">
-              <Form.Label>Template due date</Form.Label>
-              <Form.Control plaintext readOnly value={task.due_date ? formatDate(task.due_date) : 'No deadline'} />
-            </Form.Group>
-          </Col>
-          <Col sm={6}>
-            <Form.Group controlId="task-committed-date">
-              <Form.Label>Committed date</Form.Label>
-              {canEditCommittedDate ? (
-                <Form.Control
-                  type="date"
-                  value={draftCommittedDate}
-                  onChange={(event) => setDraftCommittedDate(event.target.value)}
-                />
-              ) : (
-                <Form.Control
-                  plaintext
-                  readOnly
-                  value={task.committed_date ? formatDate(task.committed_date) : 'Not set'}
-                />
-              )}
-            </Form.Group>
-          </Col>
-        </Row>
         <div className="text-body-secondary small">
           {task.updated_by_username ? (
             <>
@@ -373,11 +298,7 @@ function TaskDetailForm({ task, canConfirm, canEditCommittedDate, saving, error,
         <Button variant="secondary" onClick={onHide} disabled={saving}>
           Cancel
         </Button>
-        <Button
-          variant="primary"
-          disabled={saving}
-          onClick={() => onSave(draftStatus, draftNotes, draftCommittedDate)}
-        >
+        <Button variant="primary" disabled={saving} onClick={() => onSave(draftStatus, draftNotes)}>
           {saving ? 'Saving…' : 'Save'}
         </Button>
       </Modal.Footer>
@@ -385,7 +306,7 @@ function TaskDetailForm({ task, canConfirm, canEditCommittedDate, saving, error,
   )
 }
 
-function TaskDetailModal({ task, canConfirm, canEditCommittedDate, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailModal({ task, canConfirm, saving, error, onSave, onConfirm, onHide }) {
   return (
     <Modal show={Boolean(task)} onHide={onHide} centered>
       {task && (
@@ -393,7 +314,6 @@ function TaskDetailModal({ task, canConfirm, canEditCommittedDate, saving, error
           key={task.id}
           task={task}
           canConfirm={canConfirm}
-          canEditCommittedDate={canEditCommittedDate}
           saving={saving}
           error={error}
           onSave={onSave}
@@ -439,11 +359,9 @@ function PhaseCard({ phaseNum, status, progress, tasks, onOpenTask, pendingSigno
   )
 }
 
-function PhaseTracker({ leadId, lead }) {
+function PhaseTracker({ leadId }) {
   const { user } = useAuth()
   const canConfirm = MANAGEMENT_ROLES.has(user?.role)
-  const canEditCommittedDate =
-    MANAGEMENT_ROLES.has(user?.role) || (user?.role === 'SALES_REP' && lead?.assigned_to === user.id)
 
   const [project, setProject] = useState(null)
   const [loadingProject, setLoadingProject] = useState(true)
@@ -522,8 +440,8 @@ function PhaseTracker({ leadId, lead }) {
     }
   }
 
-  function handleSaveTask(taskStatus, notes, committedDate) {
-    applyTaskUpdate({ status: taskStatus, notes, committed_date: committedDate || null })
+  function handleSaveTask(taskStatus, notes) {
+    applyTaskUpdate({ status: taskStatus, notes })
   }
 
   function handleConfirmTask() {
@@ -613,7 +531,6 @@ function PhaseTracker({ leadId, lead }) {
       <TaskDetailModal
         task={activeTask}
         canConfirm={canConfirm}
-        canEditCommittedDate={canEditCommittedDate}
         saving={taskSaving}
         error={taskError}
         onSave={handleSaveTask}
@@ -736,125 +653,6 @@ function EditLeadModal({ show, lead, contacts, salesReps, canEditAssignedTo, onH
   )
 }
 
-function StatusOverrideForm({ lead, canManage, pendingRequest, saving, error, onSubmit, onClear, onHide }) {
-  const [draftStatus, setDraftStatus] = useState(lead.status)
-  const [reason, setReason] = useState('')
-
-  return (
-    <Form
-      onSubmit={(event) => {
-        event.preventDefault()
-        onSubmit(draftStatus, reason)
-      }}
-    >
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          Set Lead Status
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        {lead.is_status_overridden && (
-          <Alert variant="secondary">
-            Manually pinned to {lead.status}
-            {lead.status_override_by_username && ` by ${lead.status_override_by_username}`}
-            {lead.status_override_reason && `: ${lead.status_override_reason}`}
-          </Alert>
-        )}
-        {pendingRequest ? (
-          <Alert variant="warning" className="mb-0">
-            A request to set status to {pendingRequest.requested_status} is pending approval.
-          </Alert>
-        ) : (
-          <>
-            <Form.Group className="mb-3" controlId="status-override-status">
-              <Form.Label>Status</Form.Label>
-              <Form.Select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
-                <option value="HOT">Hot</option>
-                <option value="COLD">Cold</option>
-              </Form.Select>
-            </Form.Group>
-            <Form.Group controlId="status-override-reason">
-              <Form.Label>Reason</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={3}
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                required
-              />
-            </Form.Group>
-          </>
-        )}
-      </Modal.Body>
-      <Modal.Footer>
-        {canManage && lead.is_status_overridden && (
-          <Button variant="outline-secondary" className="me-auto" disabled={saving} onClick={onClear}>
-            Return to automatic
-          </Button>
-        )}
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        {!pendingRequest && (
-          <Button type="submit" variant="primary" disabled={saving || !reason.trim()}>
-            {saving ? 'Saving…' : canManage ? 'Apply' : 'Submit request'}
-          </Button>
-        )}
-      </Modal.Footer>
-    </Form>
-  )
-}
-
-function StatusOverrideModal({ show, lead, canManage, pendingRequest, onHide, onSubmit, onClear }) {
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(null)
-
-  async function handleSubmit(draftStatus, reason) {
-    setSaving(true)
-    setError(null)
-    try {
-      await onSubmit(draftStatus, reason)
-      onHide()
-    } catch {
-      setError(canManage ? 'Failed to update status.' : 'Failed to submit the status request.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleClear() {
-    setSaving(true)
-    setError(null)
-    try {
-      await onClear()
-      onHide()
-    } catch {
-      setError('Failed to clear the status override.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Modal show={show} onHide={onHide} centered>
-      {lead && (
-        <StatusOverrideForm
-          key={lead.id}
-          lead={lead}
-          canManage={canManage}
-          pendingRequest={pendingRequest}
-          saving={saving}
-          error={error}
-          onSubmit={handleSubmit}
-          onClear={handleClear}
-          onHide={onHide}
-        />
-      )}
-    </Modal>
-  )
-}
-
 export default function LeadDetail() {
   const { id } = useParams()
   const { user } = useAuth()
@@ -877,23 +675,10 @@ export default function LeadDetail() {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
 
-  const [showStatusModal, setShowStatusModal] = useState(false)
-
   const canEdit =
     Boolean(lead) &&
     (MANAGER_ROLES.has(user?.role) || (user?.role === 'SALES_REP' && lead.assigned_to === user.id))
   const canEditAssignedTo = MANAGER_ROLES.has(user?.role)
-  // set_status/clear_status_override are gated differently from Edit/Archive
-  // -- SYSTEM_ADMIN is a full participant here (matches FULL_ACCESS_ROLES on
-  // the backend), unlike the narrower MANAGER_ROLES used above.
-  const canOverrideStatus =
-    Boolean(lead) &&
-    (MANAGEMENT_ROLES.has(user?.role) || (user?.role === 'SALES_REP' && lead.assigned_to === user.id))
-  const canManageStatus = MANAGEMENT_ROLES.has(user?.role)
-  const pendingStatusOverrideRequest = timelineEntries.find(
-    (entry) =>
-      entry.entry_type === 'APPROVAL_REQUEST' && entry.request_type === 'STATUS_OVERRIDE' && entry.status === 'PENDING',
-  )
 
   useEffect(() => {
     let cancelled = false
@@ -920,23 +705,6 @@ export default function LeadDetail() {
   async function refreshLead() {
     const data = await get(`/api/leads/${id}/?include_archived=true`)
     setLead(data)
-  }
-
-  async function handleSetStatus(draftStatus, reason) {
-    // 200 (management, applied immediately) returns the updated Lead; 201
-    // (rep) returns the pending ApprovalRequest instead -- only the former
-    // means the lead itself changed.
-    const data = await post(`/api/leads/${id}/set_status/`, { status: draftStatus, reason })
-    if (!data.request_type) {
-      setLead(data)
-    }
-    await refreshTimeline()
-  }
-
-  async function handleClearStatusOverride() {
-    const data = await post(`/api/leads/${id}/clear_status_override/`)
-    setLead(data)
-    await refreshTimeline()
   }
 
   useEffect(() => {
@@ -1050,32 +818,9 @@ export default function LeadDetail() {
               <p className="text-body-secondary mb-0">{lead.contact_name ?? 'No contact'}</p>
             </div>
             <div className="d-flex align-items-center gap-2">
-              {canOverrideStatus ? (
-                <Badge
-                  as="button"
-                  type="button"
-                  bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}
-                  className="fs-6 border-0"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setShowStatusModal(true)}
-                >
-                  {lead.status}
-                </Badge>
-              ) : (
-                <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">
-                  {lead.status}
-                </Badge>
-              )}
-              {lead.is_status_overridden && (
-                <span
-                  className="text-body-secondary"
-                  title={`Manually pinned to ${lead.status}${
-                    lead.status_override_by_username ? ` by ${lead.status_override_by_username}` : ''
-                  }${lead.status_override_reason ? `: ${lead.status_override_reason}` : ''}`}
-                >
-                  <LockIcon />
-                </span>
-              )}
+              <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">
+                {lead.status}
+              </Badge>
               {canEdit && (
                 <Button variant="outline-secondary" size="sm" onClick={() => setShowEditModal(true)}>
                   Edit
@@ -1084,18 +829,6 @@ export default function LeadDetail() {
               <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} />
             </div>
           </div>
-
-          {canOverrideStatus && showStatusModal && (
-            <StatusOverrideModal
-              show={showStatusModal}
-              lead={lead}
-              canManage={canManageStatus}
-              pendingRequest={pendingStatusOverrideRequest}
-              onHide={() => setShowStatusModal(false)}
-              onSubmit={handleSetStatus}
-              onClear={handleClearStatusOverride}
-            />
-          )}
 
           {canEdit && showEditModal && (
             <EditLeadModal
@@ -1137,7 +870,7 @@ export default function LeadDetail() {
             </Col>
           </Row>
 
-          <PhaseTracker leadId={lead.id} lead={lead} />
+          <PhaseTracker leadId={lead.id} />
 
           <Card className="mb-4">
             <Card.Body>
@@ -1223,7 +956,6 @@ export default function LeadDetail() {
                       <div className="d-flex gap-2 align-items-center">
                         <span className="fw-semibold">
                           {REQUEST_TYPE_LABELS[entry.request_type] ?? entry.request_type}
-                          {entry.requested_status ? ` → ${entry.requested_status}` : ''}
                         </span>
                         <Badge bg={APPROVAL_STATUS_BADGE_VARIANT[entry.status] ?? 'secondary'}>{entry.status}</Badge>
                       </div>

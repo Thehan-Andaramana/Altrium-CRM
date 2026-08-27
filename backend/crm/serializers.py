@@ -1,5 +1,3 @@
-from datetime import timedelta
-
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
@@ -90,10 +88,6 @@ class LeadSerializer(serializers.ModelSerializer):
     deal_stage = serializers.CharField(read_only=True, default=None)
     has_project = serializers.BooleanField(read_only=True, default=False)
     archived_by_username = serializers.CharField(source='archived_by.username', read_only=True, default=None)
-    is_status_overridden = serializers.BooleanField(read_only=True)
-    status_override_by_username = serializers.CharField(
-        source='status_override_by.username', read_only=True, default=None,
-    )
 
     class Meta:
         model = Lead
@@ -101,12 +95,10 @@ class LeadSerializer(serializers.ModelSerializer):
             'id', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
             'last_activity_at', 'last_internal_activity_at', 'assigned_to', 'assigned_to_username',
             'interaction_count', 'deal_stage', 'has_project',
-            'is_status_overridden', 'status_override_reason', 'status_override_by_username',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
         ]
         read_only_fields = [
             'created_at', 'last_activity_at', 'last_internal_activity_at',
-            'status_override_reason',
             'is_archived', 'archived_by', 'archived_at', 'archive_reason',
         ]
 
@@ -193,13 +185,11 @@ class ProjectSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'lead', 'company', 'company_name', 'deal', 'current_phase',
             'phase_1_status', 'phase_2_status', 'phase_3_status',
-            'phase_1_started_at', 'phase_2_started_at', 'phase_3_started_at',
             'maintenance', 'phase_progress', 'overall_progress', 'pending_approval_requests',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
             'created_at', 'updated_at',
         ]
         read_only_fields = [
-            'phase_1_started_at', 'phase_2_started_at', 'phase_3_started_at',
             'maintenance', 'created_at', 'updated_at',
             'is_archived', 'archived_by', 'archived_at', 'archive_reason',
         ]
@@ -292,8 +282,6 @@ class ProjectSerializer(serializers.ModelSerializer):
                     f'Phase {phase_num} moved to {new_status}',
                     actor=request.user,
                 )
-                if new_status == Project.PhaseStatus.IN_PROGRESS:
-                    self._record_phase_start(project, phase_num)
             Lead.objects.filter(pk=project.lead_id).update(last_internal_activity_at=timezone.now())
 
         if phase_1_newly_complete:
@@ -327,7 +315,6 @@ class ProjectSerializer(serializers.ModelSerializer):
             if project.phase_3_status == Project.PhaseStatus.NOT_STARTED:
                 project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
                 project.save(update_fields=['phase_3_status'])
-                cls._record_phase_start(project, 3)
         elif phase_num == 3 and not project.maintenance:
             project.maintenance = True
             project.save(update_fields=['maintenance'])
@@ -352,58 +339,27 @@ class ProjectSerializer(serializers.ModelSerializer):
             deal.save(update_fields=['stage'])
 
         project.deal = deal
-        phase_2_starting = project.phase_2_status == Project.PhaseStatus.NOT_STARTED
-        if phase_2_starting:
+        if project.phase_2_status == Project.PhaseStatus.NOT_STARTED:
             project.phase_2_status = Project.PhaseStatus.IN_PROGRESS
         project.save()
-        if phase_2_starting:
-            ProjectSerializer._record_phase_start(project, 2)
-
-    @staticmethod
-    def _record_phase_start(project, phase_num):
-        # Runs once per phase, the first time it moves to IN_PROGRESS: stamps
-        # when it started and, from that, calculates due_date for every
-        # requirement in that phase that has a duration set.
-        started_field = f'phase_{phase_num}_started_at'
-        if getattr(project, started_field) is not None:
-            return
-        now = timezone.now()
-        setattr(project, started_field, now)
-        project.save(update_fields=[started_field])
-
-        for requirement in project.requirements.filter(phase=phase_num, default_duration_days__isnull=False):
-            due_date = now.date() + timedelta(days=requirement.default_duration_days)
-            PhaseRequirement.objects.filter(pk=requirement.pk).update(due_date=due_date)
 
 
 class PhaseRequirementSerializer(serializers.ModelSerializer):
     updated_by_username = serializers.CharField(source='updated_by.username', read_only=True, default=None)
     confirmed_by_username = serializers.CharField(source='confirmed_by.username', read_only=True, default=None)
-    effective_due_date = serializers.DateField(read_only=True)
-    is_overdue = serializers.BooleanField(read_only=True)
-    completed_late = serializers.BooleanField(read_only=True)
-    lead_id = serializers.IntegerField(source='project.lead_id', read_only=True)
-    lead_name = serializers.SerializerMethodField()
-    company_name = serializers.CharField(source='project.company.name', read_only=True, default=None)
 
     class Meta:
         model = PhaseRequirement
         fields = [
             'id', 'project', 'phase', 'label', 'description', 'status', 'notes',
             'confirmation_authority', 'client_facing',
-            'due_date', 'committed_date', 'effective_due_date', 'is_overdue', 'completed_late',
-            'lead_id', 'lead_name', 'company_name',
             'updated_by', 'updated_by_username', 'updated_at',
             'confirmed_by', 'confirmed_by_username', 'confirmed_at',
         ]
         read_only_fields = [
             'project', 'phase', 'label', 'description', 'confirmation_authority', 'client_facing',
-            'due_date', 'updated_by', 'updated_at', 'confirmed_by', 'confirmed_at',
+            'updated_by', 'updated_at', 'confirmed_by', 'confirmed_at',
         ]
-
-    def get_lead_name(self, obj):
-        lead = obj.project.lead
-        return lead.contact.name if lead.contact_id else f'Lead #{lead.id}'
 
     def validate(self, attrs):
         # confirmed_by/confirmed_at are read-only, so DRF would otherwise
@@ -421,10 +377,6 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
         user = request.user if request else None
         new_status = validated_data.get('status', instance.status)
         status_changing = 'status' in validated_data and validated_data['status'] != instance.status
-        committed_date_changing = (
-            'committed_date' in validated_data and validated_data['committed_date'] != instance.committed_date
-        )
-        old_committed_date = instance.committed_date
 
         if 'status' in validated_data or 'notes' in validated_data:
             validated_data['updated_by'] = user
@@ -456,28 +408,9 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
                 # A client-facing task completing is treated exactly like a
                 # RESPONDED interaction -- it's real confirmed client contact,
                 # not just internal progress, so it (and only it) flips HOT.
-                Lead.objects.filter(pk=lead_id).update(last_activity_at=timezone.now())
-                # A manual status_override takes precedence over this
-                # automatic HOT-flip (last_activity_at above still moves --
-                # the contact genuinely happened, override or not).
-                Lead.objects.filter(pk=lead_id, status_override__isnull=True).update(status=Lead.Status.HOT)
+                Lead.objects.filter(pk=lead_id).update(last_activity_at=timezone.now(), status=Lead.Status.HOT)
             else:
                 Lead.objects.filter(pk=lead_id).update(last_internal_activity_at=timezone.now())
-
-        if committed_date_changing and user is not None:
-            new_committed_date = requirement.committed_date
-            if old_committed_date is None:
-                change = f'set to {new_committed_date}'
-            elif new_committed_date is None:
-                change = f'cleared (was {old_committed_date})'
-            else:
-                change = f'changed from {old_committed_date} to {new_committed_date}'
-            ActivityEvent.record(
-                requirement.project.lead,
-                ActivityEvent.Category.ADMINISTRATIVE,
-                f'Committed date for "{requirement.label}" {change} by {user.username}',
-                actor=user,
-            )
 
         return requirement
 
@@ -487,7 +420,7 @@ class RequirementTemplateSerializer(serializers.ModelSerializer):
         model = RequirementTemplate
         fields = [
             'id', 'phase', 'label', 'description', 'order',
-            'confirmation_authority', 'client_facing', 'default_duration_days', 'is_active',
+            'confirmation_authority', 'client_facing', 'is_active',
         ]
 
 
@@ -508,7 +441,6 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
         model = ApprovalRequest
         fields = [
             'id', 'request_type', 'lead', 'project', 'status', 'reason', 'decision_note',
-            'requested_status',
             'requested_by', 'requested_by_username', 'decided_by', 'decided_by_username',
             'lead_name', 'company_name', 'phase_number',
             'created_at', 'decided_at',
@@ -543,7 +475,7 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self.instance is not None:
-            for field_name in ('request_type', 'lead', 'project', 'reason', 'requested_status'):
+            for field_name in ('request_type', 'lead', 'project', 'reason'):
                 self.fields[field_name].read_only = True
         else:
             self.fields['status'].read_only = True
@@ -554,18 +486,10 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
             if bool(lead) == bool(project):
                 raise serializers.ValidationError('Provide exactly one of lead or project.')
             request_type = attrs.get('request_type')
-            if request_type in ApprovalRequest.LEAD_TARGETED_TYPES and lead is None:
-                raise serializers.ValidationError({
-                    'lead': f'{request_type} requests must target a lead.',
-                })
-            if request_type not in ApprovalRequest.LEAD_TARGETED_TYPES and project is None:
+            if request_type == ApprovalRequest.RequestType.ARCHIVE_LEAD and lead is None:
+                raise serializers.ValidationError({'lead': 'ARCHIVE_LEAD requests must target a lead.'})
+            if request_type != ApprovalRequest.RequestType.ARCHIVE_LEAD and project is None:
                 raise serializers.ValidationError({'project': 'Phase signoff requests must target a project.'})
-            if request_type == ApprovalRequest.RequestType.STATUS_OVERRIDE:
-                requested_status = attrs.get('requested_status')
-                if requested_status not in (Lead.Status.HOT, Lead.Status.COLD):
-                    raise serializers.ValidationError({
-                        'requested_status': 'Must be HOT or COLD for a status override request.',
-                    })
             # No manual duplicate-pending check here: ModelSerializer already
             # derives a condition-aware UniqueTogetherValidator from the
             # model's UniqueConstraint (see ApprovalRequest.Meta), which runs
@@ -618,24 +542,6 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
                 lead,
                 ActivityEvent.Category.DESTRUCTIVE,
                 f'Lead archived: {lead.archive_reason}',
-                actor=request.user,
-            )
-            return
-
-        if instance.request_type == ApprovalRequest.RequestType.STATUS_OVERRIDE:
-            lead = instance.lead
-            if lead is None:
-                return
-            lead.status = instance.requested_status
-            lead.status_override = instance.requested_status
-            lead.status_override_reason = instance.reason
-            lead.status_override_by = request.user
-            lead.status_override_at = timezone.now()
-            lead.save()
-            ActivityEvent.record(
-                lead,
-                ActivityEvent.Category.ADMINISTRATIVE,
-                f'Status override to {instance.requested_status} approved: {instance.reason}',
                 actor=request.user,
             )
             return

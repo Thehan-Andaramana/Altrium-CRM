@@ -137,13 +137,6 @@ class ArchivableOwnedResourcePermission(BasePermission):
     Like CompanyPermission, but without the "any role can read" carve-out --
     SALES_REP only has access (read or write) to records they own or are
     assigned to. Used by Lead and Project.
-
-    set_status/clear_status_override (Lead only) are a further special case:
-    unlike everything else here, SYSTEM_ADMIN is a full participant (matching
-    FULL_ACCESS_ROLES, not the narrower MANAGER_ROLES), and a SALES_REP may
-    reach set_status on their own lead even though it isn't a SAFE method --
-    LeadViewSet.set_status branches on role to apply it immediately for
-    management vs. raise an approval request for a rep.
     """
 
     def has_permission(self, request, view):
@@ -152,10 +145,6 @@ class ArchivableOwnedResourcePermission(BasePermission):
             return request.method in SAFE_METHODS
         if view.action in ('archive', 'unarchive'):
             return role in MANAGER_ROLES
-        if view.action == 'set_status':
-            return role in FULL_ACCESS_ROLES or role == User.Role.SALES_REP
-        if view.action == 'clear_status_override':
-            return role in FULL_ACCESS_ROLES
         if request.method == 'DELETE':
             return role == User.Role.SYSTEM_ADMIN
         if role == User.Role.SYSTEM_ADMIN:
@@ -168,12 +157,6 @@ class ArchivableOwnedResourcePermission(BasePermission):
             return request.method in SAFE_METHODS
         if view.action in ('archive', 'unarchive'):
             return role in MANAGER_ROLES
-        if view.action == 'set_status':
-            if role in FULL_ACCESS_ROLES:
-                return True
-            return role == User.Role.SALES_REP and obj.assigned_to_id == request.user.id
-        if view.action == 'clear_status_override':
-            return role in FULL_ACCESS_ROLES
         if request.method == 'DELETE':
             return role == User.Role.SYSTEM_ADMIN and obj.is_archived
         if role == User.Role.SYSTEM_ADMIN:

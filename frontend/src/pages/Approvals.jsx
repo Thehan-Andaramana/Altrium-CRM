@@ -16,7 +16,6 @@ const REQUEST_TYPE_LABELS = {
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
   PHASE_3_SIGNOFF: 'Phase 3 Signoff',
-  STATUS_OVERRIDE: 'Status Override',
 }
 
 const STATUS_OPTIONS = [
@@ -205,7 +204,6 @@ export default function Approvals() {
                   <td>
                     {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
                     {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''}
-                    {approval.requested_status ? ` → ${approval.requested_status}` : ''}
                   </td>
                   <td>{approval.requested_by_username ?? 'Unknown'}</td>
                   <td>{approval.reason || '—'}</td>
