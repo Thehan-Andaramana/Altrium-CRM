@@ -634,6 +634,7 @@ function PhaseTracker({ leadId }) {
 function EditLeadForm({ lead, contacts, salesReps, canEditAssignedTo, saving, error, onSave, onHide, onContactCreated }) {
   // Keyed by lead.id from the parent, so reopening remounts this with fresh
   // initial state instead of needing an effect to resync it.
+  const [name, setName] = useState(lead.name)
   const [status, setStatus] = useState(lead.status)
   const [contactId, setContactId] = useState(lead.contact ?? '')
   const [assignedTo, setAssignedTo] = useState(lead.assigned_to ?? '')
@@ -647,7 +648,7 @@ function EditLeadForm({ lead, contacts, salesReps, canEditAssignedTo, saving, er
     <Form
       onSubmit={(event) => {
         event.preventDefault()
-        onSave({ status, contactId, assignedTo })
+        onSave({ name, status, contactId, assignedTo })
       }}
     >
       <Modal.Header closeButton>
@@ -657,6 +658,15 @@ function EditLeadForm({ lead, contacts, salesReps, canEditAssignedTo, saving, er
       </Modal.Header>
       <Modal.Body>
         {error && <Alert variant="danger">{error}</Alert>}
+        <Form.Group className="mb-3" controlId="edit-lead-name">
+          <Form.Label>Name</Form.Label>
+          <Form.Control
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
+            required
+          />
+        </Form.Group>
         <Form.Group className="mb-3" controlId="edit-lead-status">
           <Form.Label>Status</Form.Label>
           <Form.Select value={status} onChange={(event) => setStatus(event.target.value)}>
@@ -707,11 +717,11 @@ function EditLeadModal({ show, lead, contacts, salesReps, canEditAssignedTo, onH
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
-  async function handleSave({ status, contactId, assignedTo }) {
+  async function handleSave({ name, status, contactId, assignedTo }) {
     setSaving(true)
     setError(null)
     try {
-      const payload = { status, contact: contactId ? Number(contactId) : null }
+      const payload = { name, status, contact: contactId ? Number(contactId) : null }
       if (canEditAssignedTo) {
         payload.assigned_to = Number(assignedTo)
       }
@@ -914,14 +924,17 @@ export default function LeadDetail() {
           <div className="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
             <div>
               <h1 className="h3 mb-1">
-                {lead.company_name ?? '—'}
+                {lead.name}
                 {lead.is_archived && (
                   <Badge bg="secondary" className="ms-2 align-middle">
                     Archived
                   </Badge>
                 )}
               </h1>
-              <p className="text-body-secondary mb-0">{lead.contact_name ?? 'No contact'}</p>
+              <p className="text-body-secondary mb-0">
+                {lead.company_name ?? '—'}
+                {lead.contact_name && <> · {lead.contact_name}</>}
+              </p>
             </div>
             <div className="d-flex align-items-center gap-2">
               <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">

@@ -92,7 +92,7 @@ class LeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lead
         fields = [
-            'id', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
+            'id', 'name', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
             'last_activity_at', 'last_internal_activity_at', 'assigned_to', 'assigned_to_username',
             'interaction_count', 'deal_stage', 'has_project',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
@@ -120,6 +120,8 @@ class LeadSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         request = self.context.get('request')
         changes = []
+        if 'name' in validated_data and validated_data['name'] != instance.name:
+            changes.append('name changed')
         if 'status' in validated_data and validated_data['status'] != instance.status:
             changes.append(f"status changed to {validated_data['status']}")
         if 'contact' in validated_data and validated_data['contact'] != instance.contact:
@@ -494,9 +496,7 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
 
     def get_lead_name(self, obj):
         lead = self._resolve_lead(obj)
-        if lead is None:
-            return None
-        return lead.contact.name if lead.contact_id else f'Lead #{lead.id}'
+        return lead.name if lead is not None else None
 
     def get_company_name(self, obj):
         if obj.lead is not None:

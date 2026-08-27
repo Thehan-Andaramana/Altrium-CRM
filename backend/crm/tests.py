@@ -850,7 +850,9 @@ class CompanyDeleteTests(ArchiveTestMixin, APITestCase):
 class LeadRolePermissionAndArchiveTests(ArchiveTestMixin, APITestCase):
     def test_rep_can_create_lead_assigned_to_self(self):
         self.client.force_authenticate(self.rep)
-        response = self.client.post(reverse('lead-list'), {'company': self.company.id}, format='json')
+        response = self.client.post(
+            reverse('lead-list'), {'company': self.company.id, 'name': 'Acme Corp — New deal'}, format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['assigned_to'], self.rep.id)
 
@@ -899,6 +901,39 @@ class LeadRolePermissionAndArchiveTests(ArchiveTestMixin, APITestCase):
         url = reverse('lead-detail', args=[self.lead.id])
         response = self.client.delete(url)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class LeadNameTests(ArchiveTestMixin, APITestCase):
+    def test_name_is_required_on_creation(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            reverse('lead-list'), {'company': self.company.id, 'assigned_to': self.rep.id}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('name', response.data)
+
+    def test_creating_a_lead_with_a_name_succeeds(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            reverse('lead-list'),
+            {'company': self.company.id, 'assigned_to': self.rep.id, 'name': 'Acme Corp — Renewal'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['name'], 'Acme Corp — Renewal')
+
+    def test_search_matches_on_lead_name(self):
+        other_company = Company.objects.create(name='Other Co', owner=self.manager)
+        distinctive = Lead.objects.create(
+            company=other_company, name='Distinctive Rollout Project', assigned_to=self.rep,
+        )
+
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(reverse('lead-list'), {'search': 'Distinctive Rollout'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(distinctive.id, ids)
+        self.assertNotIn(self.lead.id, ids)
 
 
 class ProjectRolePermissionAndArchiveTests(ArchiveTestMixin, APITestCase):
@@ -1197,7 +1232,9 @@ class ApprovalRequestDetailFieldsTests(APITestCase):
         self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
         self.company = Company.objects.create(name='Acme', owner=self.rep)
         self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
-        self.lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        self.lead = Lead.objects.create(
+            company=self.company, contact=self.contact, name='Jane Doe', assigned_to=self.rep,
+        )
         self.project = self.lead.project
         self.client.force_authenticate(self.manager)
 
@@ -1228,8 +1265,10 @@ class ApprovalRequestDetailFieldsTests(APITestCase):
         self.assertEqual(response.data['company_name'], 'Acme')
         self.assertEqual(response.data['phase_number'], 2)
 
-    def test_lead_name_falls_back_to_lead_number_when_no_contact(self):
-        lead_no_contact = Lead.objects.create(company=self.company, assigned_to=self.rep)
+    def test_lead_name_reflects_the_leads_own_name_even_without_a_contact(self):
+        lead_no_contact = Lead.objects.create(
+            company=self.company, name='Acme — Standalone deal', assigned_to=self.rep,
+        )
         approval = ApprovalRequest.objects.create(
             request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD,
             lead=lead_no_contact,
@@ -1237,7 +1276,7 @@ class ApprovalRequestDetailFieldsTests(APITestCase):
         )
         url = reverse('approvalrequest-detail', args=[approval.id])
         response = self.client.get(url)
-        self.assertEqual(response.data['lead_name'], f'Lead #{lead_no_contact.id}')
+        self.assertEqual(response.data['lead_name'], 'Acme — Standalone deal')
 
 
 class ContactPermissionAndArchiveTests(APITestCase):

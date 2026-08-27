@@ -26,8 +26,8 @@ function LeadListItem({ lead, extra }) {
   return (
     <ListGroup.Item className="d-flex justify-content-between align-items-center gap-2">
       <div>
-        <Link to={`/leads/${lead.id}`}>{lead.company_name ?? 'Unnamed company'}</Link>
-        <div className="text-body-secondary small">{lead.assigned_to_username ?? 'Unassigned'}</div>
+        <Link to={`/leads/${lead.id}`}>{lead.name}</Link>
+        <div className="text-body-secondary small">{lead.company_name ?? '—'}</div>
       </div>
       {extra}
     </ListGroup.Item>
@@ -123,7 +123,8 @@ function ApprovalsCard({ count, items, canDecide, actioningId, actionError, onDe
                 <div className="d-flex justify-content-between align-items-start gap-2">
                   <div>
                     <div>
-                      {approval.company_name ?? '—'} — {approval.lead_name ?? '—'}
+                      {approval.lead_name ?? '—'}
+                      <span className="text-body-secondary"> · {approval.company_name ?? '—'}</span>
                     </div>
                     <div className="text-body-secondary small">
                       {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}

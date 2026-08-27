@@ -84,6 +84,10 @@ class Lead(models.Model):
         HOT = 'HOT', 'Hot'
         COLD = 'COLD', 'Cold'
 
+    # The primary display identity for a lead -- e.g. "Wayne Enterprises —
+    # Q3 infrastructure upgrade" -- shown everywhere a lead appears, in place
+    # of the company/contact combination that used to stand in for it.
+    name = models.CharField(max_length=200)
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
@@ -121,7 +125,7 @@ class Lead(models.Model):
     archive_reason = models.TextField(blank=True)
 
     def __str__(self):
-        return f'{self.company} lead ({self.status})'
+        return self.name
 
     def save(self, *args, **kwargs):
         is_new = self._state.adding

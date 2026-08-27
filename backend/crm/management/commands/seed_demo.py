@@ -168,31 +168,40 @@ class Command(BaseCommand):
         # directly.
         now = timezone.now()
 
-        # (company, contact, status, assigned_to, days_ago, has_interactions)
+        # (company, contact, name, status, assigned_to, days_ago, has_interactions)
         # days_ago backdates last_activity_at only for leads with no RESPONDED
         # interactions (a RESPONDED interaction drives last_activity_at itself,
         # via Interaction.save(); NO_ANSWER/MISSED_CALL interactions don't
         # touch it, so a lead can have those and still be backdated here).
         specs = [
-            ('Acme Corp', 'Alice Anderson', Lead.Status.HOT, rep1, 1, True),
-            ('Globex Inc', 'Grace Green', Lead.Status.COLD, rep1, 22, False),
-            ('Globex Inc', 'Gary Hughes', Lead.Status.HOT, rep1, 4, True),
-            ('Initech', 'Peter Gibbons', Lead.Status.COLD, rep2, 27, False),
-            ('Umbrella Corp', 'Uma Ramirez', Lead.Status.HOT, rep2, 2, True),
-            ('Umbrella Corp', 'Ulric Novak', Lead.Status.COLD, rep2, 30, False),
-            ('Stark Industries', 'Sam Okafor', Lead.Status.COLD, mgr1, 14, False),
-            ('Wayne Enterprises', 'Wendy Park', Lead.Status.HOT, mgr1, 6, False),
-            ('Wayne Enterprises', 'Will Turner', Lead.Status.COLD, mgr1, 9, False),
+            ('Acme Corp', 'Alice Anderson', 'Acme Corp — Q3 renewal & pricing rollout',
+             Lead.Status.HOT, rep1, 1, True),
+            ('Globex Inc', 'Grace Green', 'Globex Inc — Network security audit',
+             Lead.Status.COLD, rep1, 22, False),
+            ('Globex Inc', 'Gary Hughes', 'Globex Inc — Engineering platform demo',
+             Lead.Status.HOT, rep1, 4, True),
+            ('Initech', 'Peter Gibbons', 'Initech — Support ticketing overhaul',
+             Lead.Status.COLD, rep2, 27, False),
+            ('Umbrella Corp', 'Uma Ramirez', 'Umbrella Corp — Research partnership pilot',
+             Lead.Status.HOT, rep2, 2, True),
+            ('Umbrella Corp', 'Ulric Novak', 'Umbrella Corp — Procurement platform upgrade',
+             Lead.Status.COLD, rep2, 30, False),
+            ('Stark Industries', 'Sam Okafor', 'Stark Industries — Supply chain modernization',
+             Lead.Status.COLD, mgr1, 14, False),
+            ('Wayne Enterprises', 'Wendy Park', 'Wayne Enterprises — Q3 infrastructure upgrade',
+             Lead.Status.HOT, mgr1, 6, False),
+            ('Wayne Enterprises', 'Will Turner', 'Wayne Enterprises — IT helpdesk migration',
+             Lead.Status.COLD, mgr1, 9, False),
         ]
 
         leads = {}
-        for company_name, contact_name, status, assigned_to, days_ago, has_interactions in specs:
+        for company_name, contact_name, name, status, assigned_to, days_ago, has_interactions in specs:
             company = companies[company_name]
             contact = contacts[(company_name, contact_name)]
             lead, created = Lead.objects.get_or_create(
                 company=company,
                 contact=contact,
-                defaults={'status': status, 'assigned_to': assigned_to},
+                defaults={'name': name, 'status': status, 'assigned_to': assigned_to},
             )
             self._track('leads', created)
             if created:

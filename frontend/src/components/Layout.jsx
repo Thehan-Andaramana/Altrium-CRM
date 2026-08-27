@@ -58,11 +58,12 @@ function BrandMark({ className = '', ...props }) {
   )
 }
 
-function GlobalCompanySearch() {
+function GlobalSearch() {
   const containerRef = useRef(null)
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
-  const [results, setResults] = useState([])
+  const [companyResults, setCompanyResults] = useState([])
+  const [leadResults, setLeadResults] = useState([])
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
@@ -75,14 +76,27 @@ function GlobalCompanySearch() {
 
     async function fetchResults() {
       if (!debouncedQuery) {
-        setResults([])
+        setCompanyResults([])
+        setLeadResults([])
         return
       }
       try {
-        const data = await get(`/api/companies/?search=${encodeURIComponent(debouncedQuery)}`)
-        if (!cancelled) setResults(data)
+        // Both endpoints are already permission-scoped server-side (e.g. a
+        // rep's lead search only turns up leads assigned to them), so
+        // results here need no extra client-side filtering.
+        const [companies, leads] = await Promise.all([
+          get(`/api/companies/?search=${encodeURIComponent(debouncedQuery)}`),
+          get(`/api/leads/?search=${encodeURIComponent(debouncedQuery)}`),
+        ])
+        if (!cancelled) {
+          setCompanyResults(companies)
+          setLeadResults(leads)
+        }
       } catch {
-        if (!cancelled) setResults([])
+        if (!cancelled) {
+          setCompanyResults([])
+          setLeadResults([])
+        }
       }
     }
 
@@ -107,6 +121,8 @@ function GlobalCompanySearch() {
     setQuery('')
   }
 
+  const hasResults = companyResults.length > 0 || leadResults.length > 0
+
   return (
     <div ref={containerRef} className="position-relative" style={{ width: '16rem' }}>
       <InputGroup>
@@ -122,7 +138,7 @@ function GlobalCompanySearch() {
             setOpen(true)
           }}
           onFocus={() => setOpen(true)}
-          aria-label="Search companies"
+          aria-label="Search companies and leads"
         />
       </InputGroup>
       {open && debouncedQuery && (
@@ -130,14 +146,34 @@ function GlobalCompanySearch() {
           className="position-absolute top-100 start-0 end-0 mt-1 shadow-sm"
           style={{ zIndex: 1050, maxHeight: '20rem', overflowY: 'auto' }}
         >
-          {results.length === 0 ? (
-            <ListGroup.Item className="text-body-secondary">No companies found.</ListGroup.Item>
+          {!hasResults ? (
+            <ListGroup.Item className="text-body-secondary">No results found.</ListGroup.Item>
           ) : (
-            results.map((company) => (
-              <ListGroup.Item key={company.id} as={Link} to={`/companies/${company.id}`} action onClick={handleSelect}>
-                {company.name}
-              </ListGroup.Item>
-            ))
+            <>
+              {companyResults.map((company) => (
+                <ListGroup.Item
+                  key={`company-${company.id}`}
+                  as={Link}
+                  to={`/companies/${company.id}`}
+                  action
+                  onClick={handleSelect}
+                >
+                  {company.name}
+                </ListGroup.Item>
+              ))}
+              {leadResults.map((lead) => (
+                <ListGroup.Item
+                  key={`lead-${lead.id}`}
+                  as={Link}
+                  to={`/leads/${lead.id}`}
+                  action
+                  onClick={handleSelect}
+                >
+                  <div>{lead.name}</div>
+                  <div className="text-body-secondary small">{lead.company_name ?? '—'}</div>
+                </ListGroup.Item>
+              ))}
+            </>
           )}
         </ListGroup>
       )}
@@ -301,7 +337,7 @@ export default function Layout() {
             Altrium CRM
           </NavLink>
           <div className="mb-3">
-            <GlobalCompanySearch />
+            <GlobalSearch />
           </div>
           <Nav className="flex-column gap-1">
             <NavLinks
@@ -346,7 +382,7 @@ export default function Layout() {
               />
             </Nav>
             <div className="mx-md-3 my-2 my-md-0">
-              <GlobalCompanySearch />
+              <GlobalSearch />
             </div>
             <Nav className="align-items-md-center gap-2">
               <UserActions

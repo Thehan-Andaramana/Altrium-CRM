@@ -32,6 +32,7 @@ const STATUS_BADGE_VARIANT = {
 }
 
 function NewLeadModal({ show, onHide, onCreated, companies, salesReps }) {
+  const [name, setName] = useState('')
   const [companyId, setCompanyId] = useState('')
   const [contactId, setContactId] = useState('')
   const [contacts, setContacts] = useState([])
@@ -76,6 +77,7 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps }) {
     setError(null)
     try {
       await post('/api/leads/', {
+        name,
         company: Number(companyId),
         contact: contactId ? Number(contactId) : null,
         assigned_to: Number(assignedTo),
@@ -99,6 +101,15 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps }) {
         </Modal.Header>
         <Modal.Body>
           {error && <Alert variant="danger">{error}</Alert>}
+          <Form.Group className="mb-3" controlId="new-lead-name">
+            <Form.Label>Name</Form.Label>
+            <Form.Control
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
+              required
+            />
+          </Form.Group>
           <Form.Group className="mb-3" controlId="new-lead-company">
             <Form.Label>Company</Form.Label>
             <Form.Select value={companyId} onChange={(event) => handleCompanyChange(event.target.value)} required>
@@ -141,7 +152,7 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps }) {
           <Button variant="secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={saving || !companyId || !assignedTo}>
+          <Button type="submit" variant="primary" disabled={saving || !name.trim() || !companyId || !assignedTo}>
             {saving ? 'Creating…' : 'Create'}
           </Button>
         </Modal.Footer>
@@ -305,6 +316,7 @@ export default function Leads() {
         <Table striped hover responsive>
           <thead>
             <tr>
+              <th className={TH_CLASS}>Project</th>
               <th className={TH_CLASS}>Company</th>
               <th className={TH_CLASS}>Contact</th>
               <th className={TH_CLASS}>Status</th>
@@ -317,7 +329,7 @@ export default function Leads() {
               <tr key={lead.id}>
                 <td>
                   <Link to={`/leads/${lead.id}`} className="text-decoration-none table-link-hover">
-                    {lead.company_name ?? '—'}
+                    {lead.name}
                   </Link>
                   {lead.is_archived && (
                     <Badge bg="secondary" className="ms-2">
@@ -325,6 +337,7 @@ export default function Leads() {
                     </Badge>
                   )}
                 </td>
+                <td>{lead.company_name ?? '—'}</td>
                 <td>{lead.contact_name ?? '—'}</td>
                 <td>
                   <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}>{lead.status}</Badge>

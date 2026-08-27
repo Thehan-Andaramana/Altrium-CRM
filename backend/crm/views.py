@@ -186,7 +186,7 @@ class LeadViewSet(viewsets.ModelViewSet):
     serializer_class = LeadSerializer
     permission_classes = [IsAuthenticated, ArchivableOwnedResourcePermission]
     filterset_fields = ['status', 'assigned_to', 'company']
-    search_fields = ['company__name']
+    search_fields = ['name', 'company__name']
     ordering_fields = ['created_at']
     ordering = ['-created_at']
 

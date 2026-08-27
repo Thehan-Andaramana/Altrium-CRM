@@ -137,6 +137,7 @@ function EditCompanyModal({ show, company, canEditOwner, salesReps, onHide, onSa
 }
 
 function NewLeadModal({ show, onHide, onCreated, companyId, contacts, canAssignRep, salesReps }) {
+  const [name, setName] = useState('')
   const [contactId, setContactId] = useState('')
   const [assignedTo, setAssignedTo] = useState('')
   const [saving, setSaving] = useState(false)
@@ -147,7 +148,7 @@ function NewLeadModal({ show, onHide, onCreated, companyId, contacts, canAssignR
     setSaving(true)
     setError(null)
     try {
-      const payload = { company: companyId, contact: contactId ? Number(contactId) : null }
+      const payload = { name, company: companyId, contact: contactId ? Number(contactId) : null }
       // A rep creating their own lead is auto-assigned to themselves
       // server-side (see LeadSerializer.create) -- only a manager needs to
       // pick who it goes to.
@@ -174,6 +175,15 @@ function NewLeadModal({ show, onHide, onCreated, companyId, contacts, canAssignR
         </Modal.Header>
         <Modal.Body>
           {error && <Alert variant="danger">{error}</Alert>}
+          <Form.Group className="mb-3" controlId="new-lead-name">
+            <Form.Label>Name</Form.Label>
+            <Form.Control
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
+              required
+            />
+          </Form.Group>
           <Form.Group className="mb-3" controlId="new-lead-contact">
             <Form.Label>Contact</Form.Label>
             <Form.Select value={contactId} onChange={(event) => setContactId(event.target.value)}>
@@ -203,7 +213,11 @@ function NewLeadModal({ show, onHide, onCreated, companyId, contacts, canAssignR
           <Button variant="secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={saving || (canAssignRep && !assignedTo)}>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={saving || !name.trim() || (canAssignRep && !assignedTo)}
+          >
             {saving ? 'Creating…' : 'Create'}
           </Button>
         </Modal.Footer>
@@ -607,11 +621,12 @@ export default function CompanyDetail() {
                               to={`/leads/${lead.id}`}
                               className="text-decoration-none table-link-hover fw-semibold"
                             >
-                              {lead.contact_name ?? `Lead #${lead.id}`}
+                              {lead.name}
                             </Link>
                             <div className="text-body-secondary small">
+                              {lead.contact_name ?? 'No contact'}
+                              {' · '}
                               {lead.assigned_to_username ?? 'Unassigned'}
-                              {lead.deal_stage && <> · {lead.deal_stage}</>}
                               {phaseLabel && <> · {phaseLabel}</>}
                             </div>
                           </div>
