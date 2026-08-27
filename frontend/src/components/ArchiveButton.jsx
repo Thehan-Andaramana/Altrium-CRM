@@ -18,7 +18,7 @@ const RESOURCE_ENDPOINTS = {
   contact: 'contacts',
 }
 
-function UnarchiveButton({ resource, record, onArchived }) {
+function UnarchiveButton({ resource, record, onArchived, label, renderTrigger }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
@@ -35,6 +35,12 @@ function UnarchiveButton({ resource, record, onArchived }) {
     }
   }
 
+  const triggerLabel = saving ? 'Unarchiving…' : (label ?? 'Unarchive')
+
+  if (renderTrigger) {
+    return renderTrigger({ onClick: handleUnarchive, label: triggerLabel, disabled: saving, error })
+  }
+
   return (
     <div className="d-flex align-items-center gap-2">
       {error && (
@@ -43,7 +49,7 @@ function UnarchiveButton({ resource, record, onArchived }) {
         </span>
       )}
       <Button variant="outline-secondary" size="sm" disabled={saving} onClick={handleUnarchive}>
-        {saving ? 'Unarchiving…' : 'Unarchive'}
+        {triggerLabel}
       </Button>
     </div>
   )
@@ -54,7 +60,7 @@ function UnarchiveButton({ resource, record, onArchived }) {
 // for a Lead specifically, they instead raise an ARCHIVE_LEAD approval
 // request, which a manager approving then archives (see
 // ApprovalRequestSerializer._apply_approval_side_effect on the backend).
-export default function ArchiveButton({ resource, record, onArchived }) {
+export default function ArchiveButton({ resource, record, onArchived, label, renderTrigger }) {
   const { user } = useAuth()
   const isManagement = MANAGER_ROLES.has(user?.role)
   const canRequestArchive = user?.role === 'SALES_REP' && resource === 'lead'
@@ -68,7 +74,15 @@ export default function ArchiveButton({ resource, record, onArchived }) {
     if (!isManagement) {
       return null
     }
-    return <UnarchiveButton resource={resource} record={record} onArchived={onArchived} />
+    return (
+      <UnarchiveButton
+        resource={resource}
+        record={record}
+        onArchived={onArchived}
+        label={label}
+        renderTrigger={renderTrigger}
+      />
+    )
   }
 
   if (!(isManagement || canRequestArchive)) {
@@ -104,16 +118,22 @@ export default function ArchiveButton({ resource, record, onArchived }) {
     }
   }
 
+  const triggerLabel = isManagement ? (label ?? 'Archive') : 'Request archive'
+
   return (
     <>
-      <Button variant="outline-danger" size="sm" onClick={openModal}>
-        {isManagement ? 'Archive' : 'Request archive'}
-      </Button>
+      {renderTrigger ? (
+        renderTrigger({ onClick: openModal, label: triggerLabel, disabled: false, error: null })
+      ) : (
+        <Button variant="outline-danger" size="sm" onClick={openModal}>
+          {triggerLabel}
+        </Button>
+      )}
       <Modal show={show} onHide={() => setShow(false)} centered>
         <Form onSubmit={handleSubmit}>
           <Modal.Header closeButton>
             <Modal.Title as="h2" className="h5 mb-0">
-              {isManagement ? 'Archive' : 'Request archive'}
+              {triggerLabel}
             </Modal.Title>
           </Modal.Header>
           <Modal.Body>

@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.contrib.auth.models import AbstractUser
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -127,11 +129,12 @@ class Lead(models.Model):
         if is_new:
             # Project is defined later in this module; that's fine since
             # this only resolves at call time, well after import.
-            Project.objects.create(
+            project = Project.objects.create(
                 lead=self,
                 company=self.company,
                 phase_1_status=Project.PhaseStatus.IN_PROGRESS,
             )
+            project.start_phase(1)
 
 
 class Deal(models.Model):
@@ -253,6 +256,11 @@ class RequirementTemplate(models.Model):
     # RESPONDED interaction (see PhaseRequirementSerializer.update). A task
     # without it only updates last_internal_activity_at.
     client_facing = models.BooleanField(default=False)
+    # Days from that phase's start date until this task is due -- null means
+    # no deadline. Copied onto each generated PhaseRequirement (see
+    # Project.save()) so a later template edit doesn't retroactively change
+    # an already-running project's due dates.
+    default_duration_days = models.PositiveIntegerField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -293,6 +301,9 @@ class Project(models.Model):
     phase_1_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
     phase_2_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
     phase_3_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
+    phase_1_started_at = models.DateTimeField(null=True, blank=True)
+    phase_2_started_at = models.DateTimeField(null=True, blank=True)
+    phase_3_started_at = models.DateTimeField(null=True, blank=True)
     maintenance = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -316,6 +327,8 @@ class Project(models.Model):
         # without duplicating their ownership logic.
         return self.company.owner_id
 
+    PHASE_STARTED_AT_FIELDS = {1: 'phase_1_started_at', 2: 'phase_2_started_at', 3: 'phase_3_started_at'}
+
     def save(self, *args, **kwargs):
         is_new = self._state.adding
         super().save(*args, **kwargs)
@@ -330,9 +343,27 @@ class Project(models.Model):
                     description=template.description,
                     confirmation_authority=template.confirmation_authority,
                     client_facing=template.client_facing,
+                    default_duration_days=template.default_duration_days,
                 )
                 for template in RequirementTemplate.objects.filter(is_active=True).order_by('phase', 'order')
             ])
+
+    def start_phase(self, phase_num):
+        # Idempotent: a phase only "starts" once, so a sign-off rejection
+        # that reverts AWAITING_APPROVAL back to IN_PROGRESS (or any other
+        # re-entry) doesn't reset its start date or recompute due dates.
+        field_name = self.PHASE_STARTED_AT_FIELDS[phase_num]
+        if getattr(self, field_name) is not None:
+            return
+        now = timezone.now()
+        setattr(self, field_name, now)
+        self.save(update_fields=[field_name])
+
+        start_date = now.date()
+        requirements = list(self.requirements.filter(phase=phase_num, default_duration_days__isnull=False))
+        for requirement in requirements:
+            requirement.due_date = start_date + timedelta(days=requirement.default_duration_days)
+        PhaseRequirement.objects.bulk_update(requirements, ['due_date'])
 
 
 class PhaseRequirement(models.Model):
@@ -362,6 +393,15 @@ class PhaseRequirement(models.Model):
         default=ConfirmationAuthority.REP,
     )
     client_facing = models.BooleanField(default=False)
+    # Snapshotted from the template at creation time -- see Project.save().
+    default_duration_days = models.PositiveIntegerField(null=True, blank=True)
+    # System-calculated at phase start (see Project.start_phase); not
+    # directly editable via the API.
+    due_date = models.DateField(null=True, blank=True)
+    # Set by the assigned rep or a manager when a client agrees a date on a
+    # call -- takes precedence over due_date when both are set (see
+    # effective_due_date below).
+    committed_date = models.DateField(null=True, blank=True)
     updated_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -370,6 +410,7 @@ class PhaseRequirement(models.Model):
         related_name='updated_requirements',
     )
     updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
     confirmed_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -398,6 +439,27 @@ class PhaseRequirement(models.Model):
         if self.confirmation_authority == self.ConfirmationAuthority.MANAGER:
             return self.confirmed_by_id is not None
         return True
+
+    @property
+    def effective_due_date(self):
+        # The earlier of the system-calculated due_date and a client-agreed
+        # committed_date, ignoring whichever (if either) is null.
+        dates = [d for d in (self.due_date, self.committed_date) if d is not None]
+        return min(dates) if dates else None
+
+    @property
+    def is_overdue(self):
+        if self.status == self.Status.NOT_APPLICABLE or self.is_confirmed_complete:
+            return False
+        effective = self.effective_due_date
+        return effective is not None and effective < timezone.localdate()
+
+    @property
+    def completed_late(self):
+        if not self.is_confirmed_complete or self.completed_at is None:
+            return False
+        effective = self.effective_due_date
+        return effective is not None and self.completed_at.date() > effective
 
 
 class ApprovalRequest(models.Model):

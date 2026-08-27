@@ -4,17 +4,21 @@ import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
 import Form from 'react-bootstrap/Form'
+import InputGroup from 'react-bootstrap/InputGroup'
 import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
 import { Link } from 'react-router-dom'
 import { get, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import SearchIcon from '../components/SearchIcon.jsx'
 
 const SEARCH_DEBOUNCE_MS = 300
 // Lead create/update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
 // SYSTEM_ADMIN is read-only for leads (see ArchivableOwnedResourcePermission, backend).
 const MANAGER_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER'])
+
+const TH_CLASS = 'text-body-secondary text-uppercase small fw-normal table-header-tracked'
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All statuses' },
@@ -233,16 +237,29 @@ export default function Leads() {
 
   return (
     <>
-      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div className="d-flex flex-nowrap justify-content-between align-items-center pb-3 mb-4 border-bottom">
         <h1 className="h3 mb-0">Leads</h1>
-        <div className="d-flex flex-wrap align-items-center gap-2">
-          <Form.Check
-            type="checkbox"
-            id="leads-include-archived"
-            label="Show archived"
-            checked={includeArchived}
-            onChange={(event) => setIncludeArchived(event.target.checked)}
+        {canCreate && (
+          <Button variant="primary" onClick={() => setShowNewModal(true)}>
+            New Lead
+          </Button>
+        )}
+      </div>
+
+      <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
+        <InputGroup style={{ maxWidth: '20rem' }}>
+          <InputGroup.Text>
+            <SearchIcon />
+          </InputGroup.Text>
+          <Form.Control
+            type="search"
+            placeholder="Search leads…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            aria-label="Search leads"
           />
+        </InputGroup>
+        <div className="d-flex flex-column flex-sm-row gap-2">
           <Form.Select
             value={status}
             onChange={(event) => setStatus(event.target.value)}
@@ -255,19 +272,12 @@ export default function Leads() {
               </option>
             ))}
           </Form.Select>
-          <Form.Control
-            type="search"
-            placeholder="Search leads…"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            style={{ maxWidth: '20rem' }}
-            aria-label="Search leads"
+          <Form.Switch
+            id="leads-include-archived"
+            label="Show archived"
+            checked={includeArchived}
+            onChange={(event) => setIncludeArchived(event.target.checked)}
           />
-          {canCreate && (
-            <Button variant="primary" onClick={() => setShowNewModal(true)}>
-              New Lead
-            </Button>
-          )}
         </div>
       </div>
 
@@ -292,21 +302,23 @@ export default function Leads() {
       ) : leads.length === 0 ? (
         <p className="text-body-secondary">No leads found.</p>
       ) : (
-        <Table striped bordered hover responsive>
+        <Table striped hover responsive>
           <thead>
             <tr>
-              <th>Company</th>
-              <th>Contact</th>
-              <th>Status</th>
-              <th>Last activity</th>
-              <th>Assigned to</th>
+              <th className={TH_CLASS}>Company</th>
+              <th className={TH_CLASS}>Contact</th>
+              <th className={TH_CLASS}>Status</th>
+              <th className={TH_CLASS}>Last activity</th>
+              <th className={TH_CLASS}>Assigned to</th>
             </tr>
           </thead>
           <tbody>
             {leads.map((lead) => (
               <tr key={lead.id}>
                 <td>
-                  <Link to={`/leads/${lead.id}`}>{lead.company_name ?? '—'}</Link>
+                  <Link to={`/leads/${lead.id}`} className="text-decoration-none table-link-hover">
+                    {lead.company_name ?? '—'}
+                  </Link>
                   {lead.is_archived && (
                     <Badge bg="secondary" className="ms-2">
                       Archived

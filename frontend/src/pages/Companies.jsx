@@ -2,18 +2,27 @@ import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
+import ButtonGroup from 'react-bootstrap/ButtonGroup'
 import Form from 'react-bootstrap/Form'
+import InputGroup from 'react-bootstrap/InputGroup'
 import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
 import { Link } from 'react-router-dom'
 import { get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import SearchIcon from '../components/SearchIcon.jsx'
 
 const SEARCH_DEBOUNCE_MS = 300
 // Company create/update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
 // SYSTEM_ADMIN is read-only for companies (see CompanyPermission, backend).
 const OWNER_EDIT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER'])
+
+const TH_CLASS = 'text-body-secondary text-uppercase small fw-normal table-header-tracked'
+
+function formatWebsiteDomain(url) {
+  return url.replace(/^https?:\/\//, '').replace(/^www\./, '')
+}
 
 function NewCompanyModal({ show, onHide, onCreated, salesReps }) {
   const [name, setName] = useState('')
@@ -90,6 +99,56 @@ function NewCompanyModal({ show, onHide, onCreated, salesReps }) {
   )
 }
 
+function OwnerCell({ company, canEdit, salesReps, saving, onChange }) {
+  const [editing, setEditing] = useState(false)
+
+  if (!canEdit) {
+    return company.owner_username ?? 'Unassigned'
+  }
+
+  if (editing) {
+    return (
+      <Form.Select
+        size="sm"
+        autoFocus
+        style={{ maxWidth: '12rem' }}
+        defaultValue={company.owner ?? ''}
+        disabled={saving}
+        onBlur={() => setEditing(false)}
+        onChange={(event) => {
+          onChange(company, event.target.value)
+          setEditing(false)
+        }}
+        aria-label={`Owner for ${company.name}`}
+      >
+        <option value="">Unassigned</option>
+        {salesReps.map((rep) => (
+          <option key={rep.id} value={rep.id}>
+            {rep.username}
+          </option>
+        ))}
+      </Form.Select>
+    )
+  }
+
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      className="text-decoration-none table-link-hover"
+      onClick={() => setEditing(true)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          setEditing(true)
+        }
+      }}
+    >
+      {company.owner_username ?? 'Unassigned'}
+    </span>
+  )
+}
+
 export default function Companies() {
   const { user } = useAuth()
   const canEditOwner = OWNER_EDIT_ROLES.has(user?.role)
@@ -98,6 +157,10 @@ export default function Companies() {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
+  // Reps default to their own companies -- everyone else defaults to all,
+  // since "mine" only means something restrictive for a rep (see
+  // CompanyPermission on the backend).
+  const [mine, setMine] = useState(user?.role === 'SALES_REP')
   const [refreshKey, setRefreshKey] = useState(0)
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
@@ -127,6 +190,9 @@ export default function Companies() {
       if (includeArchived) {
         params.set('include_archived', 'true')
       }
+      if (mine) {
+        params.set('mine', 'true')
+      }
       const query = params.toString()
 
       try {
@@ -143,7 +209,7 @@ export default function Companies() {
     return () => {
       cancelled = true
     }
-  }, [debouncedSearch, includeArchived, refreshKey])
+  }, [debouncedSearch, includeArchived, mine, refreshKey])
 
   useEffect(() => {
     if (!canEditOwner) {
@@ -184,30 +250,42 @@ export default function Companies() {
 
   return (
     <>
-      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div className="d-flex flex-nowrap justify-content-between align-items-center pb-3 mb-4 border-bottom">
         <h1 className="h3 mb-0">Companies</h1>
-        <div className="d-flex flex-wrap align-items-center gap-2">
-          <Form.Check
-            type="checkbox"
-            id="companies-include-archived"
-            label="Show archived"
-            checked={includeArchived}
-            onChange={(event) => setIncludeArchived(event.target.checked)}
-          />
+        {canCreate && (
+          <Button variant="primary" onClick={() => setShowNewModal(true)}>
+            New Company
+          </Button>
+        )}
+      </div>
+
+      <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
+        <InputGroup style={{ maxWidth: '20rem' }}>
+          <InputGroup.Text>
+            <SearchIcon />
+          </InputGroup.Text>
           <Form.Control
             type="search"
             placeholder="Search companies…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            style={{ maxWidth: '20rem' }}
             aria-label="Search companies"
           />
-          {canCreate && (
-            <Button variant="primary" onClick={() => setShowNewModal(true)}>
-              New Company
-            </Button>
-          )}
-        </div>
+        </InputGroup>
+        <ButtonGroup size="sm" aria-label="Filter to my companies">
+          <Button variant={mine ? 'outline-primary' : 'primary'} onClick={() => setMine(false)}>
+            All companies
+          </Button>
+          <Button variant={mine ? 'primary' : 'outline-primary'} onClick={() => setMine(true)}>
+            My companies
+          </Button>
+        </ButtonGroup>
+        <Form.Switch
+          id="companies-include-archived"
+          label="Show archived"
+          checked={includeArchived}
+          onChange={(event) => setIncludeArchived(event.target.checked)}
+        />
       </div>
 
       {error && <Alert variant="danger">{error}</Alert>}
@@ -231,20 +309,22 @@ export default function Companies() {
       ) : companies.length === 0 ? (
         <p className="text-body-secondary">No companies found.</p>
       ) : (
-        <Table striped bordered hover responsive>
+        <Table striped hover responsive>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Industry</th>
-              <th>Website</th>
-              <th>Owner</th>
+              <th className={TH_CLASS}>Name</th>
+              <th className={TH_CLASS}>Industry</th>
+              <th className={TH_CLASS}>Website</th>
+              <th className={TH_CLASS}>Owner</th>
             </tr>
           </thead>
           <tbody>
             {companies.map((company) => (
               <tr key={company.id}>
                 <td>
-                  <Link to={`/companies/${company.id}`}>{company.name}</Link>
+                  <Link to={`/companies/${company.id}`} className="text-decoration-none table-link-hover">
+                    {company.name}
+                  </Link>
                   {company.is_archived && (
                     <Badge bg="secondary" className="ms-2">
                       Archived
@@ -254,32 +334,26 @@ export default function Companies() {
                 <td>{company.industry || '—'}</td>
                 <td>
                   {company.website ? (
-                    <a href={company.website} target="_blank" rel="noreferrer">
-                      {company.website}
+                    <a
+                      href={company.website}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-decoration-none table-link-hover"
+                    >
+                      {formatWebsiteDomain(company.website)}
                     </a>
                   ) : (
                     '—'
                   )}
                 </td>
                 <td>
-                  {canEditOwner ? (
-                    <Form.Select
-                      size="sm"
-                      value={company.owner ?? ''}
-                      onChange={(event) => handleOwnerChange(company, event.target.value)}
-                      disabled={savingOwnerId === company.id}
-                      aria-label={`Owner for ${company.name}`}
-                    >
-                      <option value="">Unassigned</option>
-                      {salesReps.map((rep) => (
-                        <option key={rep.id} value={rep.id}>
-                          {rep.username}
-                        </option>
-                      ))}
-                    </Form.Select>
-                  ) : (
-                    company.owner_username ?? 'Unassigned'
-                  )}
+                  <OwnerCell
+                    company={company}
+                    canEdit={canEditOwner}
+                    salesReps={salesReps}
+                    saving={savingOwnerId === company.id}
+                    onChange={handleOwnerChange}
+                  />
                 </td>
               </tr>
             ))}

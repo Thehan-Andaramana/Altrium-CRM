@@ -190,7 +190,7 @@ export default function Layout() {
   const navigate = useNavigate()
 
   const canSeeSettings = user && MANAGEMENT_ROLES.has(user.role)
-  const canSeeCompanies = user && MANAGEMENT_ROLES.has(user.role)
+  const canSeeCompanies = user && (MANAGEMENT_ROLES.has(user.role) || user.role === 'SALES_REP')
 
   function toggleTheme() {
     setTheme(theme === 'light' ? 'dark' : 'light')

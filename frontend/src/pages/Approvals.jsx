@@ -11,6 +11,8 @@ import { useAuth } from '../AuthContext.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 
+const TH_CLASS = 'text-body-secondary text-uppercase small fw-normal table-header-tracked'
+
 const REQUEST_TYPE_LABELS = {
   ARCHIVE_LEAD: 'Archive Lead',
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
@@ -146,8 +148,11 @@ export default function Approvals() {
 
   return (
     <>
-      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div className="d-flex flex-nowrap justify-content-between align-items-center pb-3 mb-4 border-bottom">
         <h1 className="h3 mb-0">Approvals</h1>
+      </div>
+
+      <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
         <Form.Select
           value={status}
           onChange={(event) => setStatus(event.target.value)}
@@ -181,17 +186,17 @@ export default function Approvals() {
       ) : approvals.length === 0 ? (
         <p className="text-body-secondary">No approval requests found.</p>
       ) : (
-        <Table striped bordered hover responsive>
+        <Table striped hover responsive>
           <thead>
             <tr>
-              <th>Lead</th>
-              <th>Company</th>
-              <th>Request Type</th>
-              <th>Requested By</th>
-              <th>Reason</th>
-              <th>Status</th>
-              <th>Date</th>
-              {canDecide && <th>Actions</th>}
+              <th className={TH_CLASS}>Lead</th>
+              <th className={TH_CLASS}>Company</th>
+              <th className={TH_CLASS}>Request Type</th>
+              <th className={TH_CLASS}>Requested By</th>
+              <th className={TH_CLASS}>Reason</th>
+              <th className={TH_CLASS}>Status</th>
+              <th className={TH_CLASS}>Date</th>
+              {canDecide && <th className={TH_CLASS}>Actions</th>}
             </tr>
           </thead>
           <tbody>

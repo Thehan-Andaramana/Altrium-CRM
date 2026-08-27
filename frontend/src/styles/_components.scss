@@ -1,0 +1,54 @@
+// Custom component classes. Reference brand variables (from _brand.scss,
+// already in scope by the time this file is imported) and Bootstrap's own
+// mixins -- never hardcode a colour or font value here.
+
+// Bootstrap's own $theme-colors loop (see _brand.scss) already generates a
+// .btn-accent from the "accent" entry, using color-contrast() to pick its
+// text colour automatically. That heuristic would likely already land on a
+// dark colour for amber, but this rule makes it explicit and guaranteed --
+// $altrium-ink specifically, never white -- regardless of that heuristic,
+// and wins on cascade order since this file loads after Bootstrap.
+.btn-accent {
+  @include button-variant(
+    $altrium-amber,
+    $altrium-amber,
+    $color: $altrium-ink,
+    $hover-background: $altrium-amber-shade-20,
+    $hover-border: $altrium-amber-shade-20,
+    $hover-color: $altrium-ink,
+    $active-background: $altrium-amber-shade-40,
+    $active-border: $altrium-amber-shade-40,
+    $active-color: $altrium-ink,
+    $disabled-background: $altrium-amber,
+    $disabled-border: $altrium-amber,
+    $disabled-color: $altrium-ink
+  );
+}
+
+// Table polish: Bootstrap has no letter-spacing utility, and no plain
+// "underline on hover only" utility (its link-underline-opacity-* utilities
+// require a matching base .link-underline class, more machinery than a
+// table link needs) -- both are pure structural/spacing rules, not colour,
+// so adding them here doesn't affect dark-mode theming either way.
+.table-header-tracked {
+  letter-spacing: 0.06em;
+}
+
+.table-link-hover {
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+// Kebab-style overflow-menu toggles use an icon, not text, so Bootstrap's
+// default dropdown-toggle caret triangle is just visual noise -- this is a
+// pure structural rule (no colour), so it doesn't affect dark-mode theming.
+.dropdown-toggle-no-caret::after {
+  display: none;
+}
+
+// Bootstrap's ProgressBar has no height utility/prop -- a pure dimension
+// rule, not colour, so it doesn't affect dark-mode theming either.
+.progress-thin {
+  height: 0.5rem;
+}

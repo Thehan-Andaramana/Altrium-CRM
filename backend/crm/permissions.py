@@ -49,7 +49,8 @@ class RoleBasedAccess(BasePermission):
 class CompanyPermission(BasePermission):
     """
     SALES_REP: read access to every company, write access only to ones they
-    own (they can open any company read-only).
+    own or have an assigned lead against (they can open any other company
+    read-only).
     SALES_MANAGER, EXECUTIVE_MANAGER: full access, including archive/unarchive.
     SYSTEM_ADMIN: read-only, plus hard-delete -- but only of an already
     archived company. No create/update/archive/unarchive.
@@ -83,7 +84,7 @@ class CompanyPermission(BasePermission):
         if role == User.Role.SALES_REP:
             if request.method in SAFE_METHODS:
                 return True
-            return obj.owner_id == request.user.id
+            return obj.owner_id == request.user.id or obj.leads.filter(assigned_to=request.user).exists()
         return False
 
 

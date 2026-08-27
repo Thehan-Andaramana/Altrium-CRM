@@ -299,6 +299,34 @@ class DashboardScopingTests(APITestCase):
         self.assertIn(self.lead1.id, ids)
         self.assertIn(self.lead2.id, ids)
 
+    def _make_overdue(self, lead):
+        requirement = lead.project.requirements.first()
+        requirement.due_date = timezone.localdate() - timedelta(days=1)
+        requirement.save(update_fields=['due_date'])
+        return requirement
+
+    def test_rep_sees_only_their_own_overdue_tasks(self):
+        requirement1 = self._make_overdue(self.lead1)
+        requirement2 = self._make_overdue(self.lead2)
+
+        self.client.force_authenticate(self.rep1)
+        response = self.client.get(reverse('dashboard'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data['overdue_tasks']['results']}
+        self.assertIn(requirement1.id, ids)
+        self.assertNotIn(requirement2.id, ids)
+
+    def test_manager_sees_all_overdue_tasks(self):
+        requirement1 = self._make_overdue(self.lead1)
+        requirement2 = self._make_overdue(self.lead2)
+
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(reverse('dashboard'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data['overdue_tasks']['results']}
+        self.assertIn(requirement1.id, ids)
+        self.assertIn(requirement2.id, ids)
+
 
 class ProjectProgressTests(ProjectRequirementsTestMixin, APITestCase):
     def test_default_requirements_are_generated_on_creation(self):
@@ -685,6 +713,57 @@ class CompanyRolePermissionTests(ArchiveTestMixin, APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
+class CompanyMineFilterAndAssignedEditTests(ArchiveTestMixin, APITestCase):
+    def test_mine_filter_includes_owned_companies(self):
+        other_company = Company.objects.create(name='Other Co', owner=self.other_rep)
+        self.client.force_authenticate(self.rep)
+        response = self.client.get(reverse('company-list'), {'mine': 'true'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.company.id, ids)
+        self.assertNotIn(other_company.id, ids)
+
+    def test_mine_filter_includes_companies_with_an_assigned_lead_but_no_ownership(self):
+        other_company = Company.objects.create(name='Other Co', owner=self.manager)
+        Lead.objects.create(company=other_company, assigned_to=self.rep)
+
+        self.client.force_authenticate(self.rep)
+        response = self.client.get(reverse('company-list'), {'mine': 'true'})
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.company.id, ids)
+        self.assertIn(other_company.id, ids)
+
+    def test_without_mine_filter_rep_sees_every_company(self):
+        other_company = Company.objects.create(name='Other Co', owner=self.other_rep)
+        self.client.force_authenticate(self.rep)
+        response = self.client.get(reverse('company-list'))
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.company.id, ids)
+        self.assertIn(other_company.id, ids)
+
+    def test_rep_can_edit_company_they_own(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.patch(url, {'industry': 'Retail'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_rep_cannot_edit_unrelated_company(self):
+        other_company = Company.objects.create(name='Other Co', owner=self.manager)
+        self.client.force_authenticate(self.rep)
+        url = reverse('company-detail', args=[other_company.id])
+        response = self.client.patch(url, {'industry': 'Retail'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_rep_can_edit_company_with_assigned_lead_but_no_ownership(self):
+        other_company = Company.objects.create(name='Other Co', owner=self.manager)
+        Lead.objects.create(company=other_company, assigned_to=self.rep)
+
+        self.client.force_authenticate(self.rep)
+        url = reverse('company-detail', args=[other_company.id])
+        response = self.client.patch(url, {'industry': 'Retail'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
 class CompanyArchiveActionTests(ArchiveTestMixin, APITestCase):
     def test_manager_can_archive_company_and_it_cascades(self):
         self.client.force_authenticate(self.manager)
@@ -997,6 +1076,119 @@ class ClientFacingTaskActivityTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(self.lead.status, Lead.Status.COLD)
         self.assertEqual(self.lead.last_activity_at, self.original_last_activity_at)
         self.assertIsNotNone(self.lead.last_internal_activity_at)
+
+
+class PhaseDueDateTests(ProjectRequirementsTestMixin, APITestCase):
+    def test_due_date_calculated_when_phase_starts(self):
+        with_duration = self.project.requirements.filter(phase=2).first()
+        with_duration.default_duration_days = 5
+        with_duration.save(update_fields=['default_duration_days'])
+        without_duration = self.project.requirements.filter(phase=2).exclude(pk=with_duration.pk).first()
+
+        # Phase 2 hasn't started yet (phase 1 does, immediately, on Lead
+        # creation -- see ProjectPhaseTransitionTests) -- so due dates aren't
+        # calculated until start_phase(2) actually runs.
+        self.assertIsNone(self.project.phase_2_started_at)
+        self.assertIsNone(with_duration.due_date)
+
+        self.project.start_phase(2)
+        self.project.refresh_from_db()
+        with_duration.refresh_from_db()
+        without_duration.refresh_from_db()
+
+        self.assertIsNotNone(self.project.phase_2_started_at)
+        self.assertEqual(with_duration.due_date, timezone.localdate() + timedelta(days=5))
+        # No duration configured on this one -- it has no deadline at all.
+        self.assertIsNone(without_duration.due_date)
+
+    def test_effective_due_date_is_the_earlier_of_due_and_committed(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        today = timezone.localdate()
+        requirement.due_date = today + timedelta(days=10)
+        requirement.committed_date = today + timedelta(days=3)
+        requirement.save(update_fields=['due_date', 'committed_date'])
+        self.assertEqual(requirement.effective_due_date, today + timedelta(days=3))
+
+        requirement.committed_date = today + timedelta(days=20)
+        requirement.save(update_fields=['committed_date'])
+        self.assertEqual(requirement.effective_due_date, today + timedelta(days=10))
+
+        requirement.due_date = None
+        requirement.save(update_fields=['due_date'])
+        self.assertEqual(requirement.effective_due_date, today + timedelta(days=20))
+
+        requirement.committed_date = None
+        requirement.save(update_fields=['committed_date'])
+        self.assertIsNone(requirement.effective_due_date)
+
+    def test_is_overdue_true_when_past_due_and_not_confirmed_complete(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        requirement.due_date = timezone.localdate() - timedelta(days=1)
+        requirement.save(update_fields=['due_date'])
+        self.assertTrue(requirement.is_overdue)
+
+    def test_is_overdue_false_once_confirmed_complete(self):
+        requirement = self.project.requirements.filter(
+            phase=1, confirmation_authority=PhaseRequirement.ConfirmationAuthority.REP,
+        ).first()
+        requirement.due_date = timezone.localdate() - timedelta(days=1)
+        requirement.status = PhaseRequirement.Status.COMPLETED
+        requirement.save()
+        self.assertTrue(requirement.is_confirmed_complete)
+        self.assertFalse(requirement.is_overdue)
+
+    def test_is_overdue_true_for_unconfirmed_manager_task_past_due(self):
+        # Marked COMPLETED by a rep, but a MANAGER-authority task isn't
+        # "confirmed complete" until a manager signs off -- so it can still
+        # be overdue even though its status already reads COMPLETED.
+        requirement = PhaseRequirement.objects.create(
+            project=self.project,
+            phase=1,
+            label='Manager Gate',
+            confirmation_authority=PhaseRequirement.ConfirmationAuthority.MANAGER,
+            status=PhaseRequirement.Status.COMPLETED,
+            due_date=timezone.localdate() - timedelta(days=1),
+        )
+        self.assertFalse(requirement.is_confirmed_complete)
+        self.assertTrue(requirement.is_overdue)
+
+    def test_is_overdue_false_when_not_applicable(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        requirement.due_date = timezone.localdate() - timedelta(days=1)
+        requirement.status = PhaseRequirement.Status.NOT_APPLICABLE
+        requirement.save()
+        self.assertFalse(requirement.is_overdue)
+
+    def test_changing_committed_date_logs_an_administrative_event(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        new_date = timezone.localdate() + timedelta(days=7)
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'committed_date': new_date.isoformat()}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        event = ActivityEvent.objects.get(lead=self.lead, category=ActivityEvent.Category.ADMINISTRATIVE)
+        self.assertIn('none', event.description)
+        self.assertIn(str(new_date), event.description)
+        self.assertEqual(event.actor, self.manager)
+
+        newer_date = new_date + timedelta(days=1)
+        response = self.client.patch(url, {'committed_date': newer_date.isoformat()}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        second_event = ActivityEvent.objects.filter(
+            lead=self.lead, category=ActivityEvent.Category.ADMINISTRATIVE,
+        ).exclude(pk=event.pk).get()
+        self.assertIn(str(new_date), second_event.description)
+        self.assertIn(str(newer_date), second_event.description)
+
+    def test_committed_date_unchanged_does_not_log_an_event(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'notes': 'just a note'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(
+            ActivityEvent.objects.filter(lead=self.lead, category=ActivityEvent.Category.ADMINISTRATIVE).exists(),
+        )
 
 
 class ApprovalRequestDetailFieldsTests(APITestCase):

@@ -4,6 +4,7 @@ import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
 import Card from 'react-bootstrap/Card'
 import Form from 'react-bootstrap/Form'
+import InputGroup from 'react-bootstrap/InputGroup'
 import ListGroup from 'react-bootstrap/ListGroup'
 import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
@@ -145,6 +146,7 @@ function TemplateRow({
   onToggleActive,
   onAuthorityChange,
   onClientFacingChange,
+  onDurationChange,
 }) {
   return (
     <ListGroup.Item className="d-flex align-items-center gap-2">
@@ -204,6 +206,25 @@ function TemplateRow({
         onChange={(event) => onClientFacingChange(template, event.target.checked)}
         title="Marks this task as representing confirmed client contact -- completing it updates the lead the same way a client interaction does."
       />
+      <InputGroup size="sm" style={{ maxWidth: '8rem' }}>
+        <Form.Control
+          key={`duration-${template.id}-${template.default_duration_days ?? 'null'}`}
+          type="number"
+          min="0"
+          defaultValue={template.default_duration_days ?? ''}
+          disabled={busy}
+          placeholder="None"
+          aria-label={`Default duration in days for ${template.label}`}
+          title="Days from that phase's start until this task is due. Leave blank for no deadline."
+          onBlur={(event) => {
+            const raw = event.target.value.trim()
+            const days = raw === '' ? null : Number(raw)
+            if (days === (template.default_duration_days ?? null)) return
+            onDurationChange(template, days)
+          }}
+        />
+        <InputGroup.Text>days</InputGroup.Text>
+      </InputGroup>
       <Button variant="outline-secondary" size="sm" disabled={busy} onClick={() => onEdit(template)}>
         Edit
       </Button>
@@ -341,6 +362,21 @@ export default function RequirementTemplates() {
     }
   }
 
+  async function handleDurationChange(template, days) {
+    setBusyId(template.id)
+    setRowError(null)
+    try {
+      const updated = await patch(`/api/requirement-templates/${template.id}/`, {
+        default_duration_days: days,
+      })
+      setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+    } catch {
+      setRowError('Failed to update the default duration.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   async function handleEditSave(payload) {
     setEditSaving(true)
     setEditError(null)
@@ -419,6 +455,7 @@ export default function RequirementTemplates() {
                         onToggleActive={handleToggleActive}
                         onAuthorityChange={handleAuthorityChange}
                         onClientFacingChange={handleClientFacingChange}
+                        onDurationChange={handleDurationChange}
                       />
                     ))}
                   </ListGroup>

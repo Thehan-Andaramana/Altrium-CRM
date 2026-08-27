@@ -1,0 +1,5 @@
+// Altrium theme entry point. Colour and typography live only in _brand.scss
+// -- this file just sequences brand tokens -> Bootstrap -> custom classes.
+@import "brand";
+@import "bootstrap/scss/bootstrap";
+@import "components";

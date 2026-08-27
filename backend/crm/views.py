@@ -133,9 +133,18 @@ class CompanyViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # Every role can read every company (reps just can't write to ones
-        # they don't own -- see CompanyPermission); nothing to role-filter.
+        # they're not owner/assigned-lead on -- see CompanyPermission).
+        # ?mine=true narrows the list to companies the requesting user owns
+        # or has an assigned lead against -- Companies.jsx defaults
+        # SALES_REP to this so their list isn't every company in the system;
+        # global search deliberately never sends it, so search still finds
+        # any company regardless of role.
         queryset = Company.objects.select_related('owner')
-        return _apply_archived_filter(queryset, self.request, self)
+        queryset = _apply_archived_filter(queryset, self.request, self)
+        if self.request.query_params.get('mine') == 'true':
+            user = self.request.user
+            queryset = queryset.filter(Q(owner=user) | Q(leads__assigned_to=user)).distinct()
+        return queryset
 
     @action(detail=True, methods=['post'])
     def archive(self, request, pk=None):
@@ -412,10 +421,20 @@ class DashboardView(APIView):
             'project', 'project__company', 'project__lead__contact',
             'requested_by', 'decided_by',
         )
+        # Broad pre-filter only (excludes tasks that can never be overdue --
+        # no date set at all, or already NOT_APPLICABLE); is_overdue itself
+        # also weighs confirmation state, which isn't a single DB column, so
+        # it's evaluated in Python below rather than duplicated as a Q().
+        overdue_task_candidates = PhaseRequirement.objects.select_related(
+            'project', 'project__lead', 'project__company',
+        ).exclude(status=PhaseRequirement.Status.NOT_APPLICABLE).filter(
+            Q(due_date__isnull=False) | Q(committed_date__isnull=False),
+        )
 
         if user.role == User.Role.SALES_REP:
             leads = leads.filter(assigned_to=user)
             approvals = approvals.filter(requested_by=user)
+            overdue_task_candidates = overdue_task_candidates.filter(project__lead__assigned_to=user)
 
         hot_leads_qs = leads.filter(status=Lead.Status.HOT).order_by(F('deal_value').desc(nulls_last=True))
         cold_leads_qs = leads.filter(status=Lead.Status.COLD).order_by('-last_activity_at')
@@ -425,6 +444,10 @@ class DashboardView(APIView):
             last_activity_at__lte=now - timedelta(days=max(cold_lead_days - 3, 0)),
         ).order_by('last_activity_at')
         pending_approvals_qs = approvals.filter(status=ApprovalRequest.Status.PENDING).order_by('-created_at')
+        overdue_tasks = sorted(
+            (r for r in overdue_task_candidates if r.is_overdue),
+            key=lambda r: r.effective_due_date,
+        )
 
         ctx = {'request': request}
         return Response({
@@ -443,6 +466,10 @@ class DashboardView(APIView):
             'pending_approvals': {
                 'count': pending_approvals_qs.count(),
                 'results': ApprovalRequestSerializer(pending_approvals_qs, many=True, context=ctx).data,
+            },
+            'overdue_tasks': {
+                'count': len(overdue_tasks),
+                'results': PhaseRequirementSerializer(overdue_tasks, many=True, context=ctx).data,
             },
         })
 

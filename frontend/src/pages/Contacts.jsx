@@ -252,22 +252,22 @@ export default function Contacts() {
 
   return (
     <>
-      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div className="d-flex flex-nowrap justify-content-between align-items-center pb-3 mb-4 border-bottom">
         <h1 className="h3 mb-0">Contacts</h1>
-        <div className="d-flex flex-wrap align-items-center gap-2">
-          <Form.Check
-            type="checkbox"
-            id="contacts-include-archived"
-            label="Show archived"
-            checked={includeArchived}
-            onChange={(event) => setIncludeArchived(event.target.checked)}
-          />
-          {canAttemptWrite && (
-            <Button variant="primary" onClick={() => setShowNewModal(true)}>
-              New Contact
-            </Button>
-          )}
-        </div>
+        {canAttemptWrite && (
+          <Button variant="primary" onClick={() => setShowNewModal(true)}>
+            New Contact
+          </Button>
+        )}
+      </div>
+
+      <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
+        <Form.Switch
+          id="contacts-include-archived"
+          label="Show archived"
+          checked={includeArchived}
+          onChange={(event) => setIncludeArchived(event.target.checked)}
+        />
       </div>
 
       {error && <Alert variant="danger">{error}</Alert>}

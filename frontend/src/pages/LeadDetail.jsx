@@ -6,12 +6,15 @@ import Button from 'react-bootstrap/Button'
 import Card from 'react-bootstrap/Card'
 import Col from 'react-bootstrap/Col'
 import Container from 'react-bootstrap/Container'
+import Dropdown from 'react-bootstrap/Dropdown'
 import Form from 'react-bootstrap/Form'
 import ListGroup from 'react-bootstrap/ListGroup'
 import Modal from 'react-bootstrap/Modal'
 import ProgressBar from 'react-bootstrap/ProgressBar'
 import Row from 'react-bootstrap/Row'
 import Spinner from 'react-bootstrap/Spinner'
+import Tab from 'react-bootstrap/Tab'
+import Tabs from 'react-bootstrap/Tabs'
 import { useParams } from 'react-router-dom'
 import { get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
@@ -100,13 +103,43 @@ const ACTIVITY_CATEGORY_LABELS = {
   PHASE: 'Phase',
 }
 
-// Requested-but-not-yet-actioned destructive events (currently just an
-// archive request) read as amber; everything else destructive (archived,
-// unarchived, ...) reads as red, matching a completed/irreversible action.
+// $primary is overridden to near-black ink in this theme (see _brand.scss),
+// so "blue" for administrative events has to come from `info` instead --
+// `primary` would render indistinguishably from the `secondary` grey used
+// for phase events.
 const ACTIVITY_CATEGORY_BADGE_VARIANT = {
   DESTRUCTIVE: 'danger',
-  ADMINISTRATIVE: 'primary',
+  ADMINISTRATIVE: 'info',
   PHASE: 'secondary',
+}
+
+// Colour precedence for a phase's progress bar: green only once the phase is
+// actually COMPLETE (all tasks done AND sign-off approved -- 100% tasks but
+// still AWAITING_APPROVAL stays amber), red beats amber whenever any task in
+// the phase is overdue, amber covers active work, grey is untouched work.
+function getPhaseProgressVariant(status, hasOverdueTask) {
+  if (status === 'COMPLETE') {
+    return 'success'
+  }
+  if (hasOverdueTask) {
+    return 'danger'
+  }
+  if (status === 'IN_PROGRESS' || status === 'AWAITING_APPROVAL') {
+    return 'warning'
+  }
+  return 'secondary'
+}
+
+// Same precedence for the overall bar, just rolled up across all three
+// phases -- there's no "not started" grey state at this level.
+function getOverallProgressVariant(allPhasesComplete, hasOverdueTask) {
+  if (allPhasesComplete) {
+    return 'success'
+  }
+  if (hasOverdueTask) {
+    return 'danger'
+  }
+  return 'warning'
 }
 
 // "confirmed" / "awaiting" / "pending" / "not_applicable" -- derived client
@@ -123,12 +156,12 @@ function getTaskState(task) {
   return 'pending'
 }
 
-function WarningIcon(props) {
+function KebabIcon(props) {
   return (
-    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" aria-hidden="true" {...props}>
-      <path d="M8 1.5 15 14H1L8 1.5Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-      <path d="M8 6.2v3.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <circle cx="8" cy="11.5" r="0.8" fill="currentColor" />
+    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor" aria-hidden="true" {...props}>
+      <circle cx="8" cy="3" r="1.3" />
+      <circle cx="8" cy="8" r="1.3" />
+      <circle cx="8" cy="13" r="1.3" />
     </svg>
   )
 }
@@ -195,24 +228,19 @@ function TaskStatusIcon({ state }) {
   )
 }
 
+function CategoryBadge({ variant, children }) {
+  return <span className={`badge border border-${variant} text-${variant} bg-transparent fw-normal`}>{children}</span>
+}
+
 function ActivityEventRow({ entry }) {
-  const isArchiveRequest =
-    entry.event_category === 'DESTRUCTIVE' && entry.description.startsWith('Archive requested')
-  const variant = isArchiveRequest
-    ? 'warning'
-    : (ACTIVITY_CATEGORY_BADGE_VARIANT[entry.event_category] ?? 'secondary')
+  const variant = ACTIVITY_CATEGORY_BADGE_VARIANT[entry.event_category] ?? 'secondary'
 
   return (
-    <ListGroup.Item className={`border-start border-4 border-${variant}`}>
+    <ListGroup.Item className={`py-2 border-start border-3 border-${variant}`}>
       <div className="d-flex justify-content-between align-items-center mb-1">
-        <div className="d-flex gap-2 align-items-center">
-          {entry.event_category === 'DESTRUCTIVE' && (
-            <span className={`text-${variant}`} title="Destructive">
-              <WarningIcon />
-            </span>
-          )}
-          <Badge bg={variant}>{ACTIVITY_CATEGORY_LABELS[entry.event_category] ?? entry.event_category}</Badge>
-        </div>
+        <CategoryBadge variant={variant}>
+          {ACTIVITY_CATEGORY_LABELS[entry.event_category] ?? entry.event_category}
+        </CategoryBadge>
         <span className="text-body-secondary small">
           {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
         </span>
@@ -243,6 +271,7 @@ function TaskDetailForm({ task, canConfirm, saving, error, onSave, onConfirm, on
   // fresh initial state instead of needing an effect to resync it.
   const [draftStatus, setDraftStatus] = useState(task.status)
   const [draftNotes, setDraftNotes] = useState(task.notes ?? '')
+  const [draftCommittedDate, setDraftCommittedDate] = useState(task.committed_date ?? '')
 
   const awaitingConfirmation =
     task.status === 'COMPLETED' && task.confirmation_authority === 'MANAGER' && !task.confirmed_by
@@ -266,6 +295,25 @@ function TaskDetailForm({ task, canConfirm, saving, error, onSave, onConfirm, on
               </option>
             ))}
           </Form.Select>
+        </Form.Group>
+        <Form.Group className="mb-3" controlId="task-due-date">
+          <Form.Label>Due date</Form.Label>
+          <div className={task.is_overdue ? 'text-danger' : undefined}>
+            {task.due_date ? new Date(task.due_date).toLocaleDateString() : 'Not scheduled yet'}
+            {task.is_overdue && ' (overdue)'}
+          </div>
+          <Form.Text muted>Calculated automatically from the phase start date.</Form.Text>
+        </Form.Group>
+        <Form.Group className="mb-3" controlId="task-committed-date">
+          <Form.Label>Committed date</Form.Label>
+          <Form.Control
+            type="date"
+            value={draftCommittedDate}
+            onChange={(event) => setDraftCommittedDate(event.target.value)}
+          />
+          <Form.Text muted>
+            Set this when a client agrees a date on a call -- the earlier of this and the due date above is used.
+          </Form.Text>
         </Form.Group>
         <Form.Group className="mb-3" controlId="task-notes">
           <Form.Label>Notes</Form.Label>
@@ -298,7 +346,7 @@ function TaskDetailForm({ task, canConfirm, saving, error, onSave, onConfirm, on
         <Button variant="secondary" onClick={onHide} disabled={saving}>
           Cancel
         </Button>
-        <Button variant="primary" disabled={saving} onClick={() => onSave(draftStatus, draftNotes)}>
+        <Button variant="primary" disabled={saving} onClick={() => onSave(draftStatus, draftNotes, draftCommittedDate)}>
           {saving ? 'Saving…' : 'Save'}
         </Button>
       </Modal.Footer>
@@ -328,17 +376,25 @@ function TaskDetailModal({ task, canConfirm, saving, error, onSave, onConfirm, o
 function PhaseCard({ phaseNum, status, progress, tasks, onOpenTask, pendingSignoff, onRequestSignoff }) {
   const allComplete = progress.total > 0 && progress.completed === progress.total
   const canRequestSignoff = allComplete && status !== 'COMPLETE'
+  const hasOverdueTask = tasks.some((task) => task.is_overdue)
 
   return (
-    <Card className="mb-3">
-      <Card.Header className="d-flex justify-content-between align-items-center">
+    <Card className="mb-2">
+      <Card.Header className="d-flex justify-content-between align-items-center py-2">
         <span className="fw-semibold">Phase {phaseNum}</span>
         <Badge bg={PHASE_STATUS_BADGE_VARIANT[status] ?? 'secondary'}>
           {PHASE_STATUS_LABELS[status] ?? status}
         </Badge>
       </Card.Header>
-      <Card.Body>
-        <ProgressBar now={progress.percent} label={`${progress.percent}%`} className="mb-3" />
+      <Card.Body className="p-2">
+        <div className="d-flex align-items-center gap-2 mb-2">
+          <ProgressBar
+            now={progress.percent}
+            variant={getPhaseProgressVariant(status, hasOverdueTask)}
+            className="progress-thin flex-grow-1"
+          />
+          <span className="small text-body-secondary flex-shrink-0">{progress.percent}%</span>
+        </div>
         <ListGroup variant="flush" className="mb-3">
           {tasks.map((task) => (
             <TaskRow key={task.id} task={task} onOpen={onOpenTask} />
@@ -362,6 +418,7 @@ function PhaseCard({ phaseNum, status, progress, tasks, onOpenTask, pendingSigno
 function PhaseTracker({ leadId }) {
   const { user } = useAuth()
   const canConfirm = MANAGEMENT_ROLES.has(user?.role)
+  const canManageProject = MANAGER_ROLES.has(user?.role)
 
   const [project, setProject] = useState(null)
   const [loadingProject, setLoadingProject] = useState(true)
@@ -440,8 +497,8 @@ function PhaseTracker({ leadId }) {
     }
   }
 
-  function handleSaveTask(taskStatus, notes) {
-    applyTaskUpdate({ status: taskStatus, notes })
+  function handleSaveTask(taskStatus, notes, committedDate) {
+    applyTaskUpdate({ status: taskStatus, notes, committed_date: committedDate || null })
   }
 
   function handleConfirmTask() {
@@ -481,7 +538,35 @@ function PhaseTracker({ leadId }) {
             </Badge>
           )}
         </h2>
-        {project && <ArchiveButton resource="project" record={project} onArchived={refreshProject} />}
+        {project && canManageProject && (
+          <Dropdown align="end">
+            <Dropdown.Toggle
+              variant="outline-secondary"
+              size="sm"
+              id="project-actions-menu"
+              className="dropdown-toggle-no-caret"
+              aria-label="Project actions"
+            >
+              <KebabIcon />
+            </Dropdown.Toggle>
+            <Dropdown.Menu>
+              <ArchiveButton
+                resource="project"
+                record={project}
+                onArchived={refreshProject}
+                label={project.is_archived ? 'Unarchive project' : 'Archive project'}
+                renderTrigger={({ onClick, label, disabled, error }) => (
+                  <>
+                    <Dropdown.Item onClick={onClick} disabled={disabled} className={project.is_archived ? '' : 'text-danger'}>
+                      {label}
+                    </Dropdown.Item>
+                    {error && <div className="px-3 py-1 text-danger small">{error}</div>}
+                  </>
+                )}
+              />
+            </Dropdown.Menu>
+          </Dropdown>
+        )}
       </div>
 
       {loadingProject ? (
@@ -506,12 +591,17 @@ function PhaseTracker({ leadId }) {
       ) : (
         <>
           {signoffError && <Alert variant="danger">{signoffError}</Alert>}
-          <div className="mb-3">
-            <div className="d-flex justify-content-between small text-body-secondary mb-1">
-              <span>Overall progress</span>
-              <span>{project.overall_progress}%</span>
-            </div>
-            <ProgressBar now={project.overall_progress} />
+          <div className="d-flex align-items-center gap-2 mb-3">
+            <span className="small text-body-secondary flex-shrink-0">Overall progress</span>
+            <ProgressBar
+              now={project.overall_progress}
+              variant={getOverallProgressVariant(
+                PHASE_NUMBERS.every((n) => project[`phase_${n}_status`] === 'COMPLETE'),
+                tasks.some((task) => task.is_overdue),
+              )}
+              className="progress-thin flex-grow-1"
+            />
+            <span className="small text-body-secondary flex-shrink-0">{project.overall_progress}%</span>
           </div>
           {PHASE_NUMBERS.map((phaseNum) => (
             <PhaseCard
@@ -793,6 +883,22 @@ export default function LeadDetail() {
     }
   }
 
+  // An ARCHIVE_LEAD approval request always has its own "Archive requested"/
+  // "Lead archived" ActivityEvent recorded alongside it (see
+  // ApprovalRequestSerializer.create/_apply_approval_side_effect on the
+  // backend) -- once the approval entry itself is in the feed, those events
+  // are pure restatements of the same action, so they're hidden here rather
+  // than shown as a second row.
+  const hasArchiveApprovalEntry = timelineEntries.some(
+    (entry) => entry.entry_type === 'APPROVAL_REQUEST' && entry.request_type === 'ARCHIVE_LEAD',
+  )
+  const visibleTimelineEntries = timelineEntries.filter((entry) => {
+    if (!hasArchiveApprovalEntry || entry.entry_type !== 'ACTIVITY_EVENT') {
+      return true
+    }
+    return !(entry.description.startsWith('Archive requested') || entry.description.startsWith('Lead archived'))
+  })
+
   return (
     <Container style={{ maxWidth: '56rem' }}>
       {loadingLead ? (
@@ -826,22 +932,9 @@ export default function LeadDetail() {
                   Edit
                 </Button>
               )}
-              <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} />
+              <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} label="Archive lead" />
             </div>
           </div>
-
-          {canEdit && showEditModal && (
-            <EditLeadModal
-              show={showEditModal}
-              lead={lead}
-              contacts={contacts}
-              salesReps={salesReps}
-              canEditAssignedTo={canEditAssignedTo}
-              onHide={() => setShowEditModal(false)}
-              onSaved={setLead}
-              onContactCreated={(contact) => setContacts((prev) => [...prev, contact])}
-            />
-          )}
 
           <Row className="mb-4 gy-2">
             <Col sm={6} md={3}>
@@ -870,129 +963,162 @@ export default function LeadDetail() {
             </Col>
           </Row>
 
-          <PhaseTracker leadId={lead.id} />
-
-          <Card className="mb-4">
-            <Card.Body>
-              <Card.Title as="h2" className="h5">
-                Log interaction
-              </Card.Title>
-              {submitError && <Alert variant="danger">{submitError}</Alert>}
-              <Form onSubmit={handleSubmit}>
-                <Row className="g-2 align-items-end">
-                  <Col sm={3}>
-                    <Form.Group controlId="interaction-type">
-                      <Form.Label>Type</Form.Label>
-                      <Form.Select value={type} onChange={(event) => setType(event.target.value)}>
-                        {TYPE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </Form.Select>
-                    </Form.Group>
-                  </Col>
-                  {type !== 'NOTE' && (
-                    <Col sm={3}>
-                      <Form.Group controlId="interaction-outcome">
-                        <Form.Label>Outcome</Form.Label>
-                        <Form.Select
-                          value={outcome}
-                          onChange={(event) => setOutcome(event.target.value)}
-                          required
-                        >
-                          {OUTCOME_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </Form.Select>
-                      </Form.Group>
-                    </Col>
-                  )}
-                  <Col sm={4}>
-                    <Form.Group controlId="interaction-notes">
-                      <Form.Label>Notes</Form.Label>
-                      <Form.Control
-                        as="textarea"
-                        rows={1}
-                        value={notes}
-                        onChange={(event) => setNotes(event.target.value)}
-                      />
-                    </Form.Group>
-                  </Col>
-                  <Col sm={2}>
-                    <Button type="submit" variant="primary" className="w-100" disabled={submitting}>
-                      {submitting ? 'Saving…' : 'Save'}
-                    </Button>
-                  </Col>
-                </Row>
-              </Form>
-            </Card.Body>
-          </Card>
-
-          <h2 className="h5 mb-3">Timeline</h2>
-          {loadingTimeline ? (
-            <div className="d-flex justify-content-center py-4">
-              <Spinner animation="border" role="status">
-                <span className="visually-hidden">Loading…</span>
-              </Spinner>
-            </div>
-          ) : timelineError ? (
-            <Alert variant="danger">{timelineError}</Alert>
-          ) : timelineEntries.length === 0 ? (
-            <p className="text-body-secondary">Nothing logged yet.</p>
-          ) : (
-            <ListGroup>
-              {timelineEntries.map((entry) =>
-                entry.entry_type === 'ACTIVITY_EVENT' ? (
-                  <ActivityEventRow key={`activity-${entry.id}`} entry={entry} />
-                ) : entry.entry_type === 'APPROVAL_REQUEST' ? (
-                  <ListGroup.Item
-                    key={`approval-${entry.id}`}
-                    className={`border-start border-4 ${APPROVAL_STATUS_BORDER[entry.status] ?? ''}`}
-                  >
-                    <div className="d-flex justify-content-between align-items-center mb-1">
-                      <div className="d-flex gap-2 align-items-center">
-                        <span className="fw-semibold">
-                          {REQUEST_TYPE_LABELS[entry.request_type] ?? entry.request_type}
-                        </span>
-                        <Badge bg={APPROVAL_STATUS_BADGE_VARIANT[entry.status] ?? 'secondary'}>{entry.status}</Badge>
-                      </div>
-                      <span className="text-body-secondary small">
-                        {formatDistanceToNow(new Date(entry.created_at), { addSuffix: true })}
-                      </span>
-                    </div>
-                    {entry.reason && <p className="mb-1">{entry.reason}</p>}
-                    {entry.status === 'REJECTED' && entry.decision_note && (
-                      <p className="mb-1 fst-italic">{entry.decision_note}</p>
-                    )}
-                    <div className="text-body-secondary small">
-                      Requested by {entry.requested_by_username ?? 'Unknown'}
-                    </div>
-                  </ListGroup.Item>
-                ) : (
-                  <ListGroup.Item key={`interaction-${entry.id}`}>
-                    <div className="d-flex justify-content-between align-items-center mb-1">
-                      <div className="d-flex gap-2">
-                        <Badge bg="info">{entry.type}</Badge>
-                        {entry.outcome && (
-                          <Badge bg={OUTCOME_BADGE_VARIANT[entry.outcome] ?? 'secondary'}>{entry.outcome}</Badge>
-                        )}
-                      </div>
-                      <span className="text-body-secondary small">
-                        {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
-                      </span>
-                    </div>
-                    {entry.notes && <p className="mb-1">{entry.notes}</p>}
-                    <div className="text-body-secondary small">
-                      Logged by {entry.created_by_username ?? 'Unknown'}
-                    </div>
-                  </ListGroup.Item>
-                ),
-              )}
-            </ListGroup>
+          {canEdit && showEditModal && (
+            <EditLeadModal
+              show={showEditModal}
+              lead={lead}
+              contacts={contacts}
+              salesReps={salesReps}
+              canEditAssignedTo={canEditAssignedTo}
+              onHide={() => setShowEditModal(false)}
+              onSaved={setLead}
+              onContactCreated={(contact) => setContacts((prev) => [...prev, contact])}
+            />
           )}
+
+          <Tabs defaultActiveKey="phases" id="lead-detail-tabs" className="mb-4">
+            <Tab eventKey="phases" title="Phases">
+              <PhaseTracker leadId={lead.id} />
+            </Tab>
+            <Tab
+              eventKey="activity"
+              title={
+                <>
+                  Activity{' '}
+                  <Badge bg="secondary" pill>
+                    {visibleTimelineEntries.length}
+                  </Badge>
+                </>
+              }
+            >
+              <Card className="mb-4">
+                <Card.Body className="py-2">
+                  {submitError && <Alert variant="danger">{submitError}</Alert>}
+                  <Form onSubmit={handleSubmit}>
+                    <Row className="g-2 align-items-end">
+                      <Col sm={3}>
+                        <Form.Group controlId="interaction-type">
+                          <Form.Label className="small mb-1">Type</Form.Label>
+                          <Form.Select
+                            size="sm"
+                            value={type}
+                            onChange={(event) => setType(event.target.value)}
+                          >
+                            {TYPE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </Form.Select>
+                        </Form.Group>
+                      </Col>
+                      {type !== 'NOTE' && (
+                        <Col sm={3}>
+                          <Form.Group controlId="interaction-outcome">
+                            <Form.Label className="small mb-1">Outcome</Form.Label>
+                            <Form.Select
+                              size="sm"
+                              value={outcome}
+                              onChange={(event) => setOutcome(event.target.value)}
+                              required
+                            >
+                              {OUTCOME_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </Form.Select>
+                          </Form.Group>
+                        </Col>
+                      )}
+                      <Col sm={type !== 'NOTE' ? 4 : 7}>
+                        <Form.Group controlId="interaction-notes">
+                          <Form.Label className="small mb-1">Notes</Form.Label>
+                          <Form.Control
+                            as="textarea"
+                            rows={1}
+                            size="sm"
+                            value={notes}
+                            onChange={(event) => setNotes(event.target.value)}
+                          />
+                        </Form.Group>
+                      </Col>
+                      <Col sm={2}>
+                        <Button type="submit" variant="primary" size="sm" className="w-100" disabled={submitting}>
+                          {submitting ? 'Saving…' : 'Save'}
+                        </Button>
+                      </Col>
+                    </Row>
+                  </Form>
+                </Card.Body>
+              </Card>
+
+              <h2 className="h5 mb-3">Timeline</h2>
+              {loadingTimeline ? (
+                <div className="d-flex justify-content-center py-4">
+                  <Spinner animation="border" role="status">
+                    <span className="visually-hidden">Loading…</span>
+                  </Spinner>
+                </div>
+              ) : timelineError ? (
+                <Alert variant="danger">{timelineError}</Alert>
+              ) : visibleTimelineEntries.length === 0 ? (
+                <p className="text-body-secondary">Nothing logged yet.</p>
+              ) : (
+                <ListGroup>
+                  {visibleTimelineEntries.map((entry) =>
+                    entry.entry_type === 'ACTIVITY_EVENT' ? (
+                      <ActivityEventRow key={`activity-${entry.id}`} entry={entry} />
+                    ) : entry.entry_type === 'APPROVAL_REQUEST' ? (
+                      <ListGroup.Item
+                        key={`approval-${entry.id}`}
+                        className={`py-2 border-start border-3 ${APPROVAL_STATUS_BORDER[entry.status] ?? ''}`}
+                      >
+                        <div className="d-flex justify-content-between align-items-center mb-1">
+                          <div className="d-flex gap-2 align-items-center">
+                            <span className="fw-semibold">
+                              {REQUEST_TYPE_LABELS[entry.request_type] ?? entry.request_type}
+                            </span>
+                            <CategoryBadge variant={APPROVAL_STATUS_BADGE_VARIANT[entry.status] ?? 'secondary'}>
+                              {entry.status}
+                            </CategoryBadge>
+                          </div>
+                          <span className="text-body-secondary small">
+                            {formatDistanceToNow(new Date(entry.created_at), { addSuffix: true })}
+                          </span>
+                        </div>
+                        {entry.reason && <p className="mb-1">{entry.reason}</p>}
+                        {entry.status === 'REJECTED' && entry.decision_note && (
+                          <p className="mb-1 fst-italic">{entry.decision_note}</p>
+                        )}
+                        <div className="text-body-secondary small">
+                          Requested by {entry.requested_by_username ?? 'Unknown'}
+                        </div>
+                      </ListGroup.Item>
+                    ) : (
+                      <ListGroup.Item key={`interaction-${entry.id}`} className="py-2 border-start border-3 border-secondary-subtle">
+                        <div className="d-flex justify-content-between align-items-center mb-1">
+                          <div className="d-flex gap-2">
+                            <Badge bg="info">{entry.type}</Badge>
+                            {entry.outcome && (
+                              <Badge bg={OUTCOME_BADGE_VARIANT[entry.outcome] ?? 'secondary'}>{entry.outcome}</Badge>
+                            )}
+                          </div>
+                          <span className="text-body-secondary small">
+                            {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
+                          </span>
+                        </div>
+                        {entry.notes && <p className="mb-1">{entry.notes}</p>}
+                        <div className="text-body-secondary small">
+                          Logged by {entry.created_by_username ?? 'Unknown'}
+                        </div>
+                      </ListGroup.Item>
+                    ),
+                  )}
+                </ListGroup>
+              )}
+            </Tab>
+          </Tabs>
         </>
       )}
     </Container>

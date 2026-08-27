@@ -274,6 +274,10 @@ class ProjectSerializer(serializers.ModelSerializer):
 
         project = super().update(instance, validated_data)
 
+        for phase_num, new_status in changed_phases:
+            if new_status == Project.PhaseStatus.IN_PROGRESS:
+                project.start_phase(phase_num)
+
         if request and changed_phases:
             for phase_num, new_status in changed_phases:
                 ActivityEvent.record(
@@ -315,6 +319,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             if project.phase_3_status == Project.PhaseStatus.NOT_STARTED:
                 project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
                 project.save(update_fields=['phase_3_status'])
+                project.start_phase(3)
         elif phase_num == 3 and not project.maintenance:
             project.maintenance = True
             project.save(update_fields=['maintenance'])
@@ -339,25 +344,40 @@ class ProjectSerializer(serializers.ModelSerializer):
             deal.save(update_fields=['stage'])
 
         project.deal = deal
-        if project.phase_2_status == Project.PhaseStatus.NOT_STARTED:
+        phase_2_starting = project.phase_2_status == Project.PhaseStatus.NOT_STARTED
+        if phase_2_starting:
             project.phase_2_status = Project.PhaseStatus.IN_PROGRESS
         project.save()
+        if phase_2_starting:
+            project.start_phase(2)
 
 
 class PhaseRequirementSerializer(serializers.ModelSerializer):
     updated_by_username = serializers.CharField(source='updated_by.username', read_only=True, default=None)
     confirmed_by_username = serializers.CharField(source='confirmed_by.username', read_only=True, default=None)
+    effective_due_date = serializers.DateField(read_only=True)
+    is_overdue = serializers.BooleanField(read_only=True)
+    completed_late = serializers.BooleanField(read_only=True)
+    # Convenience fields for contexts (e.g. the dashboard's overdue-tasks
+    # group) that display a task without also having its Project/Lead loaded.
+    lead_id = serializers.IntegerField(source='project.lead_id', read_only=True)
+    company_name = serializers.CharField(source='project.company.name', read_only=True, default=None)
 
     class Meta:
         model = PhaseRequirement
         fields = [
             'id', 'project', 'phase', 'label', 'description', 'status', 'notes',
-            'confirmation_authority', 'client_facing',
+            'due_date', 'committed_date', 'effective_due_date', 'is_overdue', 'completed_late',
+            'confirmation_authority', 'client_facing', 'lead_id', 'company_name',
             'updated_by', 'updated_by_username', 'updated_at',
             'confirmed_by', 'confirmed_by_username', 'confirmed_at',
         ]
         read_only_fields = [
             'project', 'phase', 'label', 'description', 'confirmation_authority', 'client_facing',
+            # due_date is calculated at phase start (see Project.start_phase)
+            # -- committed_date, not due_date, is the field a rep/manager can
+            # set directly.
+            'due_date',
             'updated_by', 'updated_at', 'confirmed_by', 'confirmed_at',
         ]
 
@@ -377,12 +397,18 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
         user = request.user if request else None
         new_status = validated_data.get('status', instance.status)
         status_changing = 'status' in validated_data and validated_data['status'] != instance.status
+        committed_date_changing = (
+            'committed_date' in validated_data and validated_data['committed_date'] != instance.committed_date
+        )
+        old_committed_date = instance.committed_date
 
-        if 'status' in validated_data or 'notes' in validated_data:
+        if 'status' in validated_data or 'notes' in validated_data or 'committed_date' in validated_data:
             validated_data['updated_by'] = user
 
         newly_confirmed = False
         if new_status == PhaseRequirement.Status.COMPLETED:
+            if instance.status != PhaseRequirement.Status.COMPLETED:
+                validated_data['completed_at'] = timezone.now()
             if (
                 instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.MANAGER
                 and user is not None
@@ -394,8 +420,20 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
         else:
             validated_data['confirmed_by'] = None
             validated_data['confirmed_at'] = None
+            validated_data['completed_at'] = None
 
         requirement = super().update(instance, validated_data)
+
+        if committed_date_changing and user is not None:
+            ActivityEvent.record(
+                requirement.project.lead,
+                ActivityEvent.Category.ADMINISTRATIVE,
+                (
+                    f'Committed date for "{requirement.label}" changed from '
+                    f'{old_committed_date or "none"} to {requirement.committed_date or "none"}'
+                ),
+                actor=user,
+            )
 
         if status_changing and user is not None:
             description = f'Task "{requirement.label}" marked {requirement.get_status_display()}'
@@ -420,7 +458,7 @@ class RequirementTemplateSerializer(serializers.ModelSerializer):
         model = RequirementTemplate
         fields = [
             'id', 'phase', 'label', 'description', 'order',
-            'confirmation_authority', 'client_facing', 'is_active',
+            'confirmation_authority', 'client_facing', 'default_duration_days', 'is_active',
         ]
 
 

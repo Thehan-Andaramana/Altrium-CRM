@@ -1,0 +1,52 @@
+// Altrium brand tokens. This is the ONLY file that should ever define a
+// colour or typography value -- the whole theme can be re-skinned by
+// editing just this file. Everything else (main.scss, _components.scss,
+// Bootstrap itself) should reference these variables, never hardcode a
+// colour or font of its own.
+
+@use "sass:map";
+
+// Bootstrap's function library only (tint-color/shade-color/color-contrast)
+// -- safe to import this early since it defines no variables or maps of its
+// own, unlike _variables.scss below.
+@import "bootstrap/scss/functions";
+
+// -- Colour ------------------------------------------------------------
+
+$altrium-amber: #FFB60A;
+$altrium-amber-tint-40: tint-color($altrium-amber, 40%);
+$altrium-amber-tint-20: tint-color($altrium-amber, 20%);
+$altrium-amber-shade-20: shade-color($altrium-amber, 20%);
+$altrium-amber-shade-40: shade-color($altrium-amber, 40%);
+
+$altrium-ink: #111111;
+
+// Amber must NEVER be $primary: its contrast against white is ~1.9:1, well
+// under WCAG's 4.5:1 minimum for text. $primary drives links, focus rings,
+// and text-on-white all over Bootstrap, none of which amber can safely
+// carry -- so ink (dark, high-contrast) is $primary, and amber only ever
+// appears as a background with dark text on top (see .btn-accent below and
+// in _components.scss).
+$primary: $altrium-ink;
+$warning: $altrium-amber;
+
+// -- Type & shape --------------------------------------------------------
+
+$font-family-sans-serif: "Poppins", system-ui, sans-serif;
+$border-radius: 0.5rem;
+$btn-font-weight: 500;
+$box-shadow: 0 0.5rem 1.25rem rgba($altrium-ink, 0.1);
+
+// -- Wire "accent" into Bootstrap's theme-colors map ----------------------
+//
+// $theme-colors is defined with `!default` in Bootstrap's _variables.scss,
+// so it must exist before we can add to it -- importing variables (and
+// variables-dark, which reads $theme-colors too) here, merging in "accent",
+// lets main.scss still do a single `@import "bootstrap/scss/bootstrap"`
+// afterwards: Bootstrap re-imports these same partials internally, but
+// `!default` means anything already set here (including this merged map)
+// is left alone the second time around.
+@import "bootstrap/scss/variables";
+@import "bootstrap/scss/variables-dark";
+
+$theme-colors: map.merge($theme-colors, ("accent": $altrium-amber));
