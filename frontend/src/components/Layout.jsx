@@ -1,8 +1,23 @@
+import {
+  Building2,
+  CheckSquare,
+  ChevronDown,
+  GitBranch,
+  LayoutDashboard,
+  LogOut,
+  Moon,
+  Search,
+  Settings,
+  SlidersHorizontal,
+  Sun,
+  Users,
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
 import Container from 'react-bootstrap/Container'
 import Form from 'react-bootstrap/Form'
+import InputGroup from 'react-bootstrap/InputGroup'
 import ListGroup from 'react-bootstrap/ListGroup'
 import Nav from 'react-bootstrap/Nav'
 import Navbar from 'react-bootstrap/Navbar'
@@ -16,28 +31,29 @@ const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_
 const SIDEBAR_WIDTH = '240px'
 const SEARCH_DEBOUNCE_MS = 300
 
-function SunIcon(props) {
-  return (
-    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" aria-hidden="true" {...props}>
-      <circle cx="8" cy="8" r="3.5" fill="currentColor" />
-      <g stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
-        <line x1="8" y1="0.5" x2="8" y2="2.5" />
-        <line x1="8" y1="13.5" x2="8" y2="15.5" />
-        <line x1="0.5" y1="8" x2="2.5" y2="8" />
-        <line x1="13.5" y1="8" x2="15.5" y2="8" />
-        <line x1="2.6" y1="2.6" x2="4" y2="4" />
-        <line x1="12" y1="12" x2="13.4" y2="13.4" />
-        <line x1="2.6" y1="13.4" x2="4" y2="12" />
-        <line x1="12" y1="4" x2="13.4" y2="2.6" />
-      </g>
-    </svg>
-  )
-}
+const NAV_ITEMS = [
+  { to: '/', end: true, label: 'Home', Icon: LayoutDashboard },
+  { to: '/leads', label: 'Pipeline', Icon: GitBranch },
+  { to: '/companies', label: 'Companies', Icon: Building2, requiresCompaniesAccess: true },
+  { to: '/contacts', label: 'Contacts', Icon: Users },
+  { to: '/approvals', label: 'Approvals', Icon: CheckSquare, showApprovalsBadge: true },
+]
 
-function MoonIcon(props) {
+// Amber accent mark: a hexagon with a white chevron, kept fixed-contrast
+// (white on amber) regardless of light/dark theme, the same way .btn-accent
+// forces ink text on amber -- a logo's internal contrast isn't page theming.
+function BrandMark({ className = '', ...props }) {
   return (
-    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor" aria-hidden="true" {...props}>
-      <path d="M9.8 1.3a6.7 6.7 0 1 0 4.9 11.2 5.6 5.6 0 0 1-4.9-11.2z" />
+    <svg
+      viewBox="0 0 28 28"
+      width="24"
+      height="24"
+      aria-hidden="true"
+      className={`text-warning flex-shrink-0 ${className}`}
+      {...props}
+    >
+      <path d="M14 1 26 7.5v13L14 27 2 20.5v-13Z" fill="currentColor" />
+      <path d="M10 8 18 14l-8 6" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
@@ -92,18 +108,23 @@ function GlobalCompanySearch() {
   }
 
   return (
-    <div ref={containerRef} className="position-relative" style={{ minWidth: '16rem' }}>
-      <Form.Control
-        type="search"
-        placeholder="Search companies…"
-        value={query}
-        onChange={(event) => {
-          setQuery(event.target.value)
-          setOpen(true)
-        }}
-        onFocus={() => setOpen(true)}
-        aria-label="Search companies"
-      />
+    <div ref={containerRef} className="position-relative" style={{ width: '16rem' }}>
+      <InputGroup>
+        <InputGroup.Text>
+          <Search size={16} />
+        </InputGroup.Text>
+        <Form.Control
+          type="search"
+          placeholder="Search companies…"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setOpen(true)
+          }}
+          onFocus={() => setOpen(true)}
+          aria-label="Search companies"
+        />
+      </InputGroup>
       {open && debouncedQuery && (
         <ListGroup
           className="position-absolute top-100 start-0 end-0 mt-1 shadow-sm"
@@ -124,32 +145,56 @@ function GlobalCompanySearch() {
   )
 }
 
-function NavLinks({ canSeeCompanies, canSeeSettings }) {
+function NavLinks({ canSeeCompanies, isManagement, pendingApprovalsCount }) {
+  // Deliberately react-router's NavLink directly, not react-bootstrap's
+  // Nav.Link wrapper -- that wrapper pre-flattens `className`/`style` with
+  // its own classnames() call before handing a plain string down to the
+  // "as" component, which breaks the function form NavLink needs for
+  // active-route styling. `nav-link` is added by hand below to keep the
+  // same Bootstrap base styling Nav.Link would otherwise have supplied.
   return (
     <>
-      <Nav.Link as={NavLink} to="/" end>
-        Home
-      </Nav.Link>
-      <Nav.Link as={NavLink} to="/approvals">
-        Approvals
-      </Nav.Link>
-      {canSeeCompanies && (
-        <Nav.Link as={NavLink} to="/companies">
-          Companies
-        </Nav.Link>
-      )}
-      <Nav.Link as={NavLink} to="/contacts">
-        Contacts
-      </Nav.Link>
-      <Nav.Link as={NavLink} to="/leads">
-        Pipeline
-      </Nav.Link>
-      {canSeeSettings && (
-        <Nav.Link as={NavLink} to="/settings">
-          Settings
-        </Nav.Link>
-      )}
+      {NAV_ITEMS.map(({ to, end, label, Icon, requiresCompaniesAccess, showApprovalsBadge }) => {
+        if (requiresCompaniesAccess && !canSeeCompanies) {
+          return null
+        }
+        return (
+          <NavLink
+            key={to}
+            to={to}
+            end={end}
+            className={({ isActive }) =>
+              [
+                'nav-link d-inline-flex align-items-center gap-1 px-2 py-1 border-bottom border-3',
+                isActive ? 'border-warning fw-medium text-body' : 'text-body-secondary',
+              ].join(' ')
+            }
+            style={({ isActive }) => (isActive ? undefined : { borderBottomColor: 'transparent' })}
+          >
+            <Icon size={16} />
+            {label}
+            {showApprovalsBadge && pendingApprovalsCount > 0 && (
+              <Badge bg={isManagement ? 'warning' : 'secondary'} text={isManagement ? 'dark' : undefined} pill>
+                {pendingApprovalsCount}
+              </Badge>
+            )}
+          </NavLink>
+        )
+      })}
     </>
+  )
+}
+
+function UserAvatar({ username }) {
+  const initials = (username || '?').slice(0, 2).toUpperCase()
+  return (
+    <span
+      className="d-inline-flex align-items-center justify-content-center rounded-circle bg-warning text-dark fw-semibold flex-shrink-0"
+      style={{ width: '2rem', height: '2rem', fontSize: '0.75rem' }}
+      aria-hidden="true"
+    >
+      {initials}
+    </span>
   )
 }
 
@@ -159,26 +204,42 @@ function UserActions({ theme, onToggleTheme, user, canSeeSettings, onLogout }) {
       <Button
         variant="outline-secondary"
         size="sm"
+        className="border-0 rounded-circle p-2"
         onClick={onToggleTheme}
         aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
         title={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
       >
-        {theme === 'light' ? <MoonIcon /> : <SunIcon />}
+        {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
       </Button>
-      <NavDropdown title={user?.username} align="end" id="user-menu">
-        <NavDropdown.ItemText>
-          <Badge bg="secondary">{user?.role}</Badge>
-        </NavDropdown.ItemText>
+      <NavDropdown
+        align="end"
+        id="user-menu"
+        title={
+          <span className="d-inline-flex align-items-center gap-2">
+            <UserAvatar username={user?.username} />
+            <span className="d-flex flex-column align-items-start lh-sm">
+              <span>{user?.username}</span>
+              <span className="text-body-secondary small">{user?.role}</span>
+            </span>
+            <ChevronDown size={16} />
+          </span>
+        }
+      >
         <NavDropdown.Item as={NavLink} to="/preferences">
+          <Settings size={16} className="me-2" />
           Preferences
         </NavDropdown.Item>
         {canSeeSettings && (
           <NavDropdown.Item as={NavLink} to="/settings">
+            <SlidersHorizontal size={16} className="me-2" />
             System Settings
           </NavDropdown.Item>
         )}
         <NavDropdown.Divider />
-        <NavDropdown.Item onClick={onLogout}>Logout</NavDropdown.Item>
+        <NavDropdown.Item onClick={onLogout} className="text-danger">
+          <LogOut size={16} className="me-2" />
+          Logout
+        </NavDropdown.Item>
       </NavDropdown>
     </>
   )
@@ -191,6 +252,33 @@ export default function Layout() {
 
   const canSeeSettings = user && MANAGEMENT_ROLES.has(user.role)
   const canSeeCompanies = user && (MANAGEMENT_ROLES.has(user.role) || user.role === 'SALES_REP')
+  const isManagement = Boolean(canSeeSettings)
+
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0)
+
+  useEffect(() => {
+    if (!user) {
+      return
+    }
+    let cancelled = false
+
+    async function fetchPendingCount() {
+      try {
+        // Already role-scoped server-side (ApprovalRequestViewSet):
+        // management roles get every pending request, a rep gets only their
+        // own -- exactly the "needs to act" vs "watching my own" split.
+        const data = await get('/api/approvals/?status=PENDING')
+        if (!cancelled) setPendingApprovalsCount(data.length)
+      } catch {
+        if (!cancelled) setPendingApprovalsCount(0)
+      }
+    }
+
+    fetchPendingCount()
+    return () => {
+      cancelled = true
+    }
+  }, [user])
 
   function toggleTheme() {
     setTheme(theme === 'light' ? 'dark' : 'light')
@@ -208,14 +296,19 @@ export default function Layout() {
           className="d-flex flex-column border-end bg-body-tertiary p-3 position-fixed top-0 start-0 vh-100"
           style={{ width: SIDEBAR_WIDTH }}
         >
-          <NavLink to="/" className="navbar-brand mb-3">
+          <NavLink to="/" className="navbar-brand mb-3 d-flex align-items-center gap-2 fw-semibold">
+            <BrandMark />
             Altrium CRM
           </NavLink>
           <div className="mb-3">
             <GlobalCompanySearch />
           </div>
-          <Nav className="flex-column">
-            <NavLinks canSeeCompanies={canSeeCompanies} canSeeSettings={canSeeSettings} />
+          <Nav className="flex-column gap-1">
+            <NavLinks
+              canSeeCompanies={canSeeCompanies}
+              isManagement={isManagement}
+              pendingApprovalsCount={pendingApprovalsCount}
+            />
           </Nav>
           <div className="mt-auto d-flex flex-column gap-2 pt-3">
             <UserActions
@@ -237,15 +330,20 @@ export default function Layout() {
 
   return (
     <>
-      <Navbar expand="md" bg="body-tertiary" className="border-bottom mb-4">
+      <Navbar expand="md" bg="body-tertiary" className="border-bottom py-3 mb-4" sticky="top">
         <Container fluid>
-          <Navbar.Brand as={NavLink} to="/">
+          <Navbar.Brand as={NavLink} to="/" className="d-flex align-items-center gap-2 fw-semibold">
+            <BrandMark />
             Altrium CRM
           </Navbar.Brand>
           <Navbar.Toggle aria-controls="main-navbar" />
           <Navbar.Collapse id="main-navbar">
-            <Nav className="me-auto">
-              <NavLinks canSeeCompanies={canSeeCompanies} canSeeSettings={canSeeSettings} />
+            <Nav className="me-auto gap-1">
+              <NavLinks
+                canSeeCompanies={canSeeCompanies}
+                isManagement={isManagement}
+                pendingApprovalsCount={pendingApprovalsCount}
+              />
             </Nav>
             <div className="mx-md-3 my-2 my-md-0">
               <GlobalCompanySearch />
