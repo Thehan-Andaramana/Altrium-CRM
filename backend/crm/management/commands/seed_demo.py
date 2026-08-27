@@ -5,18 +5,43 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from crm.models import ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, User
+from crm.models import (
+    ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, Project, RequirementTemplate, User,
+)
+from crm.serializers import ProjectSerializer
 
 DEMO_PASSWORD = 'testpass123'
+
+# Duration/authority for the ten canonical RequirementTemplate rows the data
+# migration seeds. Any other active template (e.g. one added by hand through
+# the admin UI) just gets a phase-appropriate fallback duration below, since
+# there's no principled label to map it to one of these.
+TEMPLATE_CONFIG = {
+    # label: (default_duration_days, confirmation_authority, client_facing)
+    'Budget Proposal': (5, 'REP', False),
+    'Client Proposal Confirmation': (7, 'MANAGER', True),
+    'Requirement Discussion': (3, 'REP', False),
+    'Contract Papers': (10, 'MANAGER', True),
+    'Technical Specification': (10, 'REP', False),
+    'Development Progress Review': (14, 'REP', False),
+    'QA Sign-off': (21, 'REP', False),
+    'Client Acceptance': (3, 'MANAGER', True),
+    'Final Proposal Signature': (5, 'MANAGER', True),
+    'Handover Note': (7, 'REP', False),
+}
+PHASE_FALLBACK_DURATION = {1: 6, 2: 14, 3: 5}
 
 
 class Command(BaseCommand):
     help = (
-        'Seeds the database with demo CRM data (users, companies, contacts, leads, '
-        'interactions, and one lead with a pending phase 1 sign-off request). '
-        'Projects and their phase 1/2/3 requirements are never created directly here -- '
-        'they come from Lead.save() auto-creating a Project, which in turn copies its '
-        'PhaseRequirement rows from whatever RequirementTemplates are currently active.'
+        'Seeds the database with demo CRM data covering every state the UI needs to show: '
+        'users of every role, companies/contacts/leads, mixed-outcome interactions, and one '
+        'lead per project/phase state (awaiting sign-off, approved and advanced, an overdue '
+        'task, an unconfirmed manager task, a not-applicable task) plus one archived company. '
+        'Projects and their phase 1/2/3 requirements are never created directly here -- they '
+        'come from Lead.save() auto-creating a Project, which in turn copies its '
+        'PhaseRequirement rows from whatever RequirementTemplates are currently active, so '
+        'template duration/authority is seeded first.'
     )
 
     def __init__(self, *args, **kwargs):
@@ -27,24 +52,58 @@ class Command(BaseCommand):
             'contacts': [0, 0],
             'leads': [0, 0],
             'interactions': [0, 0],
-            'phase_requirements': [0, 0],
             'approvals': [0, 0],
         }
 
     @transaction.atomic
     def handle(self, *args, **options):
-        rep1, rep2, mgr1 = self._seed_users()
+        self._seed_requirement_templates()
+        rep1, rep2, mgr1, _ex1 = self._seed_users()
         self._seed_superuser()
         companies = self._seed_companies(rep1, rep2)
         contacts = self._seed_contacts(companies)
         leads = self._seed_leads(companies, contacts, rep1, rep2, mgr1)
         self._seed_interactions(leads, rep1, rep2, mgr1)
-        self._seed_phase1_signoff(leads, mgr1)
+        self._seed_project_states(leads, mgr1)
+        self._seed_archived_company(companies, mgr1)
 
         self._print_summary()
 
     def _track(self, bucket, created):
         self.counts[bucket][0 if created else 1] += 1
+
+    # -- requirement templates ----------------------------------------------
+
+    def _seed_requirement_templates(self):
+        updated = 0
+        for template in RequirementTemplate.objects.filter(is_active=True):
+            config = TEMPLATE_CONFIG.get(template.label)
+            if config:
+                duration, authority, client_facing = config
+            else:
+                # Unrecognized template (not one of the ten canonical rows) --
+                # still gets a duration so "all active templates" holds, but
+                # its authority/client_facing is left alone rather than
+                # guessed at.
+                duration = PHASE_FALLBACK_DURATION.get(template.phase, 7)
+                authority = template.confirmation_authority
+                client_facing = template.client_facing
+
+            changed = False
+            if template.default_duration_days != duration:
+                template.default_duration_days = duration
+                changed = True
+            if template.confirmation_authority != authority:
+                template.confirmation_authority = authority
+                changed = True
+            if template.client_facing != client_facing:
+                template.client_facing = client_facing
+                changed = True
+            if changed:
+                template.save(update_fields=['default_duration_days', 'confirmation_authority', 'client_facing'])
+                updated += 1
+        if updated:
+            self.stdout.write(f'Updated {updated} requirement template(s) with duration/authority.')
 
     # -- users ---------------------------------------------------------
 
@@ -53,6 +112,7 @@ class Command(BaseCommand):
             ('rep1', User.Role.SALES_REP),
             ('rep2', User.Role.SALES_REP),
             ('mgr1', User.Role.SALES_MANAGER),
+            ('ex1', User.Role.EXECUTIVE_MANAGER),
         ]
         users = {}
         for username, role in specs:
@@ -69,7 +129,7 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f'Created user "{username}" ({role})')
             users[username] = user
-        return users['rep1'], users['rep2'], users['mgr1']
+        return users['rep1'], users['rep2'], users['mgr1'], users['ex1']
 
     def _seed_superuser(self):
         user, created = User.objects.get_or_create(
@@ -90,6 +150,7 @@ class Command(BaseCommand):
     # -- companies -------------------------------------------------------
 
     def _seed_companies(self, rep1, rep2):
+        # Six companies, split between the two reps, with two left unassigned.
         specs = [
             ('Acme Corp', 'Manufacturing', 'https://acme.example.com', rep1),
             ('Globex Inc', 'Technology', 'https://globex.example.com', rep1),
@@ -173,6 +234,9 @@ class Command(BaseCommand):
         # interactions (a RESPONDED interaction drives last_activity_at itself,
         # via Interaction.save(); NO_ANSWER/MISSED_CALL interactions don't
         # touch it, so a lead can have those and still be backdated here).
+        # Both status and the backdated last_activity_at are re-applied on
+        # every run (not just at creation) so the HOT/COLD/approaching-cold
+        # mix stays correct relative to "now" no matter when this is re-run.
         specs = [
             ('Acme Corp', 'Alice Anderson', 'Acme Corp — Q3 renewal & pricing rollout',
              Lead.Status.HOT, rep1, 1, True),
@@ -188,29 +252,34 @@ class Command(BaseCommand):
              Lead.Status.COLD, rep2, 30, False),
             ('Stark Industries', 'Sam Okafor', 'Stark Industries — Supply chain modernization',
              Lead.Status.COLD, mgr1, 14, False),
+            # 12 days ago sits inside the default 14-day cold_lead_days
+            # window's last 3 days (11-14) -- the dashboard's "approaching
+            # cold" bucket.
             ('Wayne Enterprises', 'Wendy Park', 'Wayne Enterprises — Q3 infrastructure upgrade',
-             Lead.Status.HOT, mgr1, 6, False),
+             Lead.Status.HOT, mgr1, 12, False),
             ('Wayne Enterprises', 'Will Turner', 'Wayne Enterprises — IT helpdesk migration',
              Lead.Status.COLD, mgr1, 9, False),
         ]
 
         leads = {}
-        for company_name, contact_name, name, status, assigned_to, days_ago, has_interactions in specs:
+        for company_name, contact_name, name, lead_status, assigned_to, days_ago, has_interactions in specs:
             company = companies[company_name]
             contact = contacts[(company_name, contact_name)]
             lead, created = Lead.objects.get_or_create(
                 company=company,
                 contact=contact,
-                defaults={'name': name, 'status': status, 'assigned_to': assigned_to},
+                defaults={'name': name, 'status': lead_status, 'assigned_to': assigned_to},
             )
             self._track('leads', created)
             if created:
-                self.stdout.write(f'Created lead for "{company_name}" / {contact_name} ({status})')
-                if not has_interactions:
-                    # Bypass last_activity_at's auto_now via update(), so the
-                    # backdated value sticks instead of being reset to "now".
-                    Lead.objects.filter(pk=lead.pk).update(last_activity_at=now - timedelta(days=days_ago))
-                    lead.refresh_from_db()
+                self.stdout.write(f'Created lead "{name}"')
+
+            update_fields = {'status': lead_status}
+            if not has_interactions:
+                update_fields['last_activity_at'] = now - timedelta(days=days_ago)
+            Lead.objects.filter(pk=lead.pk).update(**update_fields)
+            lead.refresh_from_db()
+
             leads[(company_name, contact_name)] = (lead, has_interactions)
         return leads
 
@@ -235,6 +304,10 @@ class Command(BaseCommand):
              'Discussed research partnership scope.', 5, rep2),
             ('Umbrella Corp', 'Uma Ramirez', Interaction.Type.NOTE, Interaction.Outcome.RESPONDED,
              'Follow up after budget approval next quarter.', 2, rep2),
+            ('Umbrella Corp', 'Ulric Novak', Interaction.Type.CALL, Interaction.Outcome.NO_ANSWER,
+             'Left a voicemail about the procurement upgrade.', 8, rep2),
+            ('Wayne Enterprises', 'Will Turner', Interaction.Type.CALL, Interaction.Outcome.MISSED_CALL,
+             'Tried to catch him about the helpdesk migration.', 3, mgr1),
         ]
 
         for company_name, contact_name, itype, outcome, notes, days_ago, created_by in specs:
@@ -253,27 +326,52 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f'Created interaction ({itype}/{outcome}) on "{company_name}" / {contact_name}')
 
-    # -- phase 1 sign-off ----------------------------------------------------
+    # -- project/phase/task states -------------------------------------------
 
-    def _seed_phase1_signoff(self, leads, mgr1):
-        # Gives the manager's approvals queue something to review: complete
-        # every phase 1 requirement on one lead's (auto-created) project, then
-        # raise the same PENDING sign-off request the "Request sign-off"
-        # button in the UI would create.
-        lead, _has_interactions = leads[('Acme Corp', 'Alice Anderson')]
-        project = lead.project
+    def _backdate_phase_start(self, project, phase_num, days_ago):
+        # Mirrors Project.start_phase()'s due-date math, but against a
+        # backdated start instead of "now" -- so an already-started phase's
+        # due dates land in the past instead of the future.
+        started_at = timezone.now() - timedelta(days=days_ago)
+        start_date = started_at.date()
+        field_name = Project.PHASE_STARTED_AT_FIELDS[phase_num]
+        Project.objects.filter(pk=project.pk).update(**{field_name: started_at})
 
+        to_update = []
+        for requirement in project.requirements.filter(phase=phase_num):
+            if requirement.default_duration_days is None:
+                continue
+            requirement.due_date = start_date + timedelta(days=requirement.default_duration_days)
+            to_update.append(requirement)
+        if to_update:
+            PhaseRequirement.objects.bulk_update(to_update, ['due_date'])
+
+    def _seed_project_states(self, leads, mgr1):
+        self._seed_awaiting_signoff(leads, mgr1)
+        self._seed_completed_and_approved_phase(leads, mgr1)
+        self._seed_overdue_task(leads)
+        self._seed_unconfirmed_manager_task(leads)
+        self._seed_not_applicable_task(leads)
+
+    def _complete_phase_1_requirements(self, project, actor, mgr1):
         for requirement in project.requirements.filter(phase=1):
             if requirement.status == PhaseRequirement.Status.COMPLETED:
-                self._track('phase_requirements', False)
                 continue
             requirement.status = PhaseRequirement.Status.COMPLETED
-            requirement.updated_by = lead.assigned_to
+            requirement.updated_by = actor
             if requirement.confirmation_authority == PhaseRequirement.ConfirmationAuthority.MANAGER:
                 requirement.confirmed_by = mgr1
                 requirement.confirmed_at = timezone.now()
             requirement.save()
-            self._track('phase_requirements', True)
+
+    def _seed_awaiting_signoff(self, leads, mgr1):
+        # Phase 1 at 100% with a still-PENDING sign-off request -- the amber
+        # "Awaiting Approval" state.
+        lead, _has_interactions = leads[('Acme Corp', 'Alice Anderson')]
+        project = lead.project
+        self._complete_phase_1_requirements(project, lead.assigned_to, mgr1)
+        if project.phase_1_status != Project.PhaseStatus.AWAITING_APPROVAL:
+            Project.objects.filter(pk=project.pk).update(phase_1_status=Project.PhaseStatus.AWAITING_APPROVAL)
 
         approval, created = ApprovalRequest.objects.get_or_create(
             project=project,
@@ -283,7 +381,102 @@ class Command(BaseCommand):
         )
         self._track('approvals', created)
         if created:
-            self.stdout.write(f'Created PENDING phase 1 sign-off request for "{lead.company.name}"')
+            self.stdout.write(f'Created PENDING phase 1 sign-off request for "{lead.name}"')
+
+    def _seed_completed_and_approved_phase(self, leads, mgr1):
+        # Phase 1 complete with an APPROVED sign-off -- phase 2 auto-advances
+        # to IN_PROGRESS and renders green.
+        lead, _has_interactions = leads[('Globex Inc', 'Grace Green')]
+        project = lead.project
+        project.refresh_from_db()
+        if project.phase_1_status == Project.PhaseStatus.COMPLETE:
+            return
+
+        self._backdate_phase_start(project, 1, days_ago=20)
+        project.refresh_from_db()
+        self._complete_phase_1_requirements(project, lead.assigned_to, mgr1)
+
+        approval, _created = ApprovalRequest.objects.get_or_create(
+            project=project,
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            defaults={
+                'requested_by': lead.assigned_to,
+                'status': ApprovalRequest.Status.APPROVED,
+                'decided_by': mgr1,
+                'decided_at': timezone.now(),
+            },
+        )
+        if approval.status != ApprovalRequest.Status.APPROVED:
+            approval.status = ApprovalRequest.Status.APPROVED
+            approval.decided_by = mgr1
+            approval.decided_at = timezone.now()
+            approval.save()
+        self._track('approvals', _created)
+
+        ProjectSerializer.complete_phase(project, 1)
+        self.stdout.write(f'Completed and approved phase 1 for "{lead.name}" -- phase 2 now active.')
+
+    def _seed_overdue_task(self, leads):
+        # A phase 1 task whose due date is well in the past -- the red
+        # overdue bar and the dashboard's overdue-tasks card.
+        lead, _has_interactions = leads[('Initech', 'Peter Gibbons')]
+        project = lead.project
+        requirement = project.requirements.filter(phase=1, label='Budget Proposal').first()
+        if requirement is None:
+            return
+        if requirement.default_duration_days is None:
+            requirement.default_duration_days = 5
+            requirement.save(update_fields=['default_duration_days'])
+        self._backdate_phase_start(project, 1, days_ago=25)
+        self.stdout.write(f'Backdated phase 1 on "{lead.name}" so "{requirement.label}" is overdue.')
+
+    def _seed_unconfirmed_manager_task(self, leads):
+        # A MANAGER-authority task marked COMPLETED but never confirmed --
+        # the amber "awaiting confirmation" clock state.
+        lead, _has_interactions = leads[('Umbrella Corp', 'Ulric Novak')]
+        requirement = lead.project.requirements.filter(phase=1, label='Client Proposal Confirmation').first()
+        if requirement is None:
+            return
+        requirement.confirmation_authority = PhaseRequirement.ConfirmationAuthority.MANAGER
+        requirement.status = PhaseRequirement.Status.COMPLETED
+        requirement.updated_by = lead.assigned_to
+        requirement.confirmed_by = None
+        requirement.confirmed_at = None
+        requirement.save()
+
+    def _seed_not_applicable_task(self, leads):
+        lead, _has_interactions = leads[('Wayne Enterprises', 'Wendy Park')]
+        requirement = lead.project.requirements.filter(phase=1, label='Requirement Discussion').first()
+        if requirement is None:
+            return
+        requirement.status = PhaseRequirement.Status.NOT_APPLICABLE
+        requirement.updated_by = lead.assigned_to
+        requirement.save()
+
+    # -- archived company -----------------------------------------------------
+
+    def _seed_archived_company(self, companies, mgr1):
+        company = companies['Stark Industries']
+        company.refresh_from_db()
+        if company.is_archived:
+            return
+
+        now = timezone.now()
+        reason = 'Client paused the engagement indefinitely.'
+        company.is_archived = True
+        company.archived_by = mgr1
+        company.archived_at = now
+        company.archive_reason = reason
+        company.save(update_fields=['is_archived', 'archived_by', 'archived_at', 'archive_reason'])
+
+        cascade_reason = f'Cascaded from company archive: {reason}'
+        company.leads.filter(is_archived=False).update(
+            is_archived=True, archived_by=mgr1, archived_at=now, archive_reason=cascade_reason,
+        )
+        company.projects.filter(is_archived=False).update(
+            is_archived=True, archived_by=mgr1, archived_at=now, archive_reason=cascade_reason,
+        )
+        self.stdout.write(f'Archived company "{company.name}" (cascaded to its leads/projects).')
 
     # -- summary -------------------------------------------------------------
 
@@ -296,7 +489,6 @@ class Command(BaseCommand):
             'contacts': 'Contacts',
             'leads': 'Leads',
             'interactions': 'Interactions',
-            'phase_requirements': 'Phase 1 requirements completed',
             'approvals': 'Approval requests',
         }
         for key, label in labels.items():
