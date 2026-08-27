@@ -857,9 +857,11 @@ class LeadRolePermissionAndArchiveTests(ArchiveTestMixin, APITestCase):
         self.assertEqual(response.data['assigned_to'], self.rep.id)
 
     def test_rep_can_update_own_lead(self):
+        # status is deliberately not exercised here -- see
+        # LeadStatusPermissionTests for that rule specifically.
         self.client.force_authenticate(self.rep)
         url = reverse('lead-detail', args=[self.lead.id])
-        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        response = self.client.patch(url, {'name': 'Acme — Renamed deal'}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_rep_cannot_archive_lead(self):
@@ -934,6 +936,118 @@ class LeadNameTests(ArchiveTestMixin, APITestCase):
         ids = {row['id'] for row in response.data}
         self.assertIn(distinctive.id, ids)
         self.assertNotIn(self.lead.id, ids)
+
+
+class LeadCompanyScopingTests(ArchiveTestMixin, APITestCase):
+    def test_rep_can_create_lead_on_owned_company(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(
+            reverse('lead-list'), {'name': 'Acme — New deal', 'company': self.company.id}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_rep_can_create_lead_on_company_where_they_have_an_assigned_lead_but_no_ownership(self):
+        # self.lead (from ArchiveTestMixin) already assigns self.rep on
+        # self.company -- reassign ownership elsewhere so only that
+        # assigned-lead relationship remains.
+        other_owner = User.objects.create_user(username='owner2', password='pass', role=User.Role.SALES_REP)
+        self.company.owner = other_owner
+        self.company.save(update_fields=['owner'])
+
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(
+            reverse('lead-list'), {'name': 'Acme — Second deal', 'company': self.company.id}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_rep_cannot_create_lead_on_unrelated_company(self):
+        unrelated = Company.objects.create(name='Unrelated Co', owner=self.other_rep)
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(
+            reverse('lead-list'), {'name': 'Unrelated — deal', 'company': unrelated.id}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('company', response.data)
+
+    def test_rep_cannot_move_a_lead_to_an_unrelated_company(self):
+        unrelated = Company.objects.create(name='Unrelated Co', owner=self.other_rep)
+        self.client.force_authenticate(self.rep)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.patch(url, {'company': unrelated.id}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('company', response.data)
+
+    def test_manager_can_create_lead_on_any_company(self):
+        unrelated = Company.objects.create(name='Unrelated Co', owner=self.other_rep)
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            reverse('lead-list'),
+            {'name': 'Unrelated — deal', 'company': unrelated.id, 'assigned_to': self.rep.id},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
+class LeadStatusPermissionTests(ArchiveTestMixin, APITestCase):
+    def test_rep_cannot_change_status(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        self.assertIn(response.status_code, (status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN))
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+
+    def test_manager_can_change_status(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.HOT)
+
+
+class ProjectAndPhaseRequirementRepScopingTests(APITestCase):
+    def setUp(self):
+        self.owner_rep = User.objects.create_user(username='ownerrep', password='pass', role=User.Role.SALES_REP)
+        self.assigned_rep = User.objects.create_user(
+            username='assignedrep', password='pass', role=User.Role.SALES_REP,
+        )
+        self.company = Company.objects.create(name='Acme', owner=self.owner_rep)
+        self.lead = Lead.objects.create(company=self.company, name='Acme — Deal', assigned_to=self.assigned_rep)
+        self.project = self.lead.project
+
+    def test_assigned_rep_can_list_and_retrieve_project(self):
+        self.client.force_authenticate(self.assigned_rep)
+        list_response = self.client.get(reverse('project-list'), {'lead': self.lead.id})
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_response.data), 1)
+
+        detail_response = self.client.get(reverse('project-detail', args=[self.project.id]))
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+
+    def test_assigned_rep_can_read_and_update_tasks(self):
+        self.client.force_authenticate(self.assigned_rep)
+        requirement = self.project.requirements.first()
+
+        list_response = self.client.get(reverse('phaserequirement-list'), {'project': self.project.id})
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(len(list_response.data) > 0)
+
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        patch_response = self.client.patch(url, {'status': 'IN_PROGRESS'}, format='json')
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+
+    def test_unrelated_rep_cannot_see_project_or_tasks(self):
+        unrelated_rep = User.objects.create_user(username='unrelated', password='pass', role=User.Role.SALES_REP)
+        self.client.force_authenticate(unrelated_rep)
+
+        project_response = self.client.get(reverse('project-list'), {'lead': self.lead.id})
+        self.assertEqual(project_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(project_response.data), 0)
+
+        requirement_response = self.client.get(reverse('phaserequirement-list'), {'project': self.project.id})
+        self.assertEqual(requirement_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(requirement_response.data), 0)
 
 
 class ProjectRolePermissionAndArchiveTests(ArchiveTestMixin, APITestCase):

@@ -72,6 +72,21 @@ const TASK_STATUS_OPTIONS = [
   { value: 'NOT_APPLICABLE', label: 'Not Applicable' },
 ]
 
+const TASK_STATUS_LABELS = Object.fromEntries(TASK_STATUS_OPTIONS.map((option) => [option.value, option.label]))
+
+const TASK_STATUS_BADGE_VARIANT = {
+  PENDING: 'secondary',
+  IN_PROGRESS: 'info',
+  COMPLETED: 'success',
+  NOT_APPLICABLE: 'secondary',
+}
+
+// A task that's already done just displays what was recorded -- opening it
+// straight into a blank editable form (the old behaviour) reads as if
+// nothing had been saved yet. PENDING/IN_PROGRESS tasks still open ready to
+// work on.
+const READ_ONLY_TASK_STATUSES = new Set(['COMPLETED', 'NOT_APPLICABLE'])
+
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 
 // Lead create/update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
@@ -266,7 +281,90 @@ function TaskRow({ task, onOpen }) {
   )
 }
 
-function TaskDetailForm({ task, canConfirm, saving, error, onSave, onConfirm, onHide }) {
+function TaskDueDateGroup({ task, showHelpText }) {
+  return (
+    <Form.Group className="mb-3" controlId="task-due-date">
+      <Form.Label>Due date</Form.Label>
+      <div className={task.is_overdue ? 'text-danger' : undefined}>
+        {task.due_date ? new Date(task.due_date).toLocaleDateString() : 'Not scheduled yet'}
+        {task.is_overdue && ' (overdue)'}
+      </div>
+      {showHelpText && <Form.Text muted>Calculated automatically from the phase start date.</Form.Text>}
+    </Form.Group>
+  )
+}
+
+function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEdit, onHide }) {
+  const awaitingConfirmation =
+    task.status === 'COMPLETED' && task.confirmation_authority === 'MANAGER' && !task.confirmed_by
+
+  return (
+    <>
+      <Modal.Header closeButton>
+        <Modal.Title as="h2" className="h5 mb-0">
+          {task.label}
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {task.description && <p className="text-body-secondary">{task.description}</p>}
+        <div className="mb-3">
+          <div className="text-body-secondary small">Status</div>
+          <Badge bg={TASK_STATUS_BADGE_VARIANT[task.status] ?? 'secondary'}>
+            {TASK_STATUS_LABELS[task.status] ?? task.status}
+          </Badge>
+        </div>
+        <TaskDueDateGroup task={task} />
+        {task.committed_date && (
+          <div className="mb-3">
+            <div className="text-body-secondary small">Committed date</div>
+            <div>{new Date(task.committed_date).toLocaleDateString()}</div>
+          </div>
+        )}
+        <div className="mb-3">
+          <div className="text-body-secondary small">Notes</div>
+          <div>{task.notes || '—'}</div>
+        </div>
+        <div className="text-body-secondary small">
+          {task.updated_by_username ? (
+            <>
+              Last updated by {task.updated_by_username}
+              {task.updated_at && (
+                <> · {formatDistanceToNow(new Date(task.updated_at), { addSuffix: true })}</>
+              )}
+            </>
+          ) : (
+            'Not yet updated.'
+          )}
+        </div>
+        {task.confirmed_by_username && (
+          <div className="text-body-secondary small">
+            Confirmed by {task.confirmed_by_username}
+            {task.confirmed_at && (
+              <> · {formatDistanceToNow(new Date(task.confirmed_at), { addSuffix: true })}</>
+            )}
+          </div>
+        )}
+      </Modal.Body>
+      <Modal.Footer>
+        {canConfirm && awaitingConfirmation && (
+          <Button variant="outline-success" className="me-auto" disabled={saving} onClick={onConfirm}>
+            Confirm
+          </Button>
+        )}
+        {canEdit && (
+          <Button variant="outline-secondary" onClick={onEdit}>
+            Edit
+          </Button>
+        )}
+        <Button variant="secondary" onClick={onHide}>
+          Close
+        </Button>
+      </Modal.Footer>
+    </>
+  )
+}
+
+function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm, onHide }) {
   // Keyed by task.id from the parent, so switching tasks remounts this with
   // fresh initial state instead of needing an effect to resync it.
   const [draftStatus, setDraftStatus] = useState(task.status)
@@ -296,14 +394,7 @@ function TaskDetailForm({ task, canConfirm, saving, error, onSave, onConfirm, on
             ))}
           </Form.Select>
         </Form.Group>
-        <Form.Group className="mb-3" controlId="task-due-date">
-          <Form.Label>Due date</Form.Label>
-          <div className={task.is_overdue ? 'text-danger' : undefined}>
-            {task.due_date ? new Date(task.due_date).toLocaleDateString() : 'Not scheduled yet'}
-            {task.is_overdue && ' (overdue)'}
-          </div>
-          <Form.Text muted>Calculated automatically from the phase start date.</Form.Text>
-        </Form.Group>
+        <TaskDueDateGroup task={task} showHelpText />
         <Form.Group className="mb-3" controlId="task-committed-date">
           <Form.Label>Committed date</Form.Label>
           <Form.Control
@@ -354,7 +445,40 @@ function TaskDetailForm({ task, canConfirm, saving, error, onSave, onConfirm, on
   )
 }
 
-function TaskDetailModal({ task, canConfirm, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailForm({ task, canConfirm, canEdit, saving, error, onSave, onConfirm, onHide }) {
+  // Keyed by task.id from the parent (via TaskDetailModal), so switching
+  // tasks remounts this with a fresh `editing` default instead of carrying
+  // the previous task's mode over.
+  const [editing, setEditing] = useState(!READ_ONLY_TASK_STATUSES.has(task.status))
+
+  if (!editing) {
+    return (
+      <TaskDetailReadOnly
+        task={task}
+        canConfirm={canConfirm}
+        canEdit={canEdit}
+        saving={saving}
+        onConfirm={onConfirm}
+        onEdit={() => setEditing(true)}
+        onHide={onHide}
+      />
+    )
+  }
+
+  return (
+    <TaskDetailEditForm
+      task={task}
+      canConfirm={canConfirm}
+      saving={saving}
+      error={error}
+      onSave={onSave}
+      onConfirm={onConfirm}
+      onHide={onHide}
+    />
+  )
+}
+
+function TaskDetailModal({ task, canConfirm, canEdit, saving, error, onSave, onConfirm, onHide }) {
   return (
     <Modal show={Boolean(task)} onHide={onHide} centered>
       {task && (
@@ -362,6 +486,7 @@ function TaskDetailModal({ task, canConfirm, saving, error, onSave, onConfirm, o
           key={task.id}
           task={task}
           canConfirm={canConfirm}
+          canEdit={canEdit}
           saving={saving}
           error={error}
           onSave={onSave}
@@ -415,10 +540,11 @@ function PhaseCard({ phaseNum, status, progress, tasks, onOpenTask, pendingSigno
   )
 }
 
-function PhaseTracker({ leadId }) {
+function PhaseTracker({ leadId, leadAssignedTo }) {
   const { user } = useAuth()
   const canConfirm = MANAGEMENT_ROLES.has(user?.role)
   const canManageProject = MANAGER_ROLES.has(user?.role)
+  const canEditTasks = canConfirm || user?.id === leadAssignedTo
 
   const [project, setProject] = useState(null)
   const [loadingProject, setLoadingProject] = useState(true)
@@ -621,6 +747,7 @@ function PhaseTracker({ leadId }) {
       <TaskDetailModal
         task={activeTask}
         canConfirm={canConfirm}
+        canEdit={canEditTasks}
         saving={taskSaving}
         error={taskError}
         onSave={handleSaveTask}
@@ -631,7 +758,18 @@ function PhaseTracker({ leadId }) {
   )
 }
 
-function EditLeadForm({ lead, contacts, salesReps, canEditAssignedTo, saving, error, onSave, onHide, onContactCreated }) {
+function EditLeadForm({
+  lead,
+  contacts,
+  salesReps,
+  canEditAssignedTo,
+  canEditStatus,
+  saving,
+  error,
+  onSave,
+  onHide,
+  onContactCreated,
+}) {
   // Keyed by lead.id from the parent, so reopening remounts this with fresh
   // initial state instead of needing an effect to resync it.
   const [name, setName] = useState(lead.name)
@@ -669,10 +807,19 @@ function EditLeadForm({ lead, contacts, salesReps, canEditAssignedTo, saving, er
         </Form.Group>
         <Form.Group className="mb-3" controlId="edit-lead-status">
           <Form.Label>Status</Form.Label>
-          <Form.Select value={status} onChange={(event) => setStatus(event.target.value)}>
-            <option value="HOT">Hot</option>
-            <option value="COLD">Cold</option>
-          </Form.Select>
+          {canEditStatus ? (
+            <Form.Select value={status} onChange={(event) => setStatus(event.target.value)}>
+              <option value="HOT">Hot</option>
+              <option value="COLD">Cold</option>
+            </Form.Select>
+          ) : (
+            <div>
+              <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}>{lead.status}</Badge>
+              <Form.Text className="d-block" muted>
+                Only a manager can change hot/cold status.
+              </Form.Text>
+            </div>
+          )}
         </Form.Group>
         <Form.Group className="mb-3" controlId="edit-lead-contact">
           <Form.Label>Contact</Form.Label>
@@ -713,7 +860,17 @@ function EditLeadForm({ lead, contacts, salesReps, canEditAssignedTo, saving, er
   )
 }
 
-function EditLeadModal({ show, lead, contacts, salesReps, canEditAssignedTo, onHide, onSaved, onContactCreated }) {
+function EditLeadModal({
+  show,
+  lead,
+  contacts,
+  salesReps,
+  canEditAssignedTo,
+  canEditStatus,
+  onHide,
+  onSaved,
+  onContactCreated,
+}) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
@@ -721,7 +878,14 @@ function EditLeadModal({ show, lead, contacts, salesReps, canEditAssignedTo, onH
     setSaving(true)
     setError(null)
     try {
-      const payload = { name, status, contact: contactId ? Number(contactId) : null }
+      const payload = { name, contact: contactId ? Number(contactId) : null }
+      // status is omitted entirely (not just left at its old value) when the
+      // viewer can't edit it -- LeadSerializer.validate rejects the PATCH
+      // outright if `status` is present at all for a non-management role,
+      // even unchanged, so it must never be sent rather than merely ignored.
+      if (canEditStatus) {
+        payload.status = status
+      }
       if (canEditAssignedTo) {
         payload.assigned_to = Number(assignedTo)
       }
@@ -743,6 +907,7 @@ function EditLeadModal({ show, lead, contacts, salesReps, canEditAssignedTo, onH
         contacts={contacts}
         salesReps={salesReps}
         canEditAssignedTo={canEditAssignedTo}
+        canEditStatus={canEditStatus}
         saving={saving}
         error={error}
         onSave={handleSave}
@@ -779,6 +944,11 @@ export default function LeadDetail() {
     Boolean(lead) &&
     (MANAGER_ROLES.has(user?.role) || (user?.role === 'SALES_REP' && lead.assigned_to === user.id))
   const canEditAssignedTo = MANAGER_ROLES.has(user?.role)
+  // Matches the backend: hot/cold is only writable by management roles (see
+  // LeadSerializer.validate) -- SYSTEM_ADMIN never reaches this modal at all
+  // (canEdit above excludes them), so MANAGER_ROLES covers every role that
+  // actually can.
+  const canEditStatus = canEditAssignedTo
 
   useEffect(() => {
     let cancelled = false
@@ -983,6 +1153,7 @@ export default function LeadDetail() {
               contacts={contacts}
               salesReps={salesReps}
               canEditAssignedTo={canEditAssignedTo}
+              canEditStatus={canEditStatus}
               onHide={() => setShowEditModal(false)}
               onSaved={setLead}
               onContactCreated={(contact) => setContacts((prev) => [...prev, contact])}
@@ -991,7 +1162,7 @@ export default function LeadDetail() {
 
           <Tabs defaultActiveKey="phases" id="lead-detail-tabs" className="mb-4">
             <Tab eventKey="phases" title="Phases">
-              <PhaseTracker leadId={lead.id} />
+              <PhaseTracker leadId={lead.id} leadAssignedTo={lead.assigned_to} />
             </Tab>
             <Tab
               eventKey="activity"

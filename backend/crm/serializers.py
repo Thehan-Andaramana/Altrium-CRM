@@ -108,6 +108,36 @@ class LeadSerializer(serializers.ModelSerializer):
         if request and request.user.role not in FULL_ACCESS_ROLES:
             self.fields['assigned_to'].read_only = True
 
+    def validate(self, attrs):
+        request = self.context.get('request')
+        role = request.user.role if request else None
+
+        # status stays a normal writable field (not field-level read_only)
+        # specifically so a rejected write surfaces here as a 400 instead of
+        # DRF silently dropping it -- read_only fields never reach validate().
+        if role is not None and role not in FULL_ACCESS_ROLES and 'status' in attrs:
+            raise serializers.ValidationError({
+                'status': 'Only management roles can change a lead\'s status.',
+            })
+
+        if role == User.Role.SALES_REP:
+            company = attrs.get('company') or (self.instance.company if self.instance else None)
+            if company is not None:
+                user = request.user
+                connected = (
+                    company.owner_id == user.id
+                    or Lead.objects.filter(company=company, assigned_to=user).exists()
+                )
+                if not connected:
+                    raise serializers.ValidationError({
+                        'company': (
+                            'You can only create or update a lead for a company you own '
+                            'or already have an assigned lead on.'
+                        ),
+                    })
+
+        return attrs
+
     def create(self, validated_data):
         request = self.context.get('request')
         if request:

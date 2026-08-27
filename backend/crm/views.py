@@ -333,7 +333,12 @@ class ProjectViewSet(viewsets.ModelViewSet):
         )
         user = self.request.user
         if user.role == User.Role.SALES_REP:
-            queryset = queryset.filter(company__owner=user)
+            # A rep can read a project either through owning the company or
+            # through being assigned the lead it belongs to -- company
+            # ownership alone used to be the only path in, which meant a rep
+            # assigned a lead on a company they don't own got no project back
+            # (and so no phase tracker at all).
+            queryset = queryset.filter(Q(company__owner=user) | Q(lead__assigned_to=user))
         return _apply_archived_filter(queryset, self.request, self)
 
     @action(detail=True, methods=['post'])
@@ -370,7 +375,8 @@ class PhaseRequirementViewSet(viewsets.ModelViewSet):
         queryset = PhaseRequirement.objects.select_related('project__company', 'updated_by', 'confirmed_by')
         user = self.request.user
         if user.role == User.Role.SALES_REP:
-            queryset = queryset.filter(project__company__owner=user)
+            # Same owner-or-assigned-lead access as ProjectViewSet above.
+            queryset = queryset.filter(Q(project__company__owner=user) | Q(project__lead__assigned_to=user))
         return queryset
 
 

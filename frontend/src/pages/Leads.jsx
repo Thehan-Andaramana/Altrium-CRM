@@ -31,7 +31,7 @@ const STATUS_BADGE_VARIANT = {
   COLD: 'secondary',
 }
 
-function NewLeadModal({ show, onHide, onCreated, companies, salesReps }) {
+function NewLeadModal({ show, onHide, onCreated, companies, salesReps, canAssignRep }) {
   const [name, setName] = useState('')
   const [companyId, setCompanyId] = useState('')
   const [contactId, setContactId] = useState('')
@@ -76,12 +76,14 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps }) {
     setSaving(true)
     setError(null)
     try {
-      await post('/api/leads/', {
-        name,
-        company: Number(companyId),
-        contact: contactId ? Number(contactId) : null,
-        assigned_to: Number(assignedTo),
-      })
+      const payload = { name, company: Number(companyId), contact: contactId ? Number(contactId) : null }
+      // A rep creating their own lead is auto-assigned to themselves
+      // server-side (see LeadSerializer.create) -- only a manager needs to
+      // pick who it goes to.
+      if (canAssignRep) {
+        payload.assigned_to = Number(assignedTo)
+      }
+      await post('/api/leads/', payload)
       onCreated()
       onHide()
     } catch {
@@ -136,23 +138,29 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps }) {
               ))}
             </Form.Select>
           </Form.Group>
-          <Form.Group controlId="new-lead-assigned">
-            <Form.Label>Assigned rep</Form.Label>
-            <Form.Select value={assignedTo} onChange={(event) => setAssignedTo(event.target.value)} required>
-              <option value="">Select a rep…</option>
-              {salesReps.map((rep) => (
-                <option key={rep.id} value={rep.id}>
-                  {rep.username}
-                </option>
-              ))}
-            </Form.Select>
-          </Form.Group>
+          {canAssignRep && (
+            <Form.Group controlId="new-lead-assigned">
+              <Form.Label>Assigned rep</Form.Label>
+              <Form.Select value={assignedTo} onChange={(event) => setAssignedTo(event.target.value)} required>
+                <option value="">Select a rep…</option>
+                {salesReps.map((rep) => (
+                  <option key={rep.id} value={rep.id}>
+                    {rep.username}
+                  </option>
+                ))}
+              </Form.Select>
+            </Form.Group>
+          )}
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={saving || !name.trim() || !companyId || !assignedTo}>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={saving || !name.trim() || !companyId || (canAssignRep && !assignedTo)}
+          >
             {saving ? 'Creating…' : 'Create'}
           </Button>
         </Modal.Footer>
@@ -163,7 +171,11 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps }) {
 
 export default function Leads() {
   const { user } = useAuth()
-  const canCreate = MANAGER_ROLES.has(user?.role)
+  const canAssignRep = MANAGER_ROLES.has(user?.role)
+  // A rep can create a lead too, just scoped to companies they're connected
+  // to (see LeadSerializer.validate on the backend) -- the company dropdown
+  // below is filtered to match via ?mine=true.
+  const canCreate = canAssignRep || user?.role === 'SALES_REP'
 
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -227,9 +239,13 @@ export default function Leads() {
 
     async function fetchOptions() {
       try {
+        // Reps only get companies they're connected to in the picker --
+        // matches LeadSerializer.validate, so the dropdown never offers a
+        // choice the backend would then reject.
+        const companiesUrl = canAssignRep ? '/api/companies/' : '/api/companies/?mine=true'
         const [companiesData, repsData] = await Promise.all([
-          get('/api/companies/'),
-          get('/api/users/?role=SALES_REP'),
+          get(companiesUrl),
+          canAssignRep ? get('/api/users/?role=SALES_REP') : Promise.resolve([]),
         ])
         if (!cancelled) {
           setCompanies(companiesData)
@@ -244,7 +260,7 @@ export default function Leads() {
     return () => {
       cancelled = true
     }
-  }, [canCreate])
+  }, [canCreate, canAssignRep])
 
   return (
     <>
@@ -301,6 +317,7 @@ export default function Leads() {
           onCreated={() => setRefreshKey((k) => k + 1)}
           companies={companies}
           salesReps={salesReps}
+          canAssignRep={canAssignRep}
         />
       )}
 

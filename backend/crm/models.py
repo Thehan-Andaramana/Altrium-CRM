@@ -331,6 +331,13 @@ class Project(models.Model):
         # without duplicating their ownership logic.
         return self.company.owner_id
 
+    @property
+    def assigned_to_id(self):
+        # Lets ArchivableOwnedResourcePermission also grant a rep access via
+        # "assigned the linked lead", not just "owns the company" -- a rep
+        # can be assigned a lead on a company they don't own.
+        return self.lead.assigned_to_id
+
     PHASE_STARTED_AT_FIELDS = {1: 'phase_1_started_at', 2: 'phase_2_started_at', 3: 'phase_3_started_at'}
 
     def save(self, *args, **kwargs):
@@ -435,6 +442,13 @@ class PhaseRequirement(models.Model):
         # Lets RoleBasedAccess.has_object_permission scope this exactly like
         # a Company/Project, without a bespoke permission class.
         return self.project.company.owner_id
+
+    @property
+    def assigned_to_id(self):
+        # Same rationale as Project.assigned_to_id -- a rep assigned the
+        # lead should be able to work its tasks even without owning the
+        # company.
+        return self.project.lead.assigned_to_id
 
     @property
     def is_confirmed_complete(self):
