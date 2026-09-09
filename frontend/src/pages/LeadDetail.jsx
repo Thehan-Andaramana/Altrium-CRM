@@ -95,6 +95,7 @@ const MANAGER_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER'])
 
 const REQUEST_TYPE_LABELS = {
   ARCHIVE_LEAD: 'Archive Lead',
+  LEAD_STATUS_CHANGE: 'Lead Status Change',
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
   PHASE_3_SIGNOFF: 'Phase 3 Signoff',
@@ -774,6 +775,7 @@ function EditLeadForm({
   // initial state instead of needing an effect to resync it.
   const [name, setName] = useState(lead.name)
   const [status, setStatus] = useState(lead.status)
+  const [statusChangeReason, setStatusChangeReason] = useState('')
   const [contactId, setContactId] = useState(lead.contact ?? '')
   const [assignedTo, setAssignedTo] = useState(lead.assigned_to ?? '')
 
@@ -786,7 +788,7 @@ function EditLeadForm({
     <Form
       onSubmit={(event) => {
         event.preventDefault()
-        onSave({ name, status, contactId, assignedTo })
+        onSave({ name, status, statusChangeReason, contactId, assignedTo })
       }}
     >
       <Modal.Header closeButton>
@@ -808,10 +810,24 @@ function EditLeadForm({
         <Form.Group className="mb-3" controlId="edit-lead-status">
           <Form.Label>Status</Form.Label>
           {canEditStatus ? (
-            <Form.Select value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option value="HOT">Hot</option>
-              <option value="COLD">Cold</option>
-            </Form.Select>
+            <>
+              <Form.Select value={status} onChange={(event) => setStatus(event.target.value)}>
+                <option value="HOT">Hot</option>
+                <option value="COLD">Cold</option>
+              </Form.Select>
+              {status !== lead.status && (
+                <Form.Group className="mt-2" controlId="edit-lead-status-reason">
+                  <Form.Label className="small mb-1">Reason for status change</Form.Label>
+                  <Form.Control
+                    as="textarea"
+                    rows={2}
+                    value={statusChangeReason}
+                    onChange={(event) => setStatusChangeReason(event.target.value)}
+                    required
+                  />
+                </Form.Group>
+              )}
+            </>
           ) : (
             <div>
               <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}>{lead.status}</Badge>
@@ -874,7 +890,7 @@ function EditLeadModal({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
-  async function handleSave({ name, status, contactId, assignedTo }) {
+  async function handleSave({ name, status, statusChangeReason, contactId, assignedTo }) {
     setSaving(true)
     setError(null)
     try {
@@ -885,6 +901,11 @@ function EditLeadModal({
       // even unchanged, so it must never be sent rather than merely ignored.
       if (canEditStatus) {
         payload.status = status
+        // Only sent when the status is actually changing -- the backend
+        // only requires (and only reads) this alongside a real change.
+        if (status !== lead.status) {
+          payload.status_change_reason = statusChangeReason
+        }
       }
       if (canEditAssignedTo) {
         payload.assigned_to = Number(assignedTo)
@@ -913,6 +934,70 @@ function EditLeadModal({
         onSave={handleSave}
         onHide={onHide}
         onContactCreated={onContactCreated}
+      />
+    </Modal>
+  )
+}
+
+function StatusChangeRequestForm({ currentStatus, saving, error, onSave, onHide }) {
+  const otherStatus = currentStatus === 'HOT' ? 'COLD' : 'HOT'
+  const [targetStatus, setTargetStatus] = useState(otherStatus)
+  const [reason, setReason] = useState('')
+
+  return (
+    <Form
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSave(targetStatus, reason)
+      }}
+    >
+      <Modal.Header closeButton>
+        <Modal.Title as="h2" className="h5 mb-0">
+          Request Status Change
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {error && <Alert variant="danger">{error}</Alert>}
+        <Form.Group className="mb-3" controlId="status-change-target">
+          <Form.Label>New status</Form.Label>
+          <Form.Select value={targetStatus} onChange={(event) => setTargetStatus(event.target.value)}>
+            <option value="HOT">Hot</option>
+            <option value="COLD">Cold</option>
+          </Form.Select>
+        </Form.Group>
+        <Form.Group controlId="status-change-reason">
+          <Form.Label>Reason</Form.Label>
+          <Form.Control
+            as="textarea"
+            rows={3}
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            required
+          />
+        </Form.Group>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onHide} disabled={saving}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" disabled={saving}>
+          {saving ? 'Submitting…' : 'Submit request'}
+        </Button>
+      </Modal.Footer>
+    </Form>
+  )
+}
+
+function StatusChangeRequestModal({ show, currentStatus, saving, error, onSave, onHide }) {
+  return (
+    <Modal show={show} onHide={onHide} centered>
+      <StatusChangeRequestForm
+        key={show}
+        currentStatus={currentStatus}
+        saving={saving}
+        error={error}
+        onSave={onSave}
+        onHide={onHide}
       />
     </Modal>
   )
@@ -949,6 +1034,13 @@ export default function LeadDetail() {
   // (canEdit above excludes them), so MANAGER_ROLES covers every role that
   // actually can.
   const canEditStatus = canEditAssignedTo
+  const canRequestStatusChange =
+    Boolean(lead) && user?.role === 'SALES_REP' && lead.assigned_to === user.id
+
+  const [showStatusChangeModal, setShowStatusChangeModal] = useState(false)
+  const [statusChangeSaving, setStatusChangeSaving] = useState(false)
+  const [statusChangeError, setStatusChangeError] = useState(null)
+  const [pendingStatusChangeRequest, setPendingStatusChangeRequest] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -1048,6 +1140,55 @@ export default function LeadDetail() {
     }
   }, [canEditAssignedTo])
 
+  async function refreshPendingStatusChangeRequest() {
+    try {
+      const data = await get('/api/approvals/?request_type=LEAD_STATUS_CHANGE&status=PENDING')
+      setPendingStatusChangeRequest(data.find((row) => row.lead === Number(id)) ?? null)
+    } catch {
+      setPendingStatusChangeRequest(null)
+    }
+  }
+
+  useEffect(() => {
+    if (!canRequestStatusChange) {
+      return
+    }
+    let cancelled = false
+
+    async function fetchPendingStatusChangeRequest() {
+      try {
+        const data = await get('/api/approvals/?request_type=LEAD_STATUS_CHANGE&status=PENDING')
+        if (!cancelled) setPendingStatusChangeRequest(data.find((row) => row.lead === Number(id)) ?? null)
+      } catch {
+        if (!cancelled) setPendingStatusChangeRequest(null)
+      }
+    }
+
+    fetchPendingStatusChangeRequest()
+    return () => {
+      cancelled = true
+    }
+  }, [canRequestStatusChange, id])
+
+  async function handleRequestStatusChange(targetStatus, reason) {
+    setStatusChangeSaving(true)
+    setStatusChangeError(null)
+    try {
+      await post('/api/approvals/', {
+        request_type: 'LEAD_STATUS_CHANGE',
+        lead: Number(id),
+        target_status: targetStatus,
+        reason,
+      })
+      setShowStatusChangeModal(false)
+      await Promise.all([refreshPendingStatusChangeRequest(), refreshTimeline()])
+    } catch {
+      setStatusChangeError('Failed to submit the status change request.')
+    } finally {
+      setStatusChangeSaving(false)
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault()
     setSubmitting(true)
@@ -1107,9 +1248,28 @@ export default function LeadDetail() {
               </p>
             </div>
             <div className="d-flex align-items-center gap-2">
-              <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">
-                {lead.status}
-              </Badge>
+              {canRequestStatusChange && !pendingStatusChangeRequest ? (
+                <Badge
+                  as="button"
+                  type="button"
+                  bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}
+                  className="fs-6 border-0"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setShowStatusChangeModal(true)}
+                  title="Click to request a status change"
+                >
+                  {lead.status}
+                </Badge>
+              ) : (
+                <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">
+                  {lead.status}
+                </Badge>
+              )}
+              {pendingStatusChangeRequest && (
+                <Badge bg="warning" pill title={pendingStatusChangeRequest.reason}>
+                  Change to {pendingStatusChangeRequest.target_status} pending
+                </Badge>
+              )}
               {canEdit && (
                 <Button variant="outline-secondary" size="sm" onClick={() => setShowEditModal(true)}>
                   Edit
@@ -1157,6 +1317,17 @@ export default function LeadDetail() {
               onHide={() => setShowEditModal(false)}
               onSaved={setLead}
               onContactCreated={(contact) => setContacts((prev) => [...prev, contact])}
+            />
+          )}
+
+          {canRequestStatusChange && (
+            <StatusChangeRequestModal
+              show={showStatusChangeModal}
+              currentStatus={lead.status}
+              saving={statusChangeSaving}
+              error={statusChangeError}
+              onSave={handleRequestStatusChange}
+              onHide={() => setShowStatusChangeModal(false)}
             />
           )}
 

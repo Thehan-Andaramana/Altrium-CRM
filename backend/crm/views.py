@@ -29,6 +29,7 @@ from .permissions import (
     ArchivableOwnedResourcePermission,
     CompanyPermission,
     ContactPermission,
+    FULL_ACCESS_ROLES,
     ManagementRolePermission,
     ManagementWritePermission,
     RoleBasedAccess,
@@ -404,7 +405,11 @@ class ApprovalRequestViewSet(viewsets.ModelViewSet):
             'requested_by', 'decided_by',
         )
         user = self.request.user
-        if user.role == User.Role.SALES_REP:
+        if user.role not in FULL_ACCESS_ROLES:
+            # Everyone except a management role only sees requests they
+            # submitted themselves -- SALES_REP always worked this way;
+            # without this, any other role (e.g. DELIVERY_LEAD) fell through
+            # to the unfiltered queryset and could read the entire table.
             queryset = queryset.filter(requested_by=user)
         return queryset
 

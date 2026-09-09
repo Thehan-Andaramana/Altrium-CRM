@@ -17,6 +17,7 @@ const LIST_LIMIT = 5
 
 const REQUEST_TYPE_LABELS = {
   ARCHIVE_LEAD: 'Archive Lead',
+  LEAD_STATUS_CHANGE: 'Lead Status Change',
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
   PHASE_3_SIGNOFF: 'Phase 3 Signoff',
@@ -128,9 +129,15 @@ function ApprovalsCard({ count, items, canDecide, actioningId, actionError, onDe
                     </div>
                     <div className="text-body-secondary small">
                       {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
-                      {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''} · Requested by{' '}
-                      {approval.requested_by_username ?? 'Unknown'}
+                      {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''}
+                      {approval.request_type === 'LEAD_STATUS_CHANGE' && approval.target_status
+                        ? ` → ${approval.target_status}`
+                        : ''}{' '}
+                      · Requested by {approval.requested_by_username ?? 'Unknown'}
                     </div>
+                    {approval.request_type === 'LEAD_STATUS_CHANGE' && approval.reason && (
+                      <div className="text-body-secondary small fst-italic">{approval.reason}</div>
+                    )}
                   </div>
                   {canDecide && (
                     <div className="d-flex gap-1 flex-shrink-0">

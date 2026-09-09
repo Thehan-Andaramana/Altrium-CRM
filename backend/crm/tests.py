@@ -445,7 +445,8 @@ class InteractionOutcomeTests(APITestCase):
         self.assertEqual(self.lead.status, Lead.Status.COLD)
         self.assertEqual(self.lead.last_activity_at, original_last_activity)
 
-    def test_responded_outcome_flips_lead_to_hot(self):
+    def test_responded_outcome_updates_last_activity_but_not_status(self):
+        original_last_activity = self.lead.last_activity_at
         url = reverse('interaction-list')
         response = self.client.post(url, {
             'lead': self.lead.id,
@@ -455,7 +456,8 @@ class InteractionOutcomeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         self.lead.refresh_from_db()
-        self.assertEqual(self.lead.status, Lead.Status.HOT)
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+        self.assertGreater(self.lead.last_activity_at, original_last_activity)
 
 
 class PhaseRequirementConfirmationTests(ProjectRequirementsTestMixin, APITestCase):
@@ -997,13 +999,211 @@ class LeadStatusPermissionTests(ArchiveTestMixin, APITestCase):
         self.lead.refresh_from_db()
         self.assertEqual(self.lead.status, Lead.Status.COLD)
 
-    def test_manager_can_change_status(self):
+    def test_manager_can_change_status_with_reason(self):
         self.client.force_authenticate(self.manager)
         url = reverse('lead-detail', args=[self.lead.id])
-        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        response = self.client.patch(url, {
+            'status': Lead.Status.HOT,
+            'status_change_reason': "Client confirmed budget on today's call.",
+        }, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.lead.refresh_from_db()
         self.assertEqual(self.lead.status, Lead.Status.HOT)
+
+        event = ActivityEvent.objects.get(lead=self.lead, category=ActivityEvent.Category.ADMINISTRATIVE)
+        self.assertIn('HOT', event.description)
+        self.assertIn('budget', event.description)
+
+    def test_manager_cannot_change_status_without_reason(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('status_change_reason', response.data)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+
+
+class LeadStatusChangeApprovalFlowTests(ArchiveTestMixin, APITestCase):
+    def test_rep_can_request_status_change_with_reason(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Client verbally committed to the renewal.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_request_without_reason_is_rejected(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('reason', response.data)
+
+    def test_request_without_target_status_is_rejected(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'reason': 'Client verbally committed to the renewal.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('target_status', response.data)
+
+    def test_approving_applies_status_change_and_logs_event(self):
+        self.client.force_authenticate(self.rep)
+        create = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Client verbally committed to the renewal.',
+        }, format='json')
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+        self.client.force_authenticate(self.manager)
+        url = reverse('approvalrequest-detail', args=[create.data['id']])
+        response = self.client.patch(url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.HOT)
+        event = ActivityEvent.objects.get(lead=self.lead, category=ActivityEvent.Category.ADMINISTRATIVE)
+        self.assertIn('HOT', event.description)
+        self.assertIn('renewal', event.description)
+
+    def test_rejecting_does_not_change_status(self):
+        self.client.force_authenticate(self.rep)
+        create = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Client verbally committed to the renewal.',
+        }, format='json')
+
+        self.client.force_authenticate(self.manager)
+        url = reverse('approvalrequest-detail', args=[create.data['id']])
+        response = self.client.patch(
+            url, {'status': ApprovalRequest.Status.REJECTED, 'decision_note': 'Not yet.'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+
+    def test_duplicate_pending_status_change_request_rejected(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('approvalrequest-list')
+        first = self.client.post(url, {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'First reason.',
+        }, format='json')
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+        second = self.client.post(url, {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Second reason.',
+        }, format='json')
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ApprovalRequestRequesterLeadRelationshipTests(APITestCase):
+    def setUp(self):
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.other_lead = Lead.objects.create(company=self.company, assigned_to=self.other_rep)
+        self.own_lead = Lead.objects.create(company=self.company, assigned_to=self.rep)
+
+    def test_rep_cannot_raise_status_change_for_unassigned_lead(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.other_lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': "Trying to flip someone else's lead.",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('lead', response.data)
+
+    def test_rep_cannot_raise_archive_for_unassigned_lead(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.ARCHIVE_LEAD,
+            'lead': self.other_lead.id,
+            'reason': 'Not mine to archive.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('lead', response.data)
+
+    def test_rep_can_raise_request_for_own_assigned_lead(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.own_lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'This one is actually mine.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_manager_is_unrestricted_by_the_lead_relationship_check(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.other_lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Manager raising on behalf of the team.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
+class ApprovalRequestQuerysetScopingTests(APITestCase):
+    def setUp(self):
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.delivery_lead = User.objects.create_user(username='dl', password='pass', role=User.Role.DELIVERY_LEAD)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.lead = Lead.objects.create(company=self.company, assigned_to=self.rep)
+        self.other_lead = Lead.objects.create(company=self.company, assigned_to=self.other_rep)
+
+        self.own_request = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD, lead=self.lead, requested_by=self.rep,
+        )
+        self.other_request = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD, lead=self.other_lead, requested_by=self.other_rep,
+        )
+
+    def test_rep_sees_only_their_own_request(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.get(reverse('approvalrequest-list'))
+        ids = {row['id'] for row in response.data}
+        self.assertEqual(ids, {self.own_request.id})
+
+    def test_delivery_lead_sees_only_their_own_submitted_requests(self):
+        # NOTE: when DELIVERY_LEAD becomes PROJECT_MANAGER (see the Sprint 2
+        # plan), this role is expected to gain project-scoped approval
+        # visibility instead of the plain "own submissions only" scoping
+        # every other non-management role gets. If that lands, this test's
+        # assertion should change deliberately -- it isn't a regression.
+        self.client.force_authenticate(self.delivery_lead)
+        response = self.client.get(reverse('approvalrequest-list'))
+        self.assertEqual(response.data, [])
+
+    def test_manager_sees_every_request(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(reverse('approvalrequest-list'))
+        ids = {row['id'] for row in response.data}
+        self.assertEqual(ids, {self.own_request.id, self.other_request.id})
 
 
 class ProjectAndPhaseRequirementRepScopingTests(APITestCase):
@@ -1197,7 +1397,7 @@ class ClientFacingTaskActivityTests(ProjectRequirementsTestMixin, APITestCase):
         self.lead.save()
         self.original_last_activity_at = self.lead.last_activity_at
 
-    def test_client_facing_task_completing_flips_cold_lead_to_hot(self):
+    def test_client_facing_task_completing_updates_last_activity_but_not_status(self):
         requirement = self.project.requirements.get(label='Client Proposal Confirmation')
         self.assertTrue(requirement.client_facing)
 
@@ -1206,11 +1406,11 @@ class ClientFacingTaskActivityTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         self.lead.refresh_from_db()
-        self.assertEqual(self.lead.status, Lead.Status.HOT)
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
         self.assertGreater(self.lead.last_activity_at, self.original_last_activity_at)
         # Mutually exclusive with the internal-activity field -- a
-        # client-facing completion is treated exactly like a RESPONDED
-        # interaction, which never touches last_internal_activity_at either.
+        # client-facing completion still only ever touches last_activity_at,
+        # never last_internal_activity_at.
         self.assertIsNone(self.lead.last_internal_activity_at)
 
     def test_internal_task_completing_does_not_flip_cold_lead_to_hot(self):

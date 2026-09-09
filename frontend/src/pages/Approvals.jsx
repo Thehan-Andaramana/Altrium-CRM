@@ -15,6 +15,7 @@ const TH_CLASS = 'text-body-secondary text-uppercase small fw-normal table-heade
 
 const REQUEST_TYPE_LABELS = {
   ARCHIVE_LEAD: 'Archive Lead',
+  LEAD_STATUS_CHANGE: 'Lead Status Change',
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
   PHASE_3_SIGNOFF: 'Phase 3 Signoff',
@@ -209,6 +210,9 @@ export default function Approvals() {
                   <td>
                     {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
                     {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''}
+                    {approval.request_type === 'LEAD_STATUS_CHANGE' && approval.target_status
+                      ? ` → ${approval.target_status}`
+                      : ''}
                   </td>
                   <td>{approval.requested_by_username ?? 'Unknown'}</td>
                   <td>{approval.reason || '—'}</td>
