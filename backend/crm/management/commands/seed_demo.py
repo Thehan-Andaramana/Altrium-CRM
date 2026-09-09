@@ -6,7 +6,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from crm.models import (
-    ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, Project, RequirementTemplate, User,
+    ActivityEvent, ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, Project,
+    RequirementTemplate, User,
 )
 from crm.serializers import ProjectSerializer
 
@@ -38,6 +39,9 @@ class Command(BaseCommand):
         'users of every role, companies/contacts/leads, mixed-outcome interactions, and one '
         'lead per project/phase state (awaiting sign-off, approved and advanced, an overdue '
         'task, an unconfirmed manager task, a not-applicable task) plus one archived company. '
+        'Also covers Sprint 2\'s removal of automatic HOT status changes: a lead with several '
+        'RESPONDED interactions that stays COLD, and one lead per LEAD_STATUS_CHANGE approval '
+        'state (pending, approved, rejected). '
         'Projects and their phase 1/2/3 requirements are never created directly here -- they '
         'come from Lead.save() auto-creating a Project, which in turn copies its '
         'PhaseRequirement rows from whatever RequirementTemplates are currently active, so '
@@ -65,6 +69,7 @@ class Command(BaseCommand):
         leads = self._seed_leads(companies, contacts, rep1, rep2, mgr1)
         self._seed_interactions(leads, rep1, rep2, mgr1)
         self._seed_project_states(leads, mgr1)
+        self._seed_status_change_requests(leads, rep1, rep2, mgr1)
         self._seed_archived_company(companies, mgr1)
 
         self._print_summary()
@@ -230,6 +235,10 @@ class Command(BaseCommand):
         now = timezone.now()
 
         # (company, contact, name, status, assigned_to, days_ago, has_interactions)
+        # Looked up by (company, name), not (company, contact) -- a company
+        # can legitimately have several leads against the same contact (Lead
+        # carries its own name/identity now; nothing enforces one lead per
+        # contact), so contact alone is no longer a safe uniqueness key here.
         # days_ago backdates last_activity_at only for leads with no RESPONDED
         # interactions (a RESPONDED interaction drives last_activity_at itself,
         # via Interaction.save(); NO_ANSWER/MISSED_CALL interactions don't
@@ -237,6 +246,10 @@ class Command(BaseCommand):
         # Both status and the backdated last_activity_at are re-applied on
         # every run (not just at creation) so the HOT/COLD/approaching-cold
         # mix stays correct relative to "now" no matter when this is re-run.
+        # Status is always set explicitly here, never left to a side effect --
+        # a RESPONDED interaction and a client-facing task completion both
+        # still move last_activity_at, but neither one flips status anymore
+        # (see Interaction.save() / PhaseRequirementSerializer.update()).
         specs = [
             ('Acme Corp', 'Alice Anderson', 'Acme Corp — Q3 renewal & pricing rollout',
              Lead.Status.HOT, rep1, 1, True),
@@ -250,6 +263,11 @@ class Command(BaseCommand):
              Lead.Status.HOT, rep2, 2, True),
             ('Umbrella Corp', 'Ulric Novak', 'Umbrella Corp — Procurement platform upgrade',
              Lead.Status.COLD, rep2, 30, False),
+            # Several RESPONDED interactions below, yet stays COLD -- the
+            # direct demonstration that a RESPONDED outcome no longer flips
+            # status on its own (see _seed_interactions).
+            ('Acme Corp', 'Andy Baker', 'Acme Corp — Support contract renewal',
+             Lead.Status.COLD, rep1, 10, True),
             ('Stark Industries', 'Sam Okafor', 'Stark Industries — Supply chain modernization',
              Lead.Status.COLD, mgr1, 14, False),
             # 12 days ago sits inside the default 14-day cold_lead_days
@@ -267,8 +285,8 @@ class Command(BaseCommand):
             contact = contacts[(company_name, contact_name)]
             lead, created = Lead.objects.get_or_create(
                 company=company,
-                contact=contact,
-                defaults={'name': name, 'status': lead_status, 'assigned_to': assigned_to},
+                name=name,
+                defaults={'contact': contact, 'status': lead_status, 'assigned_to': assigned_to},
             )
             self._track('leads', created)
             if created:
@@ -308,6 +326,14 @@ class Command(BaseCommand):
              'Left a voicemail about the procurement upgrade.', 8, rep2),
             ('Wayne Enterprises', 'Will Turner', Interaction.Type.CALL, Interaction.Outcome.MISSED_CALL,
              'Tried to catch him about the helpdesk migration.', 3, mgr1),
+            # Three RESPONDED interactions on a lead that stays COLD (see the
+            # spec comment in _seed_leads) -- none of them flips status.
+            ('Acme Corp', 'Andy Baker', Interaction.Type.CALL, Interaction.Outcome.RESPONDED,
+             'Discussed renewing the support contract; they are comparing vendors.', 9, rep1),
+            ('Acme Corp', 'Andy Baker', Interaction.Type.EMAIL, Interaction.Outcome.RESPONDED,
+             'Sent updated renewal pricing for the support contract.', 5, rep1),
+            ('Acme Corp', 'Andy Baker', Interaction.Type.CALL, Interaction.Outcome.RESPONDED,
+             'Andy confirmed he received the pricing and will discuss it internally.', 2, rep1),
         ]
 
         for company_name, contact_name, itype, outcome, notes, days_ago, created_by in specs:
@@ -452,6 +478,100 @@ class Command(BaseCommand):
         requirement.status = PhaseRequirement.Status.NOT_APPLICABLE
         requirement.updated_by = lead.assigned_to
         requirement.save()
+
+    # -- lead status change requests ------------------------------------------
+    # Now that neither a RESPONDED interaction nor a client-facing task
+    # completion flips a lead's status (Sprint 2), LEAD_STATUS_CHANGE is the
+    # only remaining path to HOT other than a manager's direct edit -- these
+    # three cover its pending, approved and rejected states.
+
+    def _seed_status_change_requests(self, leads, rep1, rep2, mgr1):
+        self._seed_pending_status_change(leads, rep1)
+        self._seed_approved_status_change(leads, rep2, mgr1)
+        self._seed_rejected_status_change(leads, rep2, mgr1)
+
+    def _seed_pending_status_change(self, leads, rep1):
+        # Still-PENDING request in the manager's approvals queue.
+        lead, _has_interactions = leads[('Globex Inc', 'Grace Green')]
+        approval, created = ApprovalRequest.objects.get_or_create(
+            lead=lead,
+            request_type=ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            status=ApprovalRequest.Status.PENDING,
+            defaults={
+                'requested_by': rep1,
+                'target_status': Lead.Status.HOT,
+                'reason': (
+                    'Grace verbally confirmed the security audit budget this morning; '
+                    'recommend marking hot pending written confirmation.'
+                ),
+            },
+        )
+        self._track('approvals', created)
+        if created:
+            self.stdout.write(f'Created a PENDING status-change request for "{lead.name}".')
+
+    def _seed_approved_status_change(self, leads, rep2, mgr1):
+        # APPROVED request whose side effect (status flip + ActivityEvent)
+        # has already been applied -- the completed entry in the timeline.
+        # Can't guard on the lead's own status here: _seed_leads() forces
+        # this lead's status back to its spec baseline (COLD) at the start
+        # of every run, before this method ever sees it, so re-applying the
+        # HOT flip below has to happen unconditionally every run too --
+        # it's idempotent on its own (setting the same value repeatedly is
+        # harmless). Only the ActivityEvent is guarded, on whether the
+        # approval itself was newly created, so it's recorded exactly once.
+        lead, _has_interactions = leads[('Initech', 'Peter Gibbons')]
+        reason = "Client verbally approved the ticketing overhaul proposal on today's call."
+        approval, created = ApprovalRequest.objects.get_or_create(
+            lead=lead,
+            request_type=ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            defaults={
+                'requested_by': rep2,
+                'target_status': Lead.Status.HOT,
+                'reason': reason,
+                'status': ApprovalRequest.Status.APPROVED,
+                'decided_by': mgr1,
+                'decided_at': timezone.now(),
+            },
+        )
+        self._track('approvals', created)
+
+        # Mirrors ApprovalRequestSerializer._apply_approval_side_effect's
+        # LEAD_STATUS_CHANGE branch exactly, the same way _seed_archived_company
+        # mirrors its ARCHIVE_LEAD branch, rather than routing a fake request
+        # through the serializer.
+        lead.status = Lead.Status.HOT
+        lead.save(update_fields=['status'])
+        if created:
+            ActivityEvent.record(
+                lead,
+                ActivityEvent.Category.ADMINISTRATIVE,
+                f'Status changed to {lead.status}: {reason}',
+                actor=mgr1,
+            )
+            self.stdout.write(f'Approved a HOT status-change request for "{lead.name}" -- lead is now HOT.')
+
+    def _seed_rejected_status_change(self, leads, rep2, mgr1):
+        # REJECTED request with a decision note -- the red timeline entry.
+        # No side effect: rejecting a LEAD_STATUS_CHANGE never touches the
+        # lead, so the lead is left at whatever status its own spec sets.
+        lead, _has_interactions = leads[('Umbrella Corp', 'Ulric Novak')]
+        approval, created = ApprovalRequest.objects.get_or_create(
+            lead=lead,
+            request_type=ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            defaults={
+                'requested_by': rep2,
+                'target_status': Lead.Status.HOT,
+                'reason': 'Ulric sounded ready to move forward on the procurement upgrade during our call.',
+                'status': ApprovalRequest.Status.REJECTED,
+                'decided_by': mgr1,
+                'decided_at': timezone.now(),
+                'decision_note': "Let's wait until the contract is actually signed before marking hot.",
+            },
+        )
+        self._track('approvals', created)
+        if created:
+            self.stdout.write(f'Created a REJECTED status-change request for "{lead.name}".')
 
     # -- archived company -----------------------------------------------------
 
