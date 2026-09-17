@@ -12,7 +12,7 @@ import { get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
-const PHASE_NUMBERS = [1, 2, 3]
+const PHASE_NUMBERS = [1, 2, 3, 4]
 
 const AUTHORITY_OPTIONS = [
   { value: 'REP', label: 'Rep' },

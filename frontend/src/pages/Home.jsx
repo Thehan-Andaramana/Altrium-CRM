@@ -17,9 +17,10 @@ const LIST_LIMIT = 5
 
 const REQUEST_TYPE_LABELS = {
   ARCHIVE_LEAD: 'Archive Lead',
+  LEAD_STATUS_CHANGE: 'Lead Status Change',
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
-  PHASE_3_SIGNOFF: 'Phase 3 Signoff',
+  PHASE_4_SIGNOFF: 'Phase 4 Signoff',
 }
 
 function LeadListItem({ lead, extra }) {
@@ -103,8 +104,9 @@ function ApproachingColdCard({ count, items, coldLeadDays }) {
   )
 }
 
-function ApprovalsCard({ count, items, canDecide, actioningId, actionError, onDecide }) {
+function ApprovalsCard({ count, items, userRole, actioningId, actionError, onDecide }) {
   const visible = items.slice(0, LIST_LIMIT)
+  const canDecide = MANAGEMENT_ROLES.has(userRole)
   return (
     <Card className="h-100">
       <CardHeader title="Pending Approvals" count={count} />
@@ -118,43 +120,55 @@ function ApprovalsCard({ count, items, canDecide, actioningId, actionError, onDe
           <p className="text-body-secondary p-3 mb-0">No pending approvals.</p>
         ) : (
           <ListGroup variant="flush">
-            {visible.map((approval) => (
-              <ListGroup.Item key={approval.id}>
-                <div className="d-flex justify-content-between align-items-start gap-2">
-                  <div>
+            {visible.map((approval) => {
+              // PHASE_4_SIGNOFF (Executive Sign-Off) can only be decided by
+              // an EXECUTIVE_MANAGER, not just any management role.
+              const canDecideThis =
+                canDecide && (approval.request_type !== 'PHASE_4_SIGNOFF' || userRole === 'EXECUTIVE_MANAGER')
+              return (
+                <ListGroup.Item key={approval.id}>
+                  <div className="d-flex justify-content-between align-items-start gap-2">
                     <div>
-                      {approval.lead_name ?? '—'}
-                      <span className="text-body-secondary"> · {approval.company_name ?? '—'}</span>
+                      <div>
+                        {approval.lead_name ?? '—'}
+                        <span className="text-body-secondary"> · {approval.company_name ?? '—'}</span>
+                      </div>
+                      <div className="text-body-secondary small">
+                        {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
+                        {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''}
+                        {approval.request_type === 'LEAD_STATUS_CHANGE' && approval.target_status
+                          ? ` → ${approval.target_status}`
+                          : ''}{' '}
+                        · Requested by {approval.requested_by_username ?? 'Unknown'}
+                      </div>
+                      {approval.request_type === 'LEAD_STATUS_CHANGE' && approval.reason && (
+                        <div className="text-body-secondary small fst-italic">{approval.reason}</div>
+                      )}
                     </div>
-                    <div className="text-body-secondary small">
-                      {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
-                      {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''} · Requested by{' '}
-                      {approval.requested_by_username ?? 'Unknown'}
-                    </div>
+                    {canDecideThis && (
+                      <div className="d-flex gap-1 flex-shrink-0">
+                        <Button
+                          size="sm"
+                          variant="outline-success"
+                          disabled={actioningId === approval.id}
+                          onClick={() => onDecide(approval, 'APPROVED')}
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline-danger"
+                          disabled={actioningId === approval.id}
+                          onClick={() => onDecide(approval, 'REJECTED')}
+                        >
+                          Reject
+                        </Button>
+                      </div>
+                    )}
                   </div>
-                  {canDecide && (
-                    <div className="d-flex gap-1 flex-shrink-0">
-                      <Button
-                        size="sm"
-                        variant="outline-success"
-                        disabled={actioningId === approval.id}
-                        onClick={() => onDecide(approval, 'APPROVED')}
-                      >
-                        Approve
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline-danger"
-                        disabled={actioningId === approval.id}
-                        onClick={() => onDecide(approval, 'REJECTED')}
-                      >
-                        Reject
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </ListGroup.Item>
-            ))}
+                </ListGroup.Item>
+              )
+            })}
           </ListGroup>
         )}
         <div className="mt-auto p-3 pt-2">
@@ -167,7 +181,6 @@ function ApprovalsCard({ count, items, canDecide, actioningId, actionError, onDe
 
 export default function Home() {
   const { user } = useAuth()
-  const canDecide = MANAGEMENT_ROLES.has(user?.role)
 
   const [dashboard, setDashboard] = useState(null)
   const [coldLeadDays, setColdLeadDays] = useState(null)
@@ -267,7 +280,7 @@ export default function Home() {
           <ApprovalsCard
             count={dashboard.pending_approvals.count}
             items={dashboard.pending_approvals.results}
-            canDecide={canDecide}
+            userRole={user?.role}
             actioningId={actioningId}
             actionError={actionError}
             onDecide={handleDecision}

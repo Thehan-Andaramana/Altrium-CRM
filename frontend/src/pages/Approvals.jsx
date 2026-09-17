@@ -15,9 +15,10 @@ const TH_CLASS = 'text-body-secondary text-uppercase small fw-normal table-heade
 
 const REQUEST_TYPE_LABELS = {
   ARCHIVE_LEAD: 'Archive Lead',
+  LEAD_STATUS_CHANGE: 'Lead Status Change',
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
-  PHASE_3_SIGNOFF: 'Phase 3 Signoff',
+  PHASE_4_SIGNOFF: 'Phase 4 Signoff',
 }
 
 const STATUS_OPTIONS = [
@@ -202,6 +203,12 @@ export default function Approvals() {
           <tbody>
             {approvals.map((approval) => {
               const isOwn = approval.requested_by === user.id
+              // PHASE_4_SIGNOFF (Executive Sign-Off) can only be decided by
+              // an EXECUTIVE_MANAGER, not just any management role -- matches
+              // the backend's per-request-type decider check.
+              const canDecideThis =
+                canDecide
+                && (approval.request_type !== 'PHASE_4_SIGNOFF' || user.role === 'EXECUTIVE_MANAGER')
               return (
                 <tr key={approval.id}>
                   <td>{approval.lead_name ?? '—'}</td>
@@ -209,6 +216,9 @@ export default function Approvals() {
                   <td>
                     {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
                     {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''}
+                    {approval.request_type === 'LEAD_STATUS_CHANGE' && approval.target_status
+                      ? ` → ${approval.target_status}`
+                      : ''}
                   </td>
                   <td>{approval.requested_by_username ?? 'Unknown'}</td>
                   <td>{approval.reason || '—'}</td>
@@ -218,7 +228,7 @@ export default function Approvals() {
                   <td>{new Date(approval.created_at).toLocaleDateString()}</td>
                   {canDecide && (
                     <td>
-                      {approval.status === 'PENDING' && !isOwn && (
+                      {approval.status === 'PENDING' && !isOwn && canDecideThis && (
                         <div className="d-flex gap-1">
                           <Button
                             size="sm"

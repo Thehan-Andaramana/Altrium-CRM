@@ -13,7 +13,7 @@ import ArchiveButton from '../components/ArchiveButton.jsx'
 
 // Contact create/update may be attempted by management (always allowed) or a
 // SALES_REP (allowed only on a company where they have an assigned lead --
-// enforced server-side by ContactPermission). SYSTEM_ADMIN/DELIVERY_LEAD can
+// enforced server-side by ContactPermission). SYSTEM_ADMIN/PROJECT_MANAGER can
 // never write, so the button is hidden for them rather than always failing.
 const CAN_ATTEMPT_WRITE_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SALES_REP'])
 
