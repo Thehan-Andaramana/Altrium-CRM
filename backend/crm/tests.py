@@ -9,7 +9,8 @@ from rest_framework.reverse import reverse
 from rest_framework.test import APIClient, APITestCase
 
 from .models import (
-    ActivityEvent, ApprovalRequest, Company, Contact, Deal, Interaction, Lead, PhaseRequirement, Project, User,
+    ActivityEvent, ApprovalRequest, Company, Contact, Deal, ExecutionStatusEvent, Interaction, Lead,
+    PhaseRequirement, Project, User,
 )
 
 
@@ -194,6 +195,7 @@ class ProjectRequirementsTestMixin:
     def setUp(self):
         self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
         self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.pm = User.objects.create_user(username='pm', password='pass', role=User.Role.PROJECT_MANAGER)
         self.company = Company.objects.create(name='Acme', owner=self.rep)
         self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
         # A Deal already exists on the company, but Project.deal starts out
@@ -203,6 +205,12 @@ class ProjectRequirementsTestMixin:
         )
         self.lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
         self.project = self.lead.project
+        # Phase 2 is PM-owned and can't start unassigned (see
+        # ApprovalRequestSerializer.validate) -- every test built on this
+        # mixin gets a valid PM by default so approving PHASE_1_SIGNOFF
+        # works out of the box; tests exercising the rejection path clear it.
+        self.project.project_manager = self.pm
+        self.project.save(update_fields=['project_manager'])
         self.client.force_authenticate(self.manager)
 
 
@@ -258,8 +266,33 @@ class ProjectPhaseTransitionTests(ProjectRequirementsTestMixin, APITestCase):
         self.project.refresh_from_db()
         self.assertFalse(self.project.maintenance)
 
-        self._approve_signoff(ApprovalRequest.RequestType.PHASE_3_SIGNOFF)
+        # Phase 3 has no signoff request -- it completes once the PM marks
+        # execution Completed.
+        exec_response = self._patch_project(phase_3_execution_status=Project.ExecutionStatus.COMPLETED)
+        self.assertEqual(exec_response.status_code, status.HTTP_200_OK)
         response = self._patch_project(phase_3_status=Project.PhaseStatus.COMPLETE)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Phase 4 auto-advances to IN_PROGRESS as a side effect of Phase 3
+        # completing.
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_4_status, Project.PhaseStatus.IN_PROGRESS)
+        self.assertFalse(self.project.maintenance)
+
+        # PHASE_4_SIGNOFF can only be decided by an EXECUTIVE_MANAGER.
+        exec_manager = User.objects.create_user(
+            username='exec_mm', password='pass', role=User.Role.EXECUTIVE_MANAGER,
+        )
+        approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_4_SIGNOFF, project=self.project, requested_by=self.rep,
+        )
+        self.client.force_authenticate(exec_manager)
+        approve_url = reverse('approvalrequest-detail', args=[approval.id])
+        approve_response = self.client.patch(approve_url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+        self.client.force_authenticate(self.manager)
+
+        response = self._patch_project(phase_4_status=Project.PhaseStatus.COMPLETE)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         self.project.refresh_from_db()
@@ -330,26 +363,28 @@ class DashboardScopingTests(APITestCase):
 
 class ProjectProgressTests(ProjectRequirementsTestMixin, APITestCase):
     def test_default_requirements_are_generated_on_creation(self):
-        self.assertEqual(self.project.requirements.filter(phase=1).count(), 4)
-        self.assertEqual(self.project.requirements.filter(phase=2).count(), 3)
+        self.assertEqual(self.project.requirements.filter(phase=1).count(), 3)
+        self.assertEqual(self.project.requirements.filter(phase=2).count(), 5)
         self.assertEqual(self.project.requirements.filter(phase=3).count(), 3)
+        self.assertEqual(self.project.requirements.filter(phase=4).count(), 3)
 
     def test_phase_progress_and_overall_progress(self):
         url = reverse('project-detail', args=[self.project.id])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['phase_progress'][1], {'completed': 0, 'total': 4, 'percent': 0})
-        self.assertEqual(response.data['phase_progress'][2], {'completed': 0, 'total': 3, 'percent': 0})
+        self.assertEqual(response.data['phase_progress'][1], {'completed': 0, 'total': 3, 'percent': 0})
+        self.assertEqual(response.data['phase_progress'][2], {'completed': 0, 'total': 5, 'percent': 0})
         self.assertEqual(response.data['phase_progress'][3], {'completed': 0, 'total': 3, 'percent': 0})
+        self.assertEqual(response.data['phase_progress'][4], {'completed': 0, 'total': 3, 'percent': 0})
         self.assertEqual(response.data['overall_progress'], 0)
 
         phase1_ids = list(self.project.requirements.filter(phase=1).values_list('id', flat=True))[:2]
         PhaseRequirement.objects.filter(pk__in=phase1_ids).update(status=PhaseRequirement.Status.COMPLETED)
 
         response = self.client.get(url)
-        self.assertEqual(response.data['phase_progress'][1], {'completed': 2, 'total': 4, 'percent': 50})
-        # 2 of the project's 10 total requirements are complete.
-        self.assertEqual(response.data['overall_progress'], 20)
+        self.assertEqual(response.data['phase_progress'][1], {'completed': 2, 'total': 3, 'percent': 67})
+        # 2 of the project's 14 total requirements are complete.
+        self.assertEqual(response.data['overall_progress'], 14)
 
 
 class ProjectRequirementGateTests(ProjectRequirementsTestMixin, APITestCase):
@@ -445,7 +480,8 @@ class InteractionOutcomeTests(APITestCase):
         self.assertEqual(self.lead.status, Lead.Status.COLD)
         self.assertEqual(self.lead.last_activity_at, original_last_activity)
 
-    def test_responded_outcome_flips_lead_to_hot(self):
+    def test_responded_outcome_updates_last_activity_but_not_status(self):
+        original_last_activity = self.lead.last_activity_at
         url = reverse('interaction-list')
         response = self.client.post(url, {
             'lead': self.lead.id,
@@ -455,7 +491,8 @@ class InteractionOutcomeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         self.lead.refresh_from_db()
-        self.assertEqual(self.lead.status, Lead.Status.HOT)
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+        self.assertGreater(self.lead.last_activity_at, original_last_activity)
 
 
 class PhaseRequirementConfirmationTests(ProjectRequirementsTestMixin, APITestCase):
@@ -634,19 +671,74 @@ class ApprovalPhaseSignoffAutoCompletionTests(ProjectRequirementsTestMixin, APIT
         self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.COMPLETE)
         self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.IN_PROGRESS)
 
-    def test_approving_phase_3_signoff_completes_phase_3_and_sets_maintenance(self):
+    def test_phase_3_cannot_complete_without_execution_status_completed(self):
+        # Phase 3 has no signoff type -- it's gated on phase_3_execution_status
+        # instead (see ProjectSerializer.update()).
         self.project.phase_1_status = Project.PhaseStatus.COMPLETE
         self.project.phase_2_status = Project.PhaseStatus.COMPLETE
         self.project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
         self.project.save()
-        approval = self._create_signoff(ApprovalRequest.RequestType.PHASE_3_SIGNOFF)
 
+        url = reverse('project-detail', args=[self.project.id])
+        response = self.client.patch(url, {'phase_3_status': Project.PhaseStatus.COMPLETE}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_completing_phase_3_via_execution_status_advances_phase_4(self):
+        self.project.phase_1_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_2_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
+        self.project.save()
+
+        url = reverse('project-detail', args=[self.project.id])
+        exec_response = self.client.patch(
+            url, {'phase_3_execution_status': Project.ExecutionStatus.COMPLETED}, format='json',
+        )
+        self.assertEqual(exec_response.status_code, status.HTTP_200_OK)
+
+        complete_response = self.client.patch(url, {'phase_3_status': Project.PhaseStatus.COMPLETE}, format='json')
+        self.assertEqual(complete_response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.COMPLETE)
+        self.assertEqual(self.project.phase_4_status, Project.PhaseStatus.IN_PROGRESS)
+        self.assertFalse(self.project.maintenance)
+
+        event = ExecutionStatusEvent.objects.get(project=self.project)
+        self.assertIsNone(event.from_status)
+        self.assertEqual(event.to_status, Project.ExecutionStatus.COMPLETED)
+
+    def test_approving_phase_4_signoff_completes_phase_4_and_sets_maintenance(self):
+        self.project.phase_1_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_2_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_3_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_4_status = Project.PhaseStatus.IN_PROGRESS
+        self.project.save()
+        approval = self._create_signoff(ApprovalRequest.RequestType.PHASE_4_SIGNOFF)
+
+        exec_manager = User.objects.create_user(
+            username='exec_pf', password='pass', role=User.Role.EXECUTIVE_MANAGER,
+        )
+        self.client.force_authenticate(exec_manager)
         response = self._decide(approval, ApprovalRequest.Status.APPROVED)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         self.project.refresh_from_db()
-        self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.COMPLETE)
+        self.assertEqual(self.project.phase_4_status, Project.PhaseStatus.COMPLETE)
         self.assertTrue(self.project.maintenance)
+
+    def test_approving_phase_1_signoff_without_project_manager_is_rejected(self):
+        # Phase 2 is PM-owned and can't start unassigned.
+        self.project.project_manager = None
+        self.project.save(update_fields=['project_manager'])
+        approval = self._create_signoff(ApprovalRequest.RequestType.PHASE_1_SIGNOFF)
+
+        response = self._decide(approval, ApprovalRequest.Status.APPROVED)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        approval.refresh_from_db()
+        self.project.refresh_from_db()
+        self.assertEqual(approval.status, ApprovalRequest.Status.PENDING)
+        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.IN_PROGRESS)
 
     def test_rejecting_phase_signoff_returns_awaiting_approval_phase_to_in_progress(self):
         self.project.phase_1_status = Project.PhaseStatus.AWAITING_APPROVAL
@@ -997,13 +1089,316 @@ class LeadStatusPermissionTests(ArchiveTestMixin, APITestCase):
         self.lead.refresh_from_db()
         self.assertEqual(self.lead.status, Lead.Status.COLD)
 
-    def test_manager_can_change_status(self):
+    def test_manager_can_change_status_with_reason(self):
         self.client.force_authenticate(self.manager)
         url = reverse('lead-detail', args=[self.lead.id])
-        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        response = self.client.patch(url, {
+            'status': Lead.Status.HOT,
+            'status_change_reason': "Client confirmed budget on today's call.",
+        }, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.lead.refresh_from_db()
         self.assertEqual(self.lead.status, Lead.Status.HOT)
+
+        event = ActivityEvent.objects.get(lead=self.lead, category=ActivityEvent.Category.ADMINISTRATIVE)
+        self.assertIn('HOT', event.description)
+        self.assertIn('budget', event.description)
+
+    def test_manager_cannot_change_status_without_reason(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('lead-detail', args=[self.lead.id])
+        response = self.client.patch(url, {'status': Lead.Status.HOT}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('status_change_reason', response.data)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+
+
+class LeadStatusChangeApprovalFlowTests(ArchiveTestMixin, APITestCase):
+    def test_rep_can_request_status_change_with_reason(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Client verbally committed to the renewal.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_request_without_reason_is_rejected(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('reason', response.data)
+
+    def test_request_without_target_status_is_rejected(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'reason': 'Client verbally committed to the renewal.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('target_status', response.data)
+
+    def test_approving_applies_status_change_and_logs_event(self):
+        self.client.force_authenticate(self.rep)
+        create = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Client verbally committed to the renewal.',
+        }, format='json')
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+        self.client.force_authenticate(self.manager)
+        url = reverse('approvalrequest-detail', args=[create.data['id']])
+        response = self.client.patch(url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.HOT)
+        event = ActivityEvent.objects.get(lead=self.lead, category=ActivityEvent.Category.ADMINISTRATIVE)
+        self.assertIn('HOT', event.description)
+        self.assertIn('renewal', event.description)
+
+    def test_rejecting_does_not_change_status(self):
+        self.client.force_authenticate(self.rep)
+        create = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Client verbally committed to the renewal.',
+        }, format='json')
+
+        self.client.force_authenticate(self.manager)
+        url = reverse('approvalrequest-detail', args=[create.data['id']])
+        response = self.client.patch(
+            url, {'status': ApprovalRequest.Status.REJECTED, 'decision_note': 'Not yet.'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
+
+    def test_duplicate_pending_status_change_request_rejected(self):
+        self.client.force_authenticate(self.rep)
+        url = reverse('approvalrequest-list')
+        first = self.client.post(url, {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'First reason.',
+        }, format='json')
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+        second = self.client.post(url, {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Second reason.',
+        }, format='json')
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ApprovalRequestRequesterLeadRelationshipTests(APITestCase):
+    def setUp(self):
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.other_lead = Lead.objects.create(company=self.company, assigned_to=self.other_rep)
+        self.own_lead = Lead.objects.create(company=self.company, assigned_to=self.rep)
+
+    def test_rep_cannot_raise_status_change_for_unassigned_lead(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.other_lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': "Trying to flip someone else's lead.",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('lead', response.data)
+
+    def test_rep_cannot_raise_archive_for_unassigned_lead(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.ARCHIVE_LEAD,
+            'lead': self.other_lead.id,
+            'reason': 'Not mine to archive.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('lead', response.data)
+
+    def test_rep_can_raise_request_for_own_assigned_lead(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.own_lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'This one is actually mine.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_manager_is_unrestricted_by_the_lead_relationship_check(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(reverse('approvalrequest-list'), {
+            'request_type': ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            'lead': self.other_lead.id,
+            'target_status': Lead.Status.HOT,
+            'reason': 'Manager raising on behalf of the team.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
+class ApprovalRequestQuerysetScopingTests(APITestCase):
+    def setUp(self):
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.pm = User.objects.create_user(username='pm', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.lead = Lead.objects.create(company=self.company, assigned_to=self.rep)
+        self.other_lead = Lead.objects.create(company=self.company, assigned_to=self.other_rep)
+        self.lead.project.project_manager = self.pm
+        self.lead.project.save(update_fields=['project_manager'])
+
+        self.own_request = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD, lead=self.lead, requested_by=self.rep,
+        )
+        self.other_request = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.ARCHIVE_LEAD, lead=self.other_lead, requested_by=self.other_rep,
+        )
+        self.managed_project_request = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF, project=self.lead.project,
+            requested_by=self.rep,
+        )
+
+    def test_rep_sees_only_their_own_request(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.get(reverse('approvalrequest-list'))
+        ids = {row['id'] for row in response.data}
+        self.assertEqual(ids, {self.own_request.id, self.managed_project_request.id})
+
+    def test_project_manager_sees_own_submissions_and_managed_project_requests(self):
+        self.client.force_authenticate(self.pm)
+        response = self.client.get(reverse('approvalrequest-list'))
+        ids = {row['id'] for row in response.data}
+        # Not requested_by the PM, but tied to a project they manage.
+        self.assertIn(self.managed_project_request.id, ids)
+        self.assertNotIn(self.own_request.id, ids)
+        self.assertNotIn(self.other_request.id, ids)
+
+    def test_manager_sees_every_request(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(reverse('approvalrequest-list'))
+        ids = {row['id'] for row in response.data}
+        self.assertEqual(ids, {self.own_request.id, self.other_request.id, self.managed_project_request.id})
+
+
+class PhaseFourSignoffPermissionTests(ProjectRequirementsTestMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.project.phase_1_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_2_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_3_status = Project.PhaseStatus.COMPLETE
+        self.project.phase_4_status = Project.PhaseStatus.IN_PROGRESS
+        self.project.save()
+        self.approval = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_4_SIGNOFF, project=self.project, requested_by=self.rep,
+        )
+        self.exec_manager = User.objects.create_user(
+            username='exec_perm', password='pass', role=User.Role.EXECUTIVE_MANAGER,
+        )
+
+    def test_executive_manager_can_decide(self):
+        self.client.force_authenticate(self.exec_manager)
+        url = reverse('approvalrequest-detail', args=[self.approval.id])
+        response = self.client.patch(url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_sales_manager_cannot_decide(self):
+        self.client.force_authenticate(self.manager)
+        url = reverse('approvalrequest-detail', args=[self.approval.id])
+        response = self.client.patch(url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.approval.refresh_from_db()
+        self.assertEqual(self.approval.status, ApprovalRequest.Status.PENDING)
+
+
+class ProjectManagerRoleScopingTests(APITestCase):
+    def setUp(self):
+        self.pm = User.objects.create_user(username='pm', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.other_pm = User.objects.create_user(username='pm2', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.contact = Contact.objects.create(company=self.company, name='Jane Doe')
+        self.lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        self.project = self.lead.project
+        self.project.project_manager = self.pm
+        self.project.save(update_fields=['project_manager'])
+
+        self.other_lead = Lead.objects.create(company=self.company, assigned_to=self.rep)
+        self.other_project = self.other_lead.project
+
+    def test_pm_can_read_and_patch_their_managed_project(self):
+        self.client.force_authenticate(self.pm)
+        url = reverse('project-detail', args=[self.project.id])
+        get_response = self.client.get(url)
+        self.assertEqual(get_response.status_code, status.HTTP_200_OK)
+
+        patch_response = self.client.patch(
+            url, {'phase_3_execution_status': Project.ExecutionStatus.BUILDING}, format='json',
+        )
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+
+    def test_pm_cannot_see_a_project_they_do_not_manage(self):
+        self.client.force_authenticate(self.pm)
+        response = self.client.get(reverse('project-list'), {'lead': self.other_lead.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 0)
+
+        detail_response = self.client.get(reverse('project-detail', args=[self.other_project.id]))
+        self.assertEqual(detail_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_other_pm_cannot_patch_a_project_they_do_not_manage(self):
+        self.client.force_authenticate(self.other_pm)
+        response = self.client.get(reverse('project-list'), {'lead': self.lead.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 0)
+
+    def test_pm_can_patch_a_task_on_their_managed_project(self):
+        self.client.force_authenticate(self.pm)
+        requirement = self.project.requirements.filter(phase=2).first()
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.patch(url, {'status': 'IN_PROGRESS'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_pm_is_read_only_on_lead(self):
+        self.client.force_authenticate(self.pm)
+        url = reverse('lead-detail', args=[self.lead.id])
+        get_response = self.client.get(url)
+        self.assertEqual(get_response.status_code, status.HTTP_200_OK)
+
+        patch_response = self.client.patch(url, {'name': 'Renamed'}, format='json')
+        self.assertEqual(patch_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_pm_is_read_only_on_company(self):
+        self.client.force_authenticate(self.pm)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.patch(url, {'industry': 'Retail'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_pm_is_read_only_on_contact(self):
+        self.client.force_authenticate(self.pm)
+        url = reverse('contact-detail', args=[self.contact.id])
+        response = self.client.patch(url, {'job_title': 'CTO'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class ProjectAndPhaseRequirementRepScopingTests(APITestCase):
@@ -1197,7 +1592,7 @@ class ClientFacingTaskActivityTests(ProjectRequirementsTestMixin, APITestCase):
         self.lead.save()
         self.original_last_activity_at = self.lead.last_activity_at
 
-    def test_client_facing_task_completing_flips_cold_lead_to_hot(self):
+    def test_client_facing_task_completing_updates_last_activity_but_not_status(self):
         requirement = self.project.requirements.get(label='Client Proposal Confirmation')
         self.assertTrue(requirement.client_facing)
 
@@ -1206,11 +1601,11 @@ class ClientFacingTaskActivityTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         self.lead.refresh_from_db()
-        self.assertEqual(self.lead.status, Lead.Status.HOT)
+        self.assertEqual(self.lead.status, Lead.Status.COLD)
         self.assertGreater(self.lead.last_activity_at, self.original_last_activity_at)
         # Mutually exclusive with the internal-activity field -- a
-        # client-facing completion is treated exactly like a RESPONDED
-        # interaction, which never touches last_internal_activity_at either.
+        # client-facing completion still only ever touches last_activity_at,
+        # never last_internal_activity_at.
         self.assertIsNone(self.lead.last_internal_activity_at)
 
     def test_internal_task_completing_does_not_flip_cold_lead_to_hot(self):

@@ -8,6 +8,7 @@ from .models import (
     Company,
     Contact,
     Deal,
+    ExecutionStatusEvent,
     Interaction,
     Lead,
     PhaseRequirement,
@@ -16,7 +17,7 @@ from .models import (
     SystemSettings,
     User,
 )
-from .permissions import FULL_ACCESS_ROLES
+from .permissions import FULL_ACCESS_ROLES, MANAGER_ROLES
 
 
 class CompanySerializer(serializers.ModelSerializer):
@@ -88,11 +89,15 @@ class LeadSerializer(serializers.ModelSerializer):
     deal_stage = serializers.CharField(read_only=True, default=None)
     has_project = serializers.BooleanField(read_only=True, default=False)
     archived_by_username = serializers.CharField(source='archived_by.username', read_only=True, default=None)
+    # Not a model field -- only used to build the ActivityEvent description
+    # when a management role changes status directly (see update() below).
+    status_change_reason = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = Lead
         fields = [
-            'id', 'name', 'company', 'company_name', 'contact', 'contact_name', 'status', 'created_at',
+            'id', 'name', 'company', 'company_name', 'contact', 'contact_name', 'status', 'status_change_reason',
+            'created_at',
             'last_activity_at', 'last_internal_activity_at', 'assigned_to', 'assigned_to_username',
             'interaction_count', 'deal_stage', 'has_project',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
@@ -112,12 +117,24 @@ class LeadSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         role = request.user.role if request else None
 
-        # status stays a normal writable field (not field-level read_only)
-        # specifically so a rejected write surfaces here as a 400 instead of
-        # DRF silently dropping it -- read_only fields never reach validate().
-        if role is not None and role not in FULL_ACCESS_ROLES and 'status' in attrs:
+        # MANAGER_ROLES, not FULL_ACCESS_ROLES: the intent is manager-only,
+        # and SYSTEM_ADMIN is deliberately excluded from lead management
+        # (see ArchivableOwnedResourcePermission) -- stating the rule the
+        # same way here means it's no longer only true by accident of
+        # SYSTEM_ADMIN's PATCH being blocked upstream at the permission layer.
+        if role is not None and role not in MANAGER_ROLES and 'status' in attrs:
             raise serializers.ValidationError({
                 'status': 'Only management roles can change a lead\'s status.',
+            })
+
+        if (
+            self.instance is not None
+            and 'status' in attrs
+            and attrs['status'] != self.instance.status
+            and not (attrs.get('status_change_reason') or '').strip()
+        ):
+            raise serializers.ValidationError({
+                'status_change_reason': 'A reason is required when changing a lead\'s status.',
             })
 
         if role == User.Role.SALES_REP:
@@ -150,10 +167,14 @@ class LeadSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         request = self.context.get('request')
         changes = []
+        status_reason = validated_data.pop('status_change_reason', '')
         if 'name' in validated_data and validated_data['name'] != instance.name:
             changes.append('name changed')
         if 'status' in validated_data and validated_data['status'] != instance.status:
-            changes.append(f"status changed to {validated_data['status']}")
+            status_change = f"status changed to {validated_data['status']}"
+            if status_reason:
+                status_change += f' ({status_reason})'
+            changes.append(status_change)
         if 'contact' in validated_data and validated_data['contact'] != instance.contact:
             changes.append('contact changed')
         if 'assigned_to' in validated_data and validated_data['assigned_to'] != instance.assigned_to:
@@ -200,23 +221,27 @@ class InteractionSerializer(serializers.ModelSerializer):
 
 class ProjectSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='company.name', read_only=True, default=None)
+    project_manager_username = serializers.CharField(source='project_manager.username', read_only=True, default=None)
     phase_progress = serializers.SerializerMethodField()
     overall_progress = serializers.SerializerMethodField()
     pending_approval_requests = serializers.SerializerMethodField()
     archived_by_username = serializers.CharField(source='archived_by.username', read_only=True, default=None)
 
-    PHASE_FIELDS = ['phase_1_status', 'phase_2_status', 'phase_3_status']
+    PHASE_FIELDS = ['phase_1_status', 'phase_2_status', 'phase_3_status', 'phase_4_status']
     PHASE_SIGNOFF_TYPES = {
         1: ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
         2: ApprovalRequest.RequestType.PHASE_2_SIGNOFF,
-        3: ApprovalRequest.RequestType.PHASE_3_SIGNOFF,
+        # No entry for 3 -- Phase 3 has no signoff request; it's gated on
+        # phase_3_execution_status instead (see update() below).
+        4: ApprovalRequest.RequestType.PHASE_4_SIGNOFF,
     }
 
     class Meta:
         model = Project
         fields = [
             'id', 'lead', 'company', 'company_name', 'deal', 'current_phase',
-            'phase_1_status', 'phase_2_status', 'phase_3_status',
+            'project_manager', 'project_manager_username',
+            'phase_1_status', 'phase_2_status', 'phase_3_status', 'phase_4_status', 'phase_3_execution_status',
             'maintenance', 'phase_progress', 'overall_progress', 'pending_approval_requests',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
             'created_at', 'updated_at',
@@ -225,6 +250,12 @@ class ProjectSerializer(serializers.ModelSerializer):
             'maintenance', 'created_at', 'updated_at',
             'is_archived', 'archived_by', 'archived_at', 'archive_reason',
         ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request and request.user.role not in MANAGER_ROLES:
+            self.fields['project_manager'].read_only = True
 
     @staticmethod
     def _percent(completed, total):
@@ -236,7 +267,7 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     def get_phase_progress(self, obj):
         progress = {}
-        for phase in (1, 2, 3):
+        for phase in (1, 2, 3, 4):
             applicable = self._applicable(r for r in obj.requirements.all() if r.phase == phase)
             total = len(applicable)
             completed = sum(1 for r in applicable if r.is_confirmed_complete)
@@ -259,11 +290,12 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         request = self.context.get('request')
-        phase_1_newly_complete = (
-            validated_data.get('phase_1_status') == Project.PhaseStatus.COMPLETE
-            and instance.phase_1_status != Project.PhaseStatus.COMPLETE
-        )
         changed_phases = []
+        execution_status_changing = (
+            'phase_3_execution_status' in validated_data
+            and validated_data['phase_3_execution_status'] != instance.phase_3_execution_status
+        )
+        old_execution_status = instance.phase_3_execution_status
 
         for phase_num, field_name in enumerate(self.PHASE_FIELDS, start=1):
             if field_name not in validated_data:
@@ -291,24 +323,44 @@ class ProjectSerializer(serializers.ModelSerializer):
                     })
 
             if new_status == Project.PhaseStatus.COMPLETE:
-                has_approval = ApprovalRequest.objects.filter(
-                    project=instance,
-                    request_type=self.PHASE_SIGNOFF_TYPES[phase_num],
-                    status=ApprovalRequest.Status.APPROVED,
-                ).exists()
-                if not has_approval:
-                    raise serializers.ValidationError({
-                        field_name: (
-                            f'Phase {phase_num} needs an approved '
-                            f'{self.PHASE_SIGNOFF_TYPES[phase_num].label} request first.'
-                        ),
-                    })
+                if phase_num == 3:
+                    # No signoff request for Phase 3 -- it's PM-driven: it
+                    # completes once the PM has marked execution Completed,
+                    # not through a manager-approved ApprovalRequest.
+                    execution_status = validated_data.get(
+                        'phase_3_execution_status', instance.phase_3_execution_status,
+                    )
+                    if execution_status != Project.ExecutionStatus.COMPLETED:
+                        raise serializers.ValidationError({
+                            field_name: 'Phase 3 cannot complete until its execution status is Completed.',
+                        })
+                elif phase_num in self.PHASE_SIGNOFF_TYPES:
+                    has_approval = ApprovalRequest.objects.filter(
+                        project=instance,
+                        request_type=self.PHASE_SIGNOFF_TYPES[phase_num],
+                        status=ApprovalRequest.Status.APPROVED,
+                    ).exists()
+                    if not has_approval:
+                        raise serializers.ValidationError({
+                            field_name: (
+                                f'Phase {phase_num} needs an approved '
+                                f'{self.PHASE_SIGNOFF_TYPES[phase_num].label} request first.'
+                            ),
+                        })
 
         project = super().update(instance, validated_data)
 
         for phase_num, new_status in changed_phases:
             if new_status == Project.PhaseStatus.IN_PROGRESS:
                 project.start_phase(phase_num)
+            elif new_status == Project.PhaseStatus.COMPLETE:
+                # Mirrors what complete_phase() does after marking a phase
+                # complete via an approved signoff -- a phase completed
+                # straight through this direct PATCH (as every phase can be,
+                # and as Phase 3 always is, having no signoff of its own)
+                # needs the same downstream advancement, not just the ones
+                # that happened to go through an ApprovalRequest first.
+                self._advance_after_phase_complete(project, phase_num)
 
         if request and changed_phases:
             for phase_num, new_status in changed_phases:
@@ -320,8 +372,13 @@ class ProjectSerializer(serializers.ModelSerializer):
                 )
             Lead.objects.filter(pk=project.lead_id).update(last_internal_activity_at=timezone.now())
 
-        if phase_1_newly_complete:
-            self._advance_after_phase_1_complete(project)
+        if execution_status_changing and request:
+            ExecutionStatusEvent.objects.create(
+                project=project,
+                from_status=old_execution_status,
+                to_status=project.phase_3_execution_status,
+                changed_by=request.user,
+            )
 
         if all(getattr(project, f) == Project.PhaseStatus.COMPLETE for f in self.PHASE_FIELDS):
             if not project.maintenance:
@@ -344,7 +401,14 @@ class ProjectSerializer(serializers.ModelSerializer):
 
         setattr(project, field_name, Project.PhaseStatus.COMPLETE)
         project.save(update_fields=[field_name])
+        cls._advance_after_phase_complete(project, phase_num)
+        return project
 
+    @classmethod
+    def _advance_after_phase_complete(cls, project, phase_num):
+        # Called both from complete_phase() (the approval path) and directly
+        # from update() (a phase PATCHed straight to COMPLETE) -- whichever
+        # path completed the phase, the downstream effect is the same.
         if phase_num == 1:
             cls._advance_after_phase_1_complete(project)
         elif phase_num == 2:
@@ -352,11 +416,14 @@ class ProjectSerializer(serializers.ModelSerializer):
                 project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
                 project.save(update_fields=['phase_3_status'])
                 project.start_phase(3)
-        elif phase_num == 3 and not project.maintenance:
+        elif phase_num == 3:
+            if project.phase_4_status == Project.PhaseStatus.NOT_STARTED:
+                project.phase_4_status = Project.PhaseStatus.IN_PROGRESS
+                project.save(update_fields=['phase_4_status'])
+                project.start_phase(4)
+        elif phase_num == 4 and not project.maintenance:
             project.maintenance = True
             project.save(update_fields=['maintenance'])
-
-        return project
 
     @staticmethod
     def _advance_after_phase_1_complete(project):
@@ -441,11 +508,15 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
         if new_status == PhaseRequirement.Status.COMPLETED:
             if instance.status != PhaseRequirement.Status.COMPLETED:
                 validated_data['completed_at'] = timezone.now()
-            if (
-                instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.MANAGER
-                and user is not None
-                and user.role in FULL_ACCESS_ROLES
-            ):
+            can_confirm = False
+            if instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.MANAGER:
+                can_confirm = user is not None and user.role in FULL_ACCESS_ROLES
+            elif instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.PROJECT_MANAGER:
+                can_confirm = user is not None and (
+                    user.role in FULL_ACCESS_ROLES
+                    or (user.role == User.Role.PROJECT_MANAGER and instance.project.project_manager_id == user.id)
+                )
+            if can_confirm:
                 validated_data['confirmed_by'] = user
                 validated_data['confirmed_at'] = timezone.now()
                 newly_confirmed = instance.confirmed_by_id is None
@@ -475,10 +546,10 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
 
             lead_id = requirement.project.lead_id
             if requirement.client_facing and new_status == PhaseRequirement.Status.COMPLETED:
-                # A client-facing task completing is treated exactly like a
-                # RESPONDED interaction -- it's real confirmed client contact,
-                # not just internal progress, so it (and only it) flips HOT.
-                Lead.objects.filter(pk=lead_id).update(last_activity_at=timezone.now(), status=Lead.Status.HOT)
+                # A client-facing task completing represents confirmed client
+                # contact for the timeline/last-contact display -- it no
+                # longer flips the lead HOT (see LEAD_STATUS_CHANGE).
+                Lead.objects.filter(pk=lead_id).update(last_activity_at=timezone.now())
             else:
                 Lead.objects.filter(pk=lead_id).update(last_internal_activity_at=timezone.now())
 
@@ -501,16 +572,17 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
     company_name = serializers.SerializerMethodField()
     phase_number = serializers.SerializerMethodField()
 
+    LEAD_TARGET_TYPES = {ApprovalRequest.RequestType.ARCHIVE_LEAD, ApprovalRequest.RequestType.LEAD_STATUS_CHANGE}
     PHASE_SIGNOFF_PHASE_NUMBERS = {
         ApprovalRequest.RequestType.PHASE_1_SIGNOFF: 1,
         ApprovalRequest.RequestType.PHASE_2_SIGNOFF: 2,
-        ApprovalRequest.RequestType.PHASE_3_SIGNOFF: 3,
+        ApprovalRequest.RequestType.PHASE_4_SIGNOFF: 4,
     }
 
     class Meta:
         model = ApprovalRequest
         fields = [
-            'id', 'request_type', 'lead', 'project', 'status', 'reason', 'decision_note',
+            'id', 'request_type', 'lead', 'project', 'target_status', 'status', 'reason', 'decision_note',
             'requested_by', 'requested_by_username', 'decided_by', 'decided_by_username',
             'lead_name', 'company_name', 'phase_number',
             'created_at', 'decided_at',
@@ -543,7 +615,7 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self.instance is not None:
-            for field_name in ('request_type', 'lead', 'project', 'reason'):
+            for field_name in ('request_type', 'lead', 'project', 'reason', 'target_status'):
                 self.fields[field_name].read_only = True
         else:
             self.fields['status'].read_only = True
@@ -554,10 +626,29 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
             if bool(lead) == bool(project):
                 raise serializers.ValidationError('Provide exactly one of lead or project.')
             request_type = attrs.get('request_type')
-            if request_type == ApprovalRequest.RequestType.ARCHIVE_LEAD and lead is None:
-                raise serializers.ValidationError({'lead': 'ARCHIVE_LEAD requests must target a lead.'})
-            if request_type != ApprovalRequest.RequestType.ARCHIVE_LEAD and project is None:
+            if request_type in self.LEAD_TARGET_TYPES and lead is None:
+                raise serializers.ValidationError({'lead': 'This request type must target a lead.'})
+            if request_type not in self.LEAD_TARGET_TYPES and project is None:
                 raise serializers.ValidationError({'project': 'Phase signoff requests must target a project.'})
+
+            request = self.context.get('request')
+            if (
+                request
+                and request.user.role == User.Role.SALES_REP
+                and lead is not None
+                and lead.assigned_to_id != request.user.id
+            ):
+                # Otherwise a rep could raise a request (ARCHIVE_LEAD or
+                # LEAD_STATUS_CHANGE) against a lead assigned to someone
+                # else, and it would land in the manager's queue looking
+                # exactly as legitimate as one from the assigned rep.
+                raise serializers.ValidationError({'lead': 'You can only raise this request for a lead assigned to you.'})
+
+            if request_type == ApprovalRequest.RequestType.LEAD_STATUS_CHANGE:
+                if not attrs.get('target_status'):
+                    raise serializers.ValidationError({'target_status': 'target_status (HOT or COLD) is required.'})
+                if not (attrs.get('reason') or '').strip():
+                    raise serializers.ValidationError({'reason': 'A reason is required for a status change request.'})
             # No manual duplicate-pending check here: ModelSerializer already
             # derives a condition-aware UniqueTogetherValidator from the
             # model's UniqueConstraint (see ApprovalRequest.Meta), which runs
@@ -566,6 +657,19 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
             new_status = attrs.get('status')
             if new_status and new_status == ApprovalRequest.Status.PENDING:
                 raise serializers.ValidationError({'status': 'Status can only be changed to APPROVED or REJECTED.'})
+            if (
+                new_status == ApprovalRequest.Status.APPROVED
+                and self.instance.request_type == ApprovalRequest.RequestType.PHASE_1_SIGNOFF
+                and self.instance.project is not None
+                and self.instance.project.project_manager_id is None
+            ):
+                # Phase 2 is PM-owned and can't start unassigned.
+                raise serializers.ValidationError({
+                    'status': (
+                        'This project has no assigned project manager -- assign one before '
+                        'approving Phase 1 sign-off.'
+                    ),
+                })
         return attrs
 
     def create(self, validated_data):
@@ -610,6 +714,22 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
                 lead,
                 ActivityEvent.Category.DESTRUCTIVE,
                 f'Lead archived: {lead.archive_reason}',
+                actor=request.user,
+            )
+            return
+
+        if instance.request_type == ApprovalRequest.RequestType.LEAD_STATUS_CHANGE:
+            lead = instance.lead
+            if lead is None or lead.status == instance.target_status:
+                return
+            lead.status = instance.target_status
+            lead.save(update_fields=['status'])
+            ActivityEvent.record(
+                lead,
+                ActivityEvent.Category.ADMINISTRATIVE,
+                # Raw enum value ("HOT"/"COLD"), matching the phrasing the
+                # direct-PATCH path already uses in LeadSerializer.update.
+                f'Status changed to {lead.status}: {instance.reason}',
                 actor=request.user,
             )
             return

@@ -1,6 +1,6 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
-from .models import Lead, User
+from .models import ApprovalRequest, Lead, User
 
 FULL_ACCESS_ROLES = {
     User.Role.SALES_MANAGER,
@@ -23,19 +23,23 @@ class RoleBasedAccess(BasePermission):
     """
     SALES_REP: full access, but only to records they own / are assigned to.
     SALES_MANAGER, EXECUTIVE_MANAGER, SYSTEM_ADMIN: full access to all records.
-    DELIVERY_LEAD: read-only access to all records.
+    PROJECT_MANAGER: read-only, except full write on an object tied to a
+    project they manage (see project_manager_id on Project/PhaseRequirement)
+    -- an Interaction has no such property, so PM stays read-only there.
     """
 
     def has_permission(self, request, view):
         role = request.user.role
-        if role == User.Role.DELIVERY_LEAD:
-            return request.method in SAFE_METHODS
+        if role == User.Role.PROJECT_MANAGER:
+            return request.method != 'POST'
         return True
 
     def has_object_permission(self, request, view, obj):
         role = request.user.role
-        if role == User.Role.DELIVERY_LEAD:
-            return request.method in SAFE_METHODS
+        if role == User.Role.PROJECT_MANAGER:
+            if request.method in SAFE_METHODS:
+                return True
+            return getattr(obj, 'project_manager_id', None) == request.user.id
         if role in FULL_ACCESS_ROLES:
             return True
         if role == User.Role.SALES_REP:
@@ -54,12 +58,12 @@ class CompanyPermission(BasePermission):
     SALES_MANAGER, EXECUTIVE_MANAGER: full access, including archive/unarchive.
     SYSTEM_ADMIN: read-only, plus hard-delete -- but only of an already
     archived company. No create/update/archive/unarchive.
-    DELIVERY_LEAD: read-only access to all records.
+    PROJECT_MANAGER: read-only access to all records.
     """
 
     def has_permission(self, request, view):
         role = request.user.role
-        if role == User.Role.DELIVERY_LEAD:
+        if role == User.Role.PROJECT_MANAGER:
             return request.method in SAFE_METHODS
         if view.action in ('archive', 'unarchive'):
             return role in MANAGER_ROLES
@@ -71,7 +75,7 @@ class CompanyPermission(BasePermission):
 
     def has_object_permission(self, request, view, obj):
         role = request.user.role
-        if role == User.Role.DELIVERY_LEAD:
+        if role == User.Role.PROJECT_MANAGER:
             return request.method in SAFE_METHODS
         if view.action in ('archive', 'unarchive'):
             return role in MANAGER_ROLES
@@ -95,12 +99,12 @@ class ContactPermission(BasePermission):
     SALES_MANAGER, EXECUTIVE_MANAGER: full access, including archive/unarchive.
     SYSTEM_ADMIN: read-only, plus hard-delete -- but only of an already
     archived contact. No create/update/archive/unarchive.
-    DELIVERY_LEAD: read-only access to all records.
+    PROJECT_MANAGER: read-only access to all records.
     """
 
     def has_permission(self, request, view):
         role = request.user.role
-        if role == User.Role.DELIVERY_LEAD:
+        if role == User.Role.PROJECT_MANAGER:
             return request.method in SAFE_METHODS
         if view.action in ('archive', 'unarchive'):
             return role in MANAGER_ROLES
@@ -116,7 +120,7 @@ class ContactPermission(BasePermission):
 
     def has_object_permission(self, request, view, obj):
         role = request.user.role
-        if role == User.Role.DELIVERY_LEAD:
+        if role == User.Role.PROJECT_MANAGER:
             return request.method in SAFE_METHODS
         if view.action in ('archive', 'unarchive'):
             return role in MANAGER_ROLES
@@ -138,12 +142,19 @@ class ArchivableOwnedResourcePermission(BasePermission):
     Like CompanyPermission, but without the "any role can read" carve-out --
     SALES_REP only has access (read or write) to records they own or are
     assigned to. Used by Lead and Project.
+
+    PROJECT_MANAGER: read-only on everything this guards, except full write
+    on a Project (and, via RoleBasedAccess, its PhaseRequirement rows) they
+    are the assigned project_manager for -- a Lead has no project_manager_id,
+    so PM stays read-only there.
     """
 
     def has_permission(self, request, view):
         role = request.user.role
-        if role == User.Role.DELIVERY_LEAD:
-            return request.method in SAFE_METHODS
+        if role == User.Role.PROJECT_MANAGER:
+            if view.action in ('archive', 'unarchive'):
+                return False
+            return request.method not in ('POST', 'DELETE')
         if view.action in ('archive', 'unarchive'):
             return role in MANAGER_ROLES
         if request.method == 'DELETE':
@@ -154,8 +165,10 @@ class ArchivableOwnedResourcePermission(BasePermission):
 
     def has_object_permission(self, request, view, obj):
         role = request.user.role
-        if role == User.Role.DELIVERY_LEAD:
-            return request.method in SAFE_METHODS
+        if role == User.Role.PROJECT_MANAGER:
+            if request.method in SAFE_METHODS:
+                return True
+            return getattr(obj, 'project_manager_id', None) == request.user.id
         if view.action in ('archive', 'unarchive'):
             return role in MANAGER_ROLES
         if request.method == 'DELETE':
@@ -182,8 +195,12 @@ class ManagementRolePermission(BasePermission):
 class ApprovalRequestPermission(BasePermission):
     """
     SALES_REP: may create requests and only read their own.
+    PROJECT_MANAGER: may create requests; reads their own plus any tied to a
+    project they manage.
     Management roles: may read all and PATCH status (approve/reject), but
-    never decide a request they submitted themselves.
+    never decide a request they submitted themselves. PHASE_4_SIGNOFF is a
+    further exception -- only EXECUTIVE_MANAGER may decide it, not just any
+    FULL_ACCESS_ROLES member.
     """
 
     def has_permission(self, request, view):
@@ -196,9 +213,15 @@ class ApprovalRequestPermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         role = request.user.role
         if request.method in SAFE_METHODS:
-            return role in FULL_ACCESS_ROLES or obj.requested_by_id == request.user.id
+            if role in FULL_ACCESS_ROLES or obj.requested_by_id == request.user.id:
+                return True
+            if role == User.Role.PROJECT_MANAGER:
+                return obj.project_id is not None and obj.project.project_manager_id == request.user.id
+            return False
         # Only PATCH reaches here -- has_permission already blocked everyone
         # else, and the viewset doesn't offer PUT/DELETE.
+        if obj.request_type == ApprovalRequest.RequestType.PHASE_4_SIGNOFF and role != User.Role.EXECUTIVE_MANAGER:
+            return False
         return obj.requested_by_id != request.user.id
 
 

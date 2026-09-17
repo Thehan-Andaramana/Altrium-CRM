@@ -6,39 +6,48 @@ from django.db import transaction
 from django.utils import timezone
 
 from crm.models import (
-    ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, Project, RequirementTemplate, User,
+    ActivityEvent, ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, Project,
+    RequirementTemplate, User,
 )
 from crm.serializers import ProjectSerializer
 
 DEMO_PASSWORD = 'testpass123'
 
-# Duration/authority for the ten canonical RequirementTemplate rows the data
-# migration seeds. Any other active template (e.g. one added by hand through
+# Duration/authority for the fourteen canonical RequirementTemplate rows the
+# Sprint 2 data migration seeds (three phase 1, five phase 2, three phase 3,
+# three phase 4). Any other active template (e.g. one added by hand through
 # the admin UI) just gets a phase-appropriate fallback duration below, since
 # there's no principled label to map it to one of these.
 TEMPLATE_CONFIG = {
     # label: (default_duration_days, confirmation_authority, client_facing)
-    'Budget Proposal': (5, 'REP', False),
-    'Client Proposal Confirmation': (7, 'MANAGER', True),
-    'Requirement Discussion': (3, 'REP', False),
-    'Contract Papers': (10, 'MANAGER', True),
-    'Technical Specification': (10, 'REP', False),
-    'Development Progress Review': (14, 'REP', False),
-    'QA Sign-off': (21, 'REP', False),
+    'Client Proposal Confirmation': (7, 'REP', True),
+    'Requirement Discussion': (3, 'REP', True),
+    'Contract Papers': (10, 'REP', True),
+    'Detailed Requirements Analysis': (5, 'PROJECT_MANAGER', False),
+    'Budget Proposal': (5, 'PROJECT_MANAGER', False),
+    'Technical Analysis': (7, 'PROJECT_MANAGER', False),
+    'Feasibility Study': (7, 'PROJECT_MANAGER', False),
+    'Project Planning': (10, 'PROJECT_MANAGER', False),
+    'Technical Specification': (10, 'PROJECT_MANAGER', False),
+    'Development Progress Review': (14, 'PROJECT_MANAGER', False),
+    'QA Sign-off': (21, 'PROJECT_MANAGER', False),
     'Client Acceptance': (3, 'MANAGER', True),
     'Final Proposal Signature': (5, 'MANAGER', True),
-    'Handover Note': (7, 'REP', False),
+    'Handover Note': (7, 'MANAGER', False),
 }
-PHASE_FALLBACK_DURATION = {1: 6, 2: 14, 3: 5}
+PHASE_FALLBACK_DURATION = {1: 6, 2: 8, 3: 12, 4: 5}
 
 
 class Command(BaseCommand):
     help = (
         'Seeds the database with demo CRM data covering every state the UI needs to show: '
-        'users of every role, companies/contacts/leads, mixed-outcome interactions, and one '
-        'lead per project/phase state (awaiting sign-off, approved and advanced, an overdue '
-        'task, an unconfirmed manager task, a not-applicable task) plus one archived company. '
-        'Projects and their phase 1/2/3 requirements are never created directly here -- they '
+        'users of every role (including a PROJECT_MANAGER), companies/contacts/leads, '
+        'mixed-outcome interactions, and one lead per project/phase state (awaiting sign-off, '
+        'approved and advanced, an overdue task, an unconfirmed manager task, a not-applicable '
+        'task) plus one archived company. Also covers Sprint 2\'s removal of automatic HOT status '
+        'changes: a lead with several RESPONDED interactions that stays COLD, and one lead per '
+        'LEAD_STATUS_CHANGE approval state (pending, approved, rejected). '
+        'Projects and their phase 1-4 requirements are never created directly here -- they '
         'come from Lead.save() auto-creating a Project, which in turn copies its '
         'PhaseRequirement rows from whatever RequirementTemplates are currently active, so '
         'template duration/authority is seeded first.'
@@ -58,13 +67,14 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         self._seed_requirement_templates()
-        rep1, rep2, mgr1, _ex1 = self._seed_users()
+        rep1, rep2, mgr1, _ex1, pm1 = self._seed_users()
         self._seed_superuser()
         companies = self._seed_companies(rep1, rep2)
         contacts = self._seed_contacts(companies)
         leads = self._seed_leads(companies, contacts, rep1, rep2, mgr1)
         self._seed_interactions(leads, rep1, rep2, mgr1)
-        self._seed_project_states(leads, mgr1)
+        self._seed_project_states(leads, mgr1, pm1)
+        self._seed_status_change_requests(leads, rep1, rep2, mgr1)
         self._seed_archived_company(companies, mgr1)
 
         self._print_summary()
@@ -81,10 +91,10 @@ class Command(BaseCommand):
             if config:
                 duration, authority, client_facing = config
             else:
-                # Unrecognized template (not one of the ten canonical rows) --
-                # still gets a duration so "all active templates" holds, but
-                # its authority/client_facing is left alone rather than
-                # guessed at.
+                # Unrecognized template (not one of the fourteen canonical
+                # rows) -- still gets a duration so "all active templates"
+                # holds, but its authority/client_facing is left alone
+                # rather than guessed at.
                 duration = PHASE_FALLBACK_DURATION.get(template.phase, 7)
                 authority = template.confirmation_authority
                 client_facing = template.client_facing
@@ -113,6 +123,7 @@ class Command(BaseCommand):
             ('rep2', User.Role.SALES_REP),
             ('mgr1', User.Role.SALES_MANAGER),
             ('ex1', User.Role.EXECUTIVE_MANAGER),
+            ('pm1', User.Role.PROJECT_MANAGER),
         ]
         users = {}
         for username, role in specs:
@@ -129,7 +140,7 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f'Created user "{username}" ({role})')
             users[username] = user
-        return users['rep1'], users['rep2'], users['mgr1'], users['ex1']
+        return users['rep1'], users['rep2'], users['mgr1'], users['ex1'], users['pm1']
 
     def _seed_superuser(self):
         user, created = User.objects.get_or_create(
@@ -230,6 +241,10 @@ class Command(BaseCommand):
         now = timezone.now()
 
         # (company, contact, name, status, assigned_to, days_ago, has_interactions)
+        # Looked up by (company, name), not (company, contact) -- a company
+        # can legitimately have several leads against the same contact (Lead
+        # carries its own name/identity now; nothing enforces one lead per
+        # contact), so contact alone is no longer a safe uniqueness key here.
         # days_ago backdates last_activity_at only for leads with no RESPONDED
         # interactions (a RESPONDED interaction drives last_activity_at itself,
         # via Interaction.save(); NO_ANSWER/MISSED_CALL interactions don't
@@ -237,6 +252,10 @@ class Command(BaseCommand):
         # Both status and the backdated last_activity_at are re-applied on
         # every run (not just at creation) so the HOT/COLD/approaching-cold
         # mix stays correct relative to "now" no matter when this is re-run.
+        # Status is always set explicitly here, never left to a side effect --
+        # a RESPONDED interaction and a client-facing task completion both
+        # still move last_activity_at, but neither one flips status anymore
+        # (see Interaction.save() / PhaseRequirementSerializer.update()).
         specs = [
             ('Acme Corp', 'Alice Anderson', 'Acme Corp — Q3 renewal & pricing rollout',
              Lead.Status.HOT, rep1, 1, True),
@@ -250,6 +269,11 @@ class Command(BaseCommand):
              Lead.Status.HOT, rep2, 2, True),
             ('Umbrella Corp', 'Ulric Novak', 'Umbrella Corp — Procurement platform upgrade',
              Lead.Status.COLD, rep2, 30, False),
+            # Several RESPONDED interactions below, yet stays COLD -- the
+            # direct demonstration that a RESPONDED outcome no longer flips
+            # status on its own (see _seed_interactions).
+            ('Acme Corp', 'Andy Baker', 'Acme Corp — Support contract renewal',
+             Lead.Status.COLD, rep1, 10, True),
             ('Stark Industries', 'Sam Okafor', 'Stark Industries — Supply chain modernization',
              Lead.Status.COLD, mgr1, 14, False),
             # 12 days ago sits inside the default 14-day cold_lead_days
@@ -267,8 +291,8 @@ class Command(BaseCommand):
             contact = contacts[(company_name, contact_name)]
             lead, created = Lead.objects.get_or_create(
                 company=company,
-                contact=contact,
-                defaults={'name': name, 'status': lead_status, 'assigned_to': assigned_to},
+                name=name,
+                defaults={'contact': contact, 'status': lead_status, 'assigned_to': assigned_to},
             )
             self._track('leads', created)
             if created:
@@ -308,6 +332,14 @@ class Command(BaseCommand):
              'Left a voicemail about the procurement upgrade.', 8, rep2),
             ('Wayne Enterprises', 'Will Turner', Interaction.Type.CALL, Interaction.Outcome.MISSED_CALL,
              'Tried to catch him about the helpdesk migration.', 3, mgr1),
+            # Three RESPONDED interactions on a lead that stays COLD (see the
+            # spec comment in _seed_leads) -- none of them flips status.
+            ('Acme Corp', 'Andy Baker', Interaction.Type.CALL, Interaction.Outcome.RESPONDED,
+             'Discussed renewing the support contract; they are comparing vendors.', 9, rep1),
+            ('Acme Corp', 'Andy Baker', Interaction.Type.EMAIL, Interaction.Outcome.RESPONDED,
+             'Sent updated renewal pricing for the support contract.', 5, rep1),
+            ('Acme Corp', 'Andy Baker', Interaction.Type.CALL, Interaction.Outcome.RESPONDED,
+             'Andy confirmed he received the pricing and will discuss it internally.', 2, rep1),
         ]
 
         for company_name, contact_name, itype, outcome, notes, days_ago, created_by in specs:
@@ -346,10 +378,10 @@ class Command(BaseCommand):
         if to_update:
             PhaseRequirement.objects.bulk_update(to_update, ['due_date'])
 
-    def _seed_project_states(self, leads, mgr1):
+    def _seed_project_states(self, leads, mgr1, pm1):
         self._seed_awaiting_signoff(leads, mgr1)
-        self._seed_completed_and_approved_phase(leads, mgr1)
-        self._seed_overdue_task(leads)
+        self._seed_completed_and_approved_phase(leads, mgr1, pm1)
+        self._seed_overdue_task(leads, pm1)
         self._seed_unconfirmed_manager_task(leads)
         self._seed_not_applicable_task(leads)
 
@@ -366,7 +398,10 @@ class Command(BaseCommand):
 
     def _seed_awaiting_signoff(self, leads, mgr1):
         # Phase 1 at 100% with a still-PENDING sign-off request -- the amber
-        # "Awaiting Approval" state.
+        # "Awaiting Approval" state. Deliberately left with no
+        # project_manager assigned: attempting to approve this request in
+        # the UI demonstrates the new "Phase 2 is PM-owned and can't start
+        # unassigned" rule (see ApprovalRequestSerializer.validate).
         lead, _has_interactions = leads[('Acme Corp', 'Alice Anderson')]
         project = lead.project
         self._complete_phase_1_requirements(project, lead.assigned_to, mgr1)
@@ -383,14 +418,20 @@ class Command(BaseCommand):
         if created:
             self.stdout.write(f'Created PENDING phase 1 sign-off request for "{lead.name}"')
 
-    def _seed_completed_and_approved_phase(self, leads, mgr1):
+    def _seed_completed_and_approved_phase(self, leads, mgr1, pm1):
         # Phase 1 complete with an APPROVED sign-off -- phase 2 auto-advances
-        # to IN_PROGRESS and renders green.
+        # to IN_PROGRESS and renders green. Assigned a project_manager first:
+        # Phase 2 is PM-owned, so a real (non-seed) approval couldn't have
+        # advanced this far without one.
         lead, _has_interactions = leads[('Globex Inc', 'Grace Green')]
         project = lead.project
         project.refresh_from_db()
         if project.phase_1_status == Project.PhaseStatus.COMPLETE:
             return
+
+        if project.project_manager_id is None:
+            project.project_manager = pm1
+            project.save(update_fields=['project_manager'])
 
         self._backdate_phase_start(project, 1, days_ago=20)
         project.refresh_from_db()
@@ -416,19 +457,23 @@ class Command(BaseCommand):
         ProjectSerializer.complete_phase(project, 1)
         self.stdout.write(f'Completed and approved phase 1 for "{lead.name}" -- phase 2 now active.')
 
-    def _seed_overdue_task(self, leads):
-        # A phase 1 task whose due date is well in the past -- the red
-        # overdue bar and the dashboard's overdue-tasks card.
+    def _seed_overdue_task(self, leads, pm1):
+        # A phase 2 task (Budget Proposal, now PM-owned) whose due date is
+        # well in the past -- the red overdue bar and the dashboard's
+        # overdue-tasks card.
         lead, _has_interactions = leads[('Initech', 'Peter Gibbons')]
         project = lead.project
-        requirement = project.requirements.filter(phase=1, label='Budget Proposal').first()
+        if project.project_manager_id is None:
+            project.project_manager = pm1
+            project.save(update_fields=['project_manager'])
+        requirement = project.requirements.filter(phase=2, label='Budget Proposal').first()
         if requirement is None:
             return
         if requirement.default_duration_days is None:
             requirement.default_duration_days = 5
             requirement.save(update_fields=['default_duration_days'])
-        self._backdate_phase_start(project, 1, days_ago=25)
-        self.stdout.write(f'Backdated phase 1 on "{lead.name}" so "{requirement.label}" is overdue.')
+        self._backdate_phase_start(project, 2, days_ago=25)
+        self.stdout.write(f'Backdated phase 2 on "{lead.name}" so "{requirement.label}" is overdue.')
 
     def _seed_unconfirmed_manager_task(self, leads):
         # A MANAGER-authority task marked COMPLETED but never confirmed --
@@ -452,6 +497,100 @@ class Command(BaseCommand):
         requirement.status = PhaseRequirement.Status.NOT_APPLICABLE
         requirement.updated_by = lead.assigned_to
         requirement.save()
+
+    # -- lead status change requests ------------------------------------------
+    # Now that neither a RESPONDED interaction nor a client-facing task
+    # completion flips a lead's status (Sprint 2), LEAD_STATUS_CHANGE is the
+    # only remaining path to HOT other than a manager's direct edit -- these
+    # three cover its pending, approved and rejected states.
+
+    def _seed_status_change_requests(self, leads, rep1, rep2, mgr1):
+        self._seed_pending_status_change(leads, rep1)
+        self._seed_approved_status_change(leads, rep2, mgr1)
+        self._seed_rejected_status_change(leads, rep2, mgr1)
+
+    def _seed_pending_status_change(self, leads, rep1):
+        # Still-PENDING request in the manager's approvals queue.
+        lead, _has_interactions = leads[('Globex Inc', 'Grace Green')]
+        approval, created = ApprovalRequest.objects.get_or_create(
+            lead=lead,
+            request_type=ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            status=ApprovalRequest.Status.PENDING,
+            defaults={
+                'requested_by': rep1,
+                'target_status': Lead.Status.HOT,
+                'reason': (
+                    'Grace verbally confirmed the security audit budget this morning; '
+                    'recommend marking hot pending written confirmation.'
+                ),
+            },
+        )
+        self._track('approvals', created)
+        if created:
+            self.stdout.write(f'Created a PENDING status-change request for "{lead.name}".')
+
+    def _seed_approved_status_change(self, leads, rep2, mgr1):
+        # APPROVED request whose side effect (status flip + ActivityEvent)
+        # has already been applied -- the completed entry in the timeline.
+        # Can't guard on the lead's own status here: _seed_leads() forces
+        # this lead's status back to its spec baseline (COLD) at the start
+        # of every run, before this method ever sees it, so re-applying the
+        # HOT flip below has to happen unconditionally every run too --
+        # it's idempotent on its own (setting the same value repeatedly is
+        # harmless). Only the ActivityEvent is guarded, on whether the
+        # approval itself was newly created, so it's recorded exactly once.
+        lead, _has_interactions = leads[('Initech', 'Peter Gibbons')]
+        reason = "Client verbally approved the ticketing overhaul proposal on today's call."
+        approval, created = ApprovalRequest.objects.get_or_create(
+            lead=lead,
+            request_type=ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            defaults={
+                'requested_by': rep2,
+                'target_status': Lead.Status.HOT,
+                'reason': reason,
+                'status': ApprovalRequest.Status.APPROVED,
+                'decided_by': mgr1,
+                'decided_at': timezone.now(),
+            },
+        )
+        self._track('approvals', created)
+
+        # Mirrors ApprovalRequestSerializer._apply_approval_side_effect's
+        # LEAD_STATUS_CHANGE branch exactly, the same way _seed_archived_company
+        # mirrors its ARCHIVE_LEAD branch, rather than routing a fake request
+        # through the serializer.
+        lead.status = Lead.Status.HOT
+        lead.save(update_fields=['status'])
+        if created:
+            ActivityEvent.record(
+                lead,
+                ActivityEvent.Category.ADMINISTRATIVE,
+                f'Status changed to {lead.status}: {reason}',
+                actor=mgr1,
+            )
+            self.stdout.write(f'Approved a HOT status-change request for "{lead.name}" -- lead is now HOT.')
+
+    def _seed_rejected_status_change(self, leads, rep2, mgr1):
+        # REJECTED request with a decision note -- the red timeline entry.
+        # No side effect: rejecting a LEAD_STATUS_CHANGE never touches the
+        # lead, so the lead is left at whatever status its own spec sets.
+        lead, _has_interactions = leads[('Umbrella Corp', 'Ulric Novak')]
+        approval, created = ApprovalRequest.objects.get_or_create(
+            lead=lead,
+            request_type=ApprovalRequest.RequestType.LEAD_STATUS_CHANGE,
+            defaults={
+                'requested_by': rep2,
+                'target_status': Lead.Status.HOT,
+                'reason': 'Ulric sounded ready to move forward on the procurement upgrade during our call.',
+                'status': ApprovalRequest.Status.REJECTED,
+                'decided_by': mgr1,
+                'decided_at': timezone.now(),
+                'decision_note': "Let's wait until the contract is actually signed before marking hot.",
+            },
+        )
+        self._track('approvals', created)
+        if created:
+            self.stdout.write(f'Created a REJECTED status-change request for "{lead.name}".')
 
     # -- archived company -----------------------------------------------------
 

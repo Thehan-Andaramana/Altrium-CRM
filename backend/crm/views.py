@@ -29,6 +29,7 @@ from .permissions import (
     ArchivableOwnedResourcePermission,
     CompanyPermission,
     ContactPermission,
+    FULL_ACCESS_ROLES,
     ManagementRolePermission,
     ManagementWritePermission,
     RoleBasedAccess,
@@ -328,7 +329,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             to_attr='pending_requests',
         )
         queryset = (
-            Project.objects.select_related('company', 'deal', 'lead')
+            Project.objects.select_related('company', 'deal', 'lead', 'project_manager')
             .prefetch_related('requirements', pending_requests)
         )
         user = self.request.user
@@ -339,6 +340,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
             # assigned a lead on a company they don't own got no project back
             # (and so no phase tracker at all).
             queryset = queryset.filter(Q(company__owner=user) | Q(lead__assigned_to=user))
+        elif user.role == User.Role.PROJECT_MANAGER:
+            queryset = queryset.filter(project_manager=user)
         return _apply_archived_filter(queryset, self.request, self)
 
     @action(detail=True, methods=['post'])
@@ -377,6 +380,8 @@ class PhaseRequirementViewSet(viewsets.ModelViewSet):
         if user.role == User.Role.SALES_REP:
             # Same owner-or-assigned-lead access as ProjectViewSet above.
             queryset = queryset.filter(Q(project__company__owner=user) | Q(project__lead__assigned_to=user))
+        elif user.role == User.Role.PROJECT_MANAGER:
+            queryset = queryset.filter(project__project_manager=user)
         return queryset
 
 
@@ -404,7 +409,13 @@ class ApprovalRequestViewSet(viewsets.ModelViewSet):
             'requested_by', 'decided_by',
         )
         user = self.request.user
-        if user.role == User.Role.SALES_REP:
+        if user.role == User.Role.PROJECT_MANAGER:
+            queryset = queryset.filter(Q(requested_by=user) | Q(project__project_manager=user))
+        elif user.role not in FULL_ACCESS_ROLES:
+            # Everyone else (SALES_REP, and any other non-management role)
+            # only sees requests they submitted themselves -- without this,
+            # any role outside FULL_ACCESS_ROLES fell through to the
+            # unfiltered queryset and could read the entire table.
             queryset = queryset.filter(requested_by=user)
         return queryset
 

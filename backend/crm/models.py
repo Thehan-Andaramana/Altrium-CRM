@@ -11,7 +11,7 @@ class User(AbstractUser):
         SALES_REP = 'SALES_REP', 'Sales Rep'
         SALES_MANAGER = 'SALES_MANAGER', 'Sales Manager'
         EXECUTIVE_MANAGER = 'EXECUTIVE_MANAGER', 'Executive Manager'
-        DELIVERY_LEAD = 'DELIVERY_LEAD', 'Delivery Lead'
+        PROJECT_MANAGER = 'PROJECT_MANAGER', 'Project Manager'
         SYSTEM_ADMIN = 'SYSTEM_ADMIN', 'System Admin'
 
     role = models.CharField(
@@ -231,27 +231,26 @@ class Interaction(models.Model):
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         # QuerySet.update() bypasses Lead.last_activity_at's auto_now, so
-        # occurred_at (which may be backdated) sticks instead of "now".
-        if self.type == Interaction.Type.NOTE:
+        # occurred_at (which may be backdated) sticks instead of "now". A
+        # RESPONDED outcome no longer flips the lead HOT -- that's now a
+        # manual call (direct manager PATCH or an approved
+        # LEAD_STATUS_CHANGE request; see ApprovalRequestSerializer).
+        if self.type == Interaction.Type.NOTE or self.outcome == Interaction.Outcome.RESPONDED:
             Lead.objects.filter(pk=self.lead_id).update(last_activity_at=self.occurred_at)
-        elif self.outcome == Interaction.Outcome.RESPONDED:
-            Lead.objects.filter(pk=self.lead_id).update(
-                last_activity_at=self.occurred_at,
-                status=Lead.Status.HOT,
-            )
 
 
 class RequirementTemplate(models.Model):
     class ConfirmationAuthority(models.TextChoices):
         REP = 'REP', 'Rep'
+        PROJECT_MANAGER = 'PROJECT_MANAGER', 'Project Manager'
         MANAGER = 'MANAGER', 'Manager'
 
-    phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(3)])
+    phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(4)])
     label = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     order = models.PositiveIntegerField(default=0)
     confirmation_authority = models.CharField(
-        max_length=8,
+        max_length=16,
         choices=ConfirmationAuthority.choices,
         default=ConfirmationAuthority.REP,
     )
@@ -281,6 +280,13 @@ class Project(models.Model):
         AWAITING_APPROVAL = 'AWAITING_APPROVAL', 'Awaiting Approval'
         COMPLETE = 'COMPLETE', 'Complete'
 
+    class ExecutionStatus(models.TextChoices):
+        STARTED = 'STARTED', 'Started'
+        BUILDING = 'BUILDING', 'Building'
+        TESTING = 'TESTING', 'Testing'
+        REVIEW = 'REVIEW', 'Review'
+        COMPLETED = 'COMPLETED', 'Completed'
+
     lead = models.OneToOneField(
         Lead,
         on_delete=models.CASCADE,
@@ -298,16 +304,35 @@ class Project(models.Model):
         blank=True,
         related_name='projects',
     )
+    # Assigned by a manager once Phase 1 is ready to hand off -- Phase 2 is
+    # PM-owned and (see ApprovalRequestSerializer) can't start without one.
+    project_manager = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='managed_projects',
+    )
     current_phase = models.PositiveSmallIntegerField(
         default=1,
-        validators=[MinValueValidator(1), MaxValueValidator(3)],
+        validators=[MinValueValidator(1), MaxValueValidator(4)],
     )
     phase_1_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
     phase_2_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
     phase_3_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
+    phase_4_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
+    # Separate axis from phase_3_status -- see ProjectSerializer.update()/
+    # ExecutionStatusEvent for how a change here is gated and logged.
+    phase_3_execution_status = models.CharField(
+        max_length=16,
+        choices=ExecutionStatus.choices,
+        null=True,
+        blank=True,
+    )
     phase_1_started_at = models.DateTimeField(null=True, blank=True)
     phase_2_started_at = models.DateTimeField(null=True, blank=True)
     phase_3_started_at = models.DateTimeField(null=True, blank=True)
+    phase_4_started_at = models.DateTimeField(null=True, blank=True)
     maintenance = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -338,7 +363,9 @@ class Project(models.Model):
         # can be assigned a lead on a company they don't own.
         return self.lead.assigned_to_id
 
-    PHASE_STARTED_AT_FIELDS = {1: 'phase_1_started_at', 2: 'phase_2_started_at', 3: 'phase_3_started_at'}
+    PHASE_STARTED_AT_FIELDS = {
+        1: 'phase_1_started_at', 2: 'phase_2_started_at', 3: 'phase_3_started_at', 4: 'phase_4_started_at',
+    }
 
     def save(self, *args, **kwargs):
         is_new = self._state.adding
@@ -386,6 +413,7 @@ class PhaseRequirement(models.Model):
 
     class ConfirmationAuthority(models.TextChoices):
         REP = 'REP', 'Rep'
+        PROJECT_MANAGER = 'PROJECT_MANAGER', 'Project Manager'
         MANAGER = 'MANAGER', 'Manager'
 
     project = models.ForeignKey(
@@ -393,13 +421,13 @@ class PhaseRequirement(models.Model):
         on_delete=models.CASCADE,
         related_name='requirements',
     )
-    phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(3)])
+    phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(4)])
     label = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     status = models.CharField(max_length=14, choices=Status.choices, default=Status.PENDING)
     notes = models.TextField(blank=True)
     confirmation_authority = models.CharField(
-        max_length=8,
+        max_length=16,
         choices=ConfirmationAuthority.choices,
         default=ConfirmationAuthority.REP,
     )
@@ -451,10 +479,19 @@ class PhaseRequirement(models.Model):
         return self.project.lead.assigned_to_id
 
     @property
+    def project_manager_id(self):
+        # Lets the permission classes grant a PROJECT_MANAGER write access
+        # via "manages this task's project", without a bespoke permission
+        # class -- same pattern as owner_id/assigned_to_id above.
+        return self.project.project_manager_id
+
+    @property
     def is_confirmed_complete(self):
         if self.status != self.Status.COMPLETED:
             return False
-        if self.confirmation_authority == self.ConfirmationAuthority.MANAGER:
+        if self.confirmation_authority in (
+            self.ConfirmationAuthority.MANAGER, self.ConfirmationAuthority.PROJECT_MANAGER,
+        ):
             return self.confirmed_by_id is not None
         return True
 
@@ -480,12 +517,43 @@ class PhaseRequirement(models.Model):
         return effective is not None and self.completed_at.date() > effective
 
 
+class ExecutionStatusEvent(models.Model):
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='execution_status_events',
+    )
+    from_status = models.CharField(
+        max_length=16,
+        choices=Project.ExecutionStatus.choices,
+        null=True,
+        blank=True,
+    )
+    to_status = models.CharField(max_length=16, choices=Project.ExecutionStatus.choices)
+    changed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='execution_status_events',
+    )
+    changed_at = models.DateTimeField(auto_now_add=True)
+    note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-changed_at']
+
+    def __str__(self):
+        return f'{self.project}: {self.from_status} -> {self.to_status}'
+
+
 class ApprovalRequest(models.Model):
     class RequestType(models.TextChoices):
         ARCHIVE_LEAD = 'ARCHIVE_LEAD', 'Archive Lead'
+        LEAD_STATUS_CHANGE = 'LEAD_STATUS_CHANGE', 'Lead Status Change'
         PHASE_1_SIGNOFF = 'PHASE_1_SIGNOFF', 'Phase 1 Signoff'
         PHASE_2_SIGNOFF = 'PHASE_2_SIGNOFF', 'Phase 2 Signoff'
-        PHASE_3_SIGNOFF = 'PHASE_3_SIGNOFF', 'Phase 3 Signoff'
+        PHASE_4_SIGNOFF = 'PHASE_4_SIGNOFF', 'Phase 4 Signoff'
 
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Pending'
@@ -521,6 +589,14 @@ class ApprovalRequest(models.Model):
     )
     status = models.CharField(max_length=8, choices=Status.choices, default=Status.PENDING)
     reason = models.TextField(blank=True)
+    # Only meaningful for LEAD_STATUS_CHANGE requests -- the status the
+    # request is asking to move the lead to.
+    target_status = models.CharField(
+        max_length=8,
+        choices=Lead.Status.choices,
+        null=True,
+        blank=True,
+    )
     decision_note = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     decided_at = models.DateTimeField(null=True, blank=True)
@@ -548,6 +624,17 @@ class ApprovalRequest(models.Model):
                 # API -- no separate serializer-level check needed.
                 violation_error_message=(
                     'A pending approval request of this type already exists for this project.'
+                ),
+            ),
+            models.UniqueConstraint(
+                fields=['lead', 'request_type'],
+                # Mirrors the project constraint above, for the request
+                # types (ARCHIVE_LEAD, LEAD_STATUS_CHANGE) that target a
+                # lead instead of a project.
+                condition=models.Q(status='PENDING'),
+                name='approvalrequest_one_pending_per_lead_type',
+                violation_error_message=(
+                    'A pending approval request of this type already exists for this lead.'
                 ),
             ),
         ]
