@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.contrib.auth import authenticate, login, logout
 from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Q, Subquery
+from django.http import FileResponse
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import generics, status, viewsets
@@ -22,6 +23,8 @@ from .models import (
     Project,
     RequirementTemplate,
     SystemSettings,
+    TaskAttachment,
+    TaskFormResponse,
     User,
 )
 from .permissions import (
@@ -32,8 +35,10 @@ from .permissions import (
     FULL_ACCESS_ROLES,
     ManagementRolePermission,
     ManagementWritePermission,
+    PhaseRequirementPermission,
     RoleBasedAccess,
     SystemSettingsPermission,
+    TaskAttachmentPermission,
 )
 from .serializers import (
     ActivityEventSerializer,
@@ -46,6 +51,7 @@ from .serializers import (
     ProjectSerializer,
     RequirementTemplateSerializer,
     SystemSettingsSerializer,
+    TaskAttachmentSerializer,
     UserSummarySerializer,
 )
 
@@ -368,14 +374,16 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
 class PhaseRequirementViewSet(viewsets.ModelViewSet):
     serializer_class = PhaseRequirementSerializer
-    permission_classes = [IsAuthenticated, RoleBasedAccess]
-    http_method_names = ['get', 'patch', 'head', 'options']
+    permission_classes = [IsAuthenticated, PhaseRequirementPermission]
+    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
     filterset_fields = ['project', 'phase']
     ordering_fields = ['phase']
     ordering = ['phase']
 
     def get_queryset(self):
-        queryset = PhaseRequirement.objects.select_related('project__company', 'updated_by', 'confirmed_by')
+        queryset = PhaseRequirement.objects.select_related(
+            'project__company', 'updated_by', 'confirmed_by', 'template',
+        ).prefetch_related('template__form_fields', 'custom_form_fields', 'form_responses')
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             # Same owner-or-assigned-lead access as ProjectViewSet above.
@@ -383,6 +391,100 @@ class PhaseRequirementViewSet(viewsets.ModelViewSet):
         elif user.role == User.Role.PROJECT_MANAGER:
             queryset = queryset.filter(project__project_manager=user)
         return queryset
+
+    @action(detail=True, methods=['post'])
+    def answers(self, request, pk=None):
+        # get_object() re-runs get_queryset() + has_object_permission() --
+        # the same "can edit this task" check as everywhere else, since
+        # editing a response is only allowed for whoever can edit the task.
+        requirement = self.get_object()
+        responses = request.data.get('responses')
+        if not isinstance(responses, list):
+            return Response(
+                {'responses': 'Expected a list of {field, value} objects.'}, status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        valid_fields = {f.id: f for f in requirement.form_fields}
+        changed_labels = []
+        for item in responses:
+            field_id = item.get('field')
+            if field_id not in valid_fields:
+                return Response(
+                    {'responses': f'Field {field_id} does not belong to this task.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        for item in responses:
+            field = valid_fields[item.get('field')]
+            value = item.get('value') or ''
+            response_obj, created = TaskFormResponse.objects.get_or_create(
+                requirement=requirement, field=field, defaults={'value': value, 'answered_by': request.user},
+            )
+            if created:
+                changed_labels.append(field.label)
+            elif response_obj.value != value:
+                response_obj.value = value
+                response_obj.answered_by = request.user
+                response_obj.save(update_fields=['value', 'answered_by', 'answered_at'])
+                changed_labels.append(field.label)
+
+        if changed_labels:
+            ActivityEvent.record(
+                requirement.project.lead,
+                ActivityEvent.Category.PHASE,
+                f'Updated form answers for "{requirement.label}": {", ".join(changed_labels)}',
+                actor=request.user,
+            )
+
+        # refresh_from_db() wouldn't be enough here -- it reloads the
+        # instance's own fields but leaves the prefetched form_responses
+        # queryset (from get_object()) cached and stale. Re-fetching through
+        # get_queryset() gets a clean instance with correct prefetches.
+        requirement = self.get_queryset().get(pk=requirement.pk)
+        return Response(self.get_serializer(requirement).data)
+
+
+class TaskAttachmentViewSet(viewsets.ModelViewSet):
+    serializer_class = TaskAttachmentSerializer
+    permission_classes = [IsAuthenticated, TaskAttachmentPermission]
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
+    filterset_fields = ['requirement']
+    ordering_fields = ['uploaded_at']
+    ordering = ['-uploaded_at']
+
+    def get_queryset(self):
+        # Same project-scoping as PhaseRequirementViewSet, just one hop
+        # further through the FK.
+        queryset = TaskAttachment.objects.select_related(
+            'requirement__project__company', 'requirement__project__lead', 'uploaded_by',
+        )
+        user = self.request.user
+        if user.role == User.Role.SALES_REP:
+            queryset = queryset.filter(
+                Q(requirement__project__company__owner=user) | Q(requirement__project__lead__assigned_to=user),
+            )
+        elif user.role == User.Role.PROJECT_MANAGER:
+            queryset = queryset.filter(requirement__project__project_manager=user)
+        return queryset
+
+    @action(detail=True, methods=['get'])
+    def download(self, request, pk=None):
+        # get_object() applies get_queryset() + has_object_permission() --
+        # the exact same visibility check as everywhere else this data is
+        # reached, re-run here rather than trusting a raw media URL (which
+        # django.views.static.serve would hand out to anyone, authenticated
+        # or not).
+        attachment = self.get_object()
+        if attachment.kind != TaskAttachment.Kind.FILE or not attachment.file:
+            return Response(
+                {'detail': 'This attachment has no file to download.'}, status=status.HTTP_400_BAD_REQUEST,
+            )
+        return FileResponse(
+            attachment.file.open('rb'),
+            content_type=attachment.content_type or 'application/octet-stream',
+            as_attachment=False,
+            filename=attachment.original_filename or attachment.file.name,
+        )
 
 
 class RequirementTemplateViewSet(viewsets.ModelViewSet):

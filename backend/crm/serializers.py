@@ -1,3 +1,5 @@
+from decimal import Decimal, InvalidOperation
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
@@ -15,6 +17,9 @@ from .models import (
     Project,
     RequirementTemplate,
     SystemSettings,
+    TaskAttachment,
+    TaskFormField,
+    TaskFormResponse,
     User,
 )
 from .permissions import FULL_ACCESS_ROLES, MANAGER_ROLES
@@ -242,6 +247,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             'id', 'lead', 'company', 'company_name', 'deal', 'current_phase',
             'project_manager', 'project_manager_username',
             'phase_1_status', 'phase_2_status', 'phase_3_status', 'phase_4_status', 'phase_3_execution_status',
+            'proposed_budget', 'currency', 'notes',
             'maintenance', 'phase_progress', 'overall_progress', 'pending_approval_requests',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
             'created_at', 'updated_at',
@@ -256,6 +262,19 @@ class ProjectSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.role not in MANAGER_ROLES:
             self.fields['project_manager'].read_only = True
+        if request:
+            user = request.user
+            # self.instance is the whole queryset (not a single Project) for
+            # the child serializer DRF builds when many=True (a list view) --
+            # getattr rather than direct attribute access so that case just
+            # falls through to "not the managing PM" instead of raising.
+            is_managing_pm = (
+                user.role == User.Role.PROJECT_MANAGER
+                and getattr(self.instance, 'project_manager_id', None) == user.id
+            )
+            if user.role not in MANAGER_ROLES and not is_managing_pm:
+                self.fields['proposed_budget'].read_only = True
+                self.fields['currency'].read_only = True
 
     @staticmethod
     def _percent(completed, total):
@@ -451,9 +470,33 @@ class ProjectSerializer(serializers.ModelSerializer):
             project.start_phase(2)
 
 
+class TaskFormFieldSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TaskFormField
+        fields = ['id', 'label', 'field_type', 'options', 'required', 'order', 'help_text']
+        read_only_fields = ['id']
+
+    def validate(self, attrs):
+        field_type = attrs.get('field_type', getattr(self.instance, 'field_type', None))
+        options = attrs.get('options', getattr(self.instance, 'options', None))
+        if field_type == TaskFormField.FieldType.SELECT and not options:
+            raise serializers.ValidationError({'options': 'SELECT fields need at least one option.'})
+        return attrs
+
+
+class TaskFormResponseSerializer(serializers.ModelSerializer):
+    answered_by_username = serializers.CharField(source='answered_by.username', read_only=True, default=None)
+
+    class Meta:
+        model = TaskFormResponse
+        fields = ['id', 'field', 'value', 'answered_by', 'answered_by_username', 'answered_at']
+        read_only_fields = ['answered_by', 'answered_at']
+
+
 class PhaseRequirementSerializer(serializers.ModelSerializer):
     updated_by_username = serializers.CharField(source='updated_by.username', read_only=True, default=None)
     confirmed_by_username = serializers.CharField(source='confirmed_by.username', read_only=True, default=None)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, default=None)
     effective_due_date = serializers.DateField(read_only=True)
     is_overdue = serializers.BooleanField(read_only=True)
     completed_late = serializers.BooleanField(read_only=True)
@@ -461,35 +504,96 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
     # group) that display a task without also having its Project/Lead loaded.
     lead_id = serializers.IntegerField(source='project.lead_id', read_only=True)
     company_name = serializers.CharField(source='project.company.name', read_only=True, default=None)
+    # Field *definitions* (by reference -- template-owned or this task's own
+    # custom ones, see PhaseRequirement.form_fields) and this task's saved
+    # *answers*, both embedded so the frontend never needs a second call to
+    # render the form. Neither is writable here: definitions only ever come
+    # from a template or from `custom_fields` at creation (below); answers
+    # are only ever written through PhaseRequirementViewSet.answers.
+    form_fields = TaskFormFieldSerializer(many=True, read_only=True)
+    form_responses = TaskFormResponseSerializer(many=True, read_only=True)
+    # Write-only: only meaningful (and only ever used) when creating a
+    # custom task -- defines its fields in the same request, since a custom
+    # task has no template to attach them to afterwards.
+    custom_fields = TaskFormFieldSerializer(many=True, write_only=True, required=False)
+
+    # Fields only writable at creation -- read-only again once the task
+    # exists, toggled in __init__ below rather than a static Meta list, since
+    # POST needs them and PATCH (template-derived or custom) never should.
+    CREATE_ONLY_FIELDS = (
+        'project', 'phase', 'label', 'description', 'confirmation_authority', 'client_facing', 'due_date',
+    )
 
     class Meta:
         model = PhaseRequirement
         fields = [
             'id', 'project', 'phase', 'label', 'description', 'status', 'notes',
             'due_date', 'committed_date', 'effective_due_date', 'is_overdue', 'completed_late',
-            'confirmation_authority', 'client_facing', 'lead_id', 'company_name',
+            'confirmation_authority', 'client_facing', 'is_custom', 'lead_id', 'company_name',
+            'form_fields', 'form_responses', 'custom_fields',
             'updated_by', 'updated_by_username', 'updated_at',
             'confirmed_by', 'confirmed_by_username', 'confirmed_at',
+            'created_by', 'created_by_username',
         ]
         read_only_fields = [
-            'project', 'phase', 'label', 'description', 'confirmation_authority', 'client_facing',
-            # due_date is calculated at phase start (see Project.start_phase)
-            # -- committed_date, not due_date, is the field a rep/manager can
-            # set directly.
-            'due_date',
-            'updated_by', 'updated_at', 'confirmed_by', 'confirmed_at',
+            'is_custom', 'updated_by', 'updated_at', 'confirmed_by', 'confirmed_at', 'created_by',
         ]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance is not None:
+            for field_name in self.CREATE_ONLY_FIELDS:
+                self.fields[field_name].read_only = True
+
     def validate(self, attrs):
-        # confirmed_by/confirmed_at are read-only, so DRF would otherwise
-        # just silently drop them from the input -- reject instead so a
-        # client can't be misled into thinking a direct write took effect.
-        submitted = {'confirmed_by', 'confirmed_at'} & set(self.initial_data.keys())
+        # confirmed_by/confirmed_at/is_custom/created_by are read-only, so
+        # DRF would otherwise just silently drop them from the input --
+        # reject instead so a client can't be misled into thinking a direct
+        # write took effect.
+        submitted = {'confirmed_by', 'confirmed_at', 'is_custom', 'created_by'} & set(self.initial_data.keys())
         if submitted:
             raise serializers.ValidationError({
                 field: 'This field is set automatically and cannot be provided directly.' for field in submitted
             })
+
+        # A task with required fields can't complete until every one of them
+        # has a saved (non-blank) answer -- checked against whatever is
+        # already saved, since answers are written through a separate
+        # endpoint (PhaseRequirementViewSet.answers), not this PATCH.
+        if self.instance is not None and attrs.get('status') == PhaseRequirement.Status.COMPLETED:
+            required_fields = [f for f in self.instance.form_fields if f.required]
+            if required_fields:
+                answered_field_ids = set(
+                    self.instance.form_responses.exclude(value='').values_list('field_id', flat=True),
+                )
+                missing = [f.label for f in required_fields if f.id not in answered_field_ids]
+                if missing:
+                    raise serializers.ValidationError({
+                        'status': f'Missing required fields: {", ".join(missing)}.',
+                    })
         return attrs
+
+    def create(self, validated_data):
+        # Every task created through this endpoint is by definition custom --
+        # the only non-custom (template-derived) rows come from Project.save()
+        # bulk-creating them directly, which never goes through this serializer.
+        request = self.context.get('request')
+        user = request.user if request else None
+        custom_fields = validated_data.pop('custom_fields', [])
+        validated_data['is_custom'] = True
+        validated_data['created_by'] = user
+        validated_data['updated_by'] = user
+        requirement = super().create(validated_data)
+        for field_data in custom_fields:
+            TaskFormField.objects.create(requirement=requirement, **field_data)
+        if user is not None:
+            ActivityEvent.record(
+                requirement.project.lead,
+                ActivityEvent.Category.PHASE,
+                f'Custom task "{requirement.label}" added to phase {requirement.phase}',
+                actor=user,
+            )
+        return requirement
 
     def update(self, instance, validated_data):
         request = self.context.get('request')
@@ -553,7 +657,124 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
             else:
                 Lead.objects.filter(pk=lead_id).update(last_internal_activity_at=timezone.now())
 
+            if new_status == PhaseRequirement.Status.COMPLETED and requirement.label == 'Budget Proposal':
+                self._auto_populate_project_budget(requirement)
+
         return requirement
+
+    @staticmethod
+    def _auto_populate_project_budget(requirement):
+        # "Automatic pipeline updates from tasks": completing the Budget
+        # Proposal task feeds its answers straight into the project-level
+        # budget panel, rather than requiring someone to re-key the same
+        # figures a second time. Fresh query (not requirement.form_responses
+        # off a possibly-prefetched instance) so this always sees what was
+        # actually just saved through the answers action.
+        responses = dict(
+            TaskFormResponse.objects.filter(requirement=requirement).values_list('field__label', 'value'),
+        )
+        project = requirement.project
+        update_fields = []
+
+        budget_value = responses.get('Proposed budget')
+        if budget_value:
+            try:
+                project.proposed_budget = Decimal(budget_value)
+                update_fields.append('proposed_budget')
+            except InvalidOperation:
+                pass
+
+        currency_value = responses.get('Currency')
+        if currency_value:
+            project.currency = currency_value
+            update_fields.append('currency')
+
+        if update_fields:
+            project.save(update_fields=update_fields)
+
+
+class TaskAttachmentSerializer(serializers.ModelSerializer):
+    uploaded_by_username = serializers.CharField(source='uploaded_by.username', read_only=True, default=None)
+
+    # PDF, common image types, and .docx -- matches the brief exactly, no
+    # broader "any office document" allowance.
+    ALLOWED_CONTENT_TYPES = {
+        'application/pdf',
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'image/webp',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }
+    MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024
+
+    class Meta:
+        model = TaskAttachment
+        fields = [
+            'id', 'requirement', 'kind', 'file', 'url', 'title',
+            'original_filename', 'content_type', 'size_bytes',
+            'uploaded_by', 'uploaded_by_username', 'uploaded_at',
+        ]
+        read_only_fields = [
+            'original_filename', 'content_type', 'size_bytes', 'uploaded_by', 'uploaded_at',
+        ]
+        extra_kwargs = {
+            # Never rendered back to the client -- the file is only ever
+            # reached through TaskAttachmentViewSet.download, and .url would
+            # raise anyway (see storage.private_attachment_storage).
+            'file': {'write_only': True},
+        }
+
+    def validate_file(self, value):
+        if value.size > self.MAX_FILE_SIZE_BYTES:
+            raise serializers.ValidationError(
+                f'File is too large ({value.size // (1024 * 1024)} MB) -- the limit is 15 MB.',
+            )
+        content_type = getattr(value, 'content_type', '') or ''
+        if content_type not in self.ALLOWED_CONTENT_TYPES:
+            raise serializers.ValidationError(
+                'Unsupported file type -- only PDF, images (JPEG/PNG/GIF/WebP), and .docx are allowed.',
+            )
+        return value
+
+    def validate(self, attrs):
+        kind = attrs.get('kind', getattr(self.instance, 'kind', None))
+        file_value = attrs.get('file')
+        url_value = attrs.get('url')
+        errors = {}
+
+        if kind == TaskAttachment.Kind.FILE:
+            if self.instance is None and not file_value:
+                errors['file'] = 'A file is required for a FILE attachment.'
+            if url_value:
+                errors['url'] = 'A FILE attachment cannot also have a URL.'
+        elif kind == TaskAttachment.Kind.LINK:
+            if self.instance is None and not url_value:
+                errors['url'] = 'A URL is required for a LINK attachment.'
+            if file_value:
+                errors['file'] = 'A LINK attachment cannot also have a file.'
+            if self.instance is None and not (attrs.get('title') or '').strip():
+                errors['title'] = 'A title is required for a link attachment.'
+
+        # Collected rather than raised as soon as the first problem is found,
+        # so a client fixing a LINK submission missing both url and title
+        # sees both errors in one round trip instead of one at a time.
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        file_value = validated_data.get('file')
+        if validated_data.get('kind') == TaskAttachment.Kind.FILE and file_value:
+            validated_data['original_filename'] = file_value.name
+            validated_data['content_type'] = getattr(file_value, 'content_type', '') or ''
+            validated_data['size_bytes'] = file_value.size
+            if not (validated_data.get('title') or '').strip():
+                validated_data['title'] = file_value.name
+        if request:
+            validated_data['uploaded_by'] = request.user
+        return super().create(validated_data)
 
 
 class RequirementTemplateSerializer(serializers.ModelSerializer):

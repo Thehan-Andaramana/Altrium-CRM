@@ -5,6 +5,8 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
+from .storage import PrivateAttachmentStorage
+
 
 class User(AbstractUser):
     class Role(models.TextChoices):
@@ -317,6 +319,13 @@ class Project(models.Model):
         default=1,
         validators=[MinValueValidator(1), MaxValueValidator(4)],
     )
+    # proposed_budget/currency are normally set automatically when the Budget
+    # Proposal task's form is completed (see PhaseRequirementSerializer.
+    # update()) -- direct writes are restricted to the managing PM and
+    # management roles (see ProjectSerializer.__init__).
+    proposed_budget = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=8, blank=True)
+    notes = models.TextField(blank=True)
     phase_1_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
     phase_2_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
     phase_3_status = models.CharField(max_length=20, choices=PhaseStatus.choices, default=PhaseStatus.NOT_STARTED)
@@ -376,6 +385,7 @@ class Project(models.Model):
             PhaseRequirement.objects.bulk_create([
                 PhaseRequirement(
                     project=self,
+                    template=template,
                     phase=template.phase,
                     label=template.label,
                     description=template.description,
@@ -421,6 +431,17 @@ class PhaseRequirement(models.Model):
         on_delete=models.CASCADE,
         related_name='requirements',
     )
+    # Set at generation time (see Project.save()) for template-derived tasks;
+    # null for a custom one. This is what lets form fields be defined once on
+    # the template and referenced by every task it generates, rather than
+    # copied onto each -- see the form_fields property below.
+    template = models.ForeignKey(
+        RequirementTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='generated_requirements',
+    )
     phase = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(4)])
     label = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -432,6 +453,18 @@ class PhaseRequirement(models.Model):
         default=ConfirmationAuthority.REP,
     )
     client_facing = models.BooleanField(default=False)
+    # True only for a task created directly via the API (see
+    # PhaseRequirementSerializer.create) rather than bulk-generated from a
+    # RequirementTemplate by Project.save() -- gates deletion (only a custom
+    # task can be deleted; a template-derived one never can).
+    is_custom = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_requirements',
+    )
     # Snapshotted from the template at creation time -- see Project.save().
     default_duration_days = models.PositiveIntegerField(null=True, blank=True)
     # System-calculated at phase start (see Project.start_phase); not
@@ -515,6 +548,149 @@ class PhaseRequirement(models.Model):
             return False
         effective = self.effective_due_date
         return effective is not None and self.completed_at.date() > effective
+
+    @property
+    def form_fields(self):
+        # By reference, not copied: a template-derived task's fields live on
+        # the template and are shared by every task it generates; a custom
+        # task (no template) defines its own directly.
+        if self.template_id is not None:
+            return self.template.form_fields.all()
+        return self.custom_form_fields.all()
+
+
+class TaskFormField(models.Model):
+    class FieldType(models.TextChoices):
+        TEXT = 'TEXT', 'Text'
+        TEXTAREA = 'TEXTAREA', 'Textarea'
+        NUMBER = 'NUMBER', 'Number'
+        CURRENCY = 'CURRENCY', 'Currency'
+        DATE = 'DATE', 'Date'
+        SELECT = 'SELECT', 'Select'
+        CHECKBOX = 'CHECKBOX', 'Checkbox'
+
+    # Exactly one of these is set. template-owned fields are shared by every
+    # PhaseRequirement that template generates (see form_fields property
+    # above); requirement-owned fields belong to one specific custom task,
+    # which has no template to attach to.
+    template = models.ForeignKey(
+        RequirementTemplate,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='form_fields',
+    )
+    requirement = models.ForeignKey(
+        PhaseRequirement,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='custom_form_fields',
+    )
+    label = models.CharField(max_length=255)
+    field_type = models.CharField(max_length=10, choices=FieldType.choices)
+    # Only meaningful for field_type=SELECT -- a plain list of option strings.
+    options = models.JSONField(default=list, blank=True)
+    required = models.BooleanField(default=False)
+    order = models.PositiveIntegerField(default=0)
+    help_text = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ['order', 'id']
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(template__isnull=False, requirement__isnull=True)
+                    | models.Q(template__isnull=True, requirement__isnull=False)
+                ),
+                name='taskformfield_exactly_one_owner',
+            ),
+        ]
+
+    def __str__(self):
+        return self.label
+
+
+class TaskFormResponse(models.Model):
+    requirement = models.ForeignKey(
+        PhaseRequirement,
+        on_delete=models.CASCADE,
+        related_name='form_responses',
+    )
+    field = models.ForeignKey(
+        TaskFormField,
+        on_delete=models.CASCADE,
+        related_name='responses',
+    )
+    # Plain text regardless of field_type -- a NUMBER/CURRENCY/DATE/CHECKBOX
+    # value stored as its string form, rather than a polymorphic value
+    # column, since nothing here needs to query or aggregate on it.
+    value = models.TextField(blank=True)
+    answered_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_form_responses',
+    )
+    answered_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['field__order', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['requirement', 'field'], name='taskformresponse_one_per_requirement_field'),
+        ]
+
+    def __str__(self):
+        return f'{self.field.label} = {self.value!r}'
+
+
+def _attachment_upload_path(instance, filename):
+    # Namespaced by requirement so two tasks' files never collide; the
+    # requirement FK is already set on the instance by the time Django saves
+    # the file (it's assigned before .save() is called).
+    return f'task_attachments/{instance.requirement_id}/{filename}'
+
+
+class TaskAttachment(models.Model):
+    class Kind(models.TextChoices):
+        FILE = 'FILE', 'File'
+        LINK = 'LINK', 'Link'
+
+    requirement = models.ForeignKey(
+        PhaseRequirement,
+        on_delete=models.CASCADE,
+        related_name='attachments',
+    )
+    kind = models.CharField(max_length=4, choices=Kind.choices)
+    # Exactly one of file/url is set, matching kind -- enforced in
+    # TaskAttachmentSerializer.validate, not at the DB level.
+    file = models.FileField(
+        upload_to=_attachment_upload_path,
+        storage=PrivateAttachmentStorage,
+        null=True,
+        blank=True,
+    )
+    url = models.URLField(max_length=1000, null=True, blank=True)
+    title = models.CharField(max_length=255, blank=True)
+    # Only meaningful for kind=FILE -- captured at upload time.
+    original_filename = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=100, blank=True)
+    size_bytes = models.PositiveIntegerField(null=True, blank=True)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_attachments',
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-uploaded_at']
+
+    def __str__(self):
+        return self.title or self.original_filename or self.url or f'Attachment {self.pk}'
 
 
 class ExecutionStatusEvent(models.Model):

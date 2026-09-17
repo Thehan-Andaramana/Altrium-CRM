@@ -1,6 +1,8 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from django.conf import settings
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
@@ -10,7 +12,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from .models import (
     ActivityEvent, ApprovalRequest, Company, Contact, Deal, ExecutionStatusEvent, Interaction, Lead,
-    PhaseRequirement, Project, User,
+    PhaseRequirement, Project, TaskAttachment, TaskFormField, TaskFormResponse, User,
 )
 
 
@@ -587,6 +589,638 @@ class PhaseRequirementConfirmationTests(ProjectRequirementsTestMixin, APITestCas
         url = reverse('project-detail', args=[self.project.id])
         response = self.client.get(url)
         self.assertEqual(response.data['phase_progress'][1], {'completed': 1, 'total': 1, 'percent': 100})
+
+
+class CustomTaskTests(ProjectRequirementsTestMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.other_pm = User.objects.create_user(username='pm2', password='pass', role=User.Role.PROJECT_MANAGER)
+
+    def _payload(self, phase=2, **overrides):
+        payload = {
+            'project': self.project.id,
+            'phase': phase,
+            'label': 'Custom onboarding call',
+            'description': 'Walk the client through the new dashboard.',
+            'confirmation_authority': 'REP',
+        }
+        payload.update(overrides)
+        return payload
+
+    # -- creation scoping ---------------------------------------------------
+
+    def test_assigned_rep_can_create_custom_task(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('phaserequirement-list'), self._payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data['is_custom'])
+        self.assertEqual(response.data['created_by'], self.rep.id)
+
+    def test_unrelated_rep_cannot_create_custom_task(self):
+        self.client.force_authenticate(self.other_rep)
+        response = self.client.post(reverse('phaserequirement-list'), self._payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_managing_pm_can_create_custom_task(self):
+        self.client.force_authenticate(self.pm)
+        response = self.client.post(reverse('phaserequirement-list'), self._payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_unrelated_pm_cannot_create_custom_task(self):
+        self.client.force_authenticate(self.other_pm)
+        response = self.client.post(reverse('phaserequirement-list'), self._payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_manager_can_create_custom_task_anywhere(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(reverse('phaserequirement-list'), self._payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    # -- delete restricted to custom -----------------------------------------
+
+    def test_custom_task_can_be_deleted_by_creator(self):
+        self.client.force_authenticate(self.rep)
+        create = self.client.post(reverse('phaserequirement-list'), self._payload(), format='json')
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+        url = reverse('phaserequirement-detail', args=[create.data['id']])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(PhaseRequirement.objects.filter(pk=create.data['id']).exists())
+
+    def test_template_derived_task_cannot_be_deleted(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        self.client.force_authenticate(self.manager)
+        url = reverse('phaserequirement-detail', args=[requirement.id])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(PhaseRequirement.objects.filter(pk=requirement.pk).exists())
+
+    def test_unrelated_rep_cannot_delete_a_custom_task_even_though_it_is_custom(self):
+        self.client.force_authenticate(self.manager)
+        create = self.client.post(reverse('phaserequirement-list'), self._payload(), format='json')
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+        self.client.force_authenticate(self.other_rep)
+        url = reverse('phaserequirement-detail', args=[create.data['id']])
+        response = self.client.delete(url)
+        # Not in this rep's queryset at all (get_queryset scopes them to their
+        # own assigned lead's project) -- 404, same as any other unrelated
+        # object in this codebase, not 403.
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(PhaseRequirement.objects.filter(pk=create.data['id']).exists())
+
+    # -- progress inclusion ---------------------------------------------------
+
+    def test_custom_task_counts_toward_phase_progress(self):
+        self.client.force_authenticate(self.manager)
+        before = self.client.get(reverse('project-detail', args=[self.project.id]))
+        before_total = before.data['phase_progress'][2]['total']
+
+        create = self.client.post(reverse('phaserequirement-list'), self._payload(phase=2), format='json')
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+        after = self.client.get(reverse('project-detail', args=[self.project.id]))
+        self.assertEqual(after.data['phase_progress'][2]['total'], before_total + 1)
+        self.assertEqual(after.data['phase_progress'][2]['completed'], 0)
+
+        complete_url = reverse('phaserequirement-detail', args=[create.data['id']])
+        complete_response = self.client.patch(complete_url, {'status': 'COMPLETED'}, format='json')
+        self.assertEqual(complete_response.status_code, status.HTTP_200_OK)
+
+        final = self.client.get(reverse('project-detail', args=[self.project.id]))
+        self.assertEqual(final.data['phase_progress'][2]['completed'], 1)
+
+
+class TaskAttachmentTests(ProjectRequirementsTestMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.other_pm = User.objects.create_user(username='pm2', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.requirement = self.project.requirements.first()
+
+    @staticmethod
+    def _pdf_file(name='doc.pdf', size=None):
+        content = b'%PDF-1.4 test content'
+        if size is not None:
+            content = b'0' * size
+        return SimpleUploadedFile(name, content, content_type='application/pdf')
+
+    def _upload(self, **overrides):
+        payload = {'requirement': self.requirement.id, 'kind': 'FILE', 'file': self._pdf_file()}
+        payload.update(overrides)
+        return self.client.post(reverse('taskattachment-list'), payload, format='multipart')
+
+    # -- upload validation ----------------------------------------------------
+
+    def test_valid_pdf_upload_succeeds(self):
+        self.client.force_authenticate(self.rep)
+        response = self._upload()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        attachment = TaskAttachment.objects.get(pk=response.data['id'])
+        self.assertEqual(attachment.content_type, 'application/pdf')
+        self.assertEqual(attachment.uploaded_by, self.rep)
+        self.assertEqual(attachment.original_filename, 'doc.pdf')
+
+    def test_oversized_file_is_rejected(self):
+        self.client.force_authenticate(self.rep)
+        big_file = self._pdf_file(size=16 * 1024 * 1024)
+        response = self._upload(file=big_file)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('file', response.data)
+        self.assertEqual(TaskAttachment.objects.count(), 0)
+
+    def test_unsupported_content_type_is_rejected(self):
+        self.client.force_authenticate(self.rep)
+        exe_file = SimpleUploadedFile('tool.exe', b'not really an exe', content_type='application/x-msdownload')
+        response = self._upload(file=exe_file)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('file', response.data)
+        self.assertEqual(TaskAttachment.objects.count(), 0)
+
+    def test_docx_content_type_is_accepted(self):
+        self.client.force_authenticate(self.rep)
+        docx_file = SimpleUploadedFile(
+            'spec.docx', b'docx bytes',
+            content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+        response = self._upload(file=docx_file)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_file_kind_without_file_is_rejected(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('taskattachment-list'), {
+            'requirement': self.requirement.id,
+            'kind': 'FILE',
+        }, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_link_requires_url_and_title(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('taskattachment-list'), {
+            'requirement': self.requirement.id,
+            'kind': 'LINK',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('url', response.data)
+        self.assertIn('title', response.data)
+
+    def test_valid_link_upload_succeeds(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('taskattachment-list'), {
+            'requirement': self.requirement.id,
+            'kind': 'LINK',
+            'url': 'https://docs.google.com/forms/d/e/abc123/viewform',
+            'title': 'Intake form',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_link_with_file_is_rejected(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('taskattachment-list'), {
+            'requirement': self.requirement.id,
+            'kind': 'LINK',
+            'url': 'https://example.com',
+            'title': 'Example',
+            'file': self._pdf_file(),
+        }, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # -- download permission scoping -------------------------------------------
+
+    def test_assigned_rep_can_download(self):
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+        url = reverse('taskattachment-download', args=[create.data['id']])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_unrelated_rep_cannot_download(self):
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+
+        self.client.force_authenticate(self.other_rep)
+        url = reverse('taskattachment-download', args=[create.data['id']])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_managing_pm_can_download(self):
+        self.client.force_authenticate(self.pm)
+        create = self._upload()
+        url = reverse('taskattachment-download', args=[create.data['id']])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_unrelated_pm_cannot_download(self):
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+
+        self.client.force_authenticate(self.other_pm)
+        url = reverse('taskattachment-download', args=[create.data['id']])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_management_can_download(self):
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+
+        self.client.force_authenticate(self.manager)
+        url = reverse('taskattachment-download', args=[create.data['id']])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_file_field_never_appears_in_api_responses(self):
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+        self.assertNotIn('file', create.data)
+
+        detail = self.client.get(reverse('taskattachment-detail', args=[create.data['id']]))
+        self.assertNotIn('file', detail.data)
+
+    def test_cannot_reach_the_file_via_a_raw_media_url(self):
+        # The whole point of PrivateAttachmentStorage: the file lives outside
+        # MEDIA_ROOT entirely, so django.views.static.serve (wired up for
+        # MEDIA_ROOT in config/urls.py whenever DEBUG is on) can never find
+        # it, regardless of authentication.
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+        attachment = TaskAttachment.objects.get(pk=create.data['id'])
+
+        self.assertTrue(str(attachment.file.path).startswith(str(settings.PRIVATE_MEDIA_ROOT)))
+        self.assertFalse(str(attachment.file.path).startswith(str(settings.MEDIA_ROOT)))
+        with self.assertRaises(Exception):
+            _ = attachment.file.url
+
+        guessed_media_url = f'{settings.MEDIA_URL}{attachment.file.name}'
+        # Unauthenticated on top of it -- doubly shouldn't work.
+        anonymous_client = APIClient()
+        response = anonymous_client.get(guessed_media_url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- delete restriction -----------------------------------------------------
+
+    def test_uploader_can_delete_own_attachment(self):
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+        url = reverse('taskattachment-detail', args=[create.data['id']])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_manager_can_delete_anyones_attachment(self):
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+
+        self.client.force_authenticate(self.manager)
+        url = reverse('taskattachment-detail', args=[create.data['id']])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_assigned_pm_who_did_not_upload_cannot_delete(self):
+        # PM manages this project (and so can edit the task/upload their own
+        # attachments), but didn't upload this particular one -- delete is
+        # narrower than "can edit the task".
+        self.client.force_authenticate(self.rep)
+        create = self._upload()
+
+        self.client.force_authenticate(self.pm)
+        url = reverse('taskattachment-detail', args=[create.data['id']])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(TaskAttachment.objects.filter(pk=create.data['id']).exists())
+
+    def test_assigned_rep_who_did_not_upload_cannot_delete(self):
+        self.client.force_authenticate(self.manager)
+        create = self._upload()
+
+        self.client.force_authenticate(self.rep)
+        url = reverse('taskattachment-detail', args=[create.data['id']])
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(TaskAttachment.objects.filter(pk=create.data['id']).exists())
+
+
+class TaskFormFieldTests(ProjectRequirementsTestMixin, APITestCase):
+    """
+    Template-derived form fields (Requirement Discussion / Budget Proposal,
+    seeded by migration 0022 onto the templates migration 0019 reseeds) are
+    exposed by reference through PhaseRequirement.form_fields -- these tests
+    exercise the answers action, the completion gate, and that a PATCH that
+    doesn't touch status/fields never disturbs saved responses.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.requirement = self.project.requirements.filter(phase=1, label='Requirement Discussion').first()
+        self.answers_url = reverse('phaserequirement-answers', args=[self.requirement.id])
+        self.detail_url = reverse('phaserequirement-detail', args=[self.requirement.id])
+
+    def _field_id(self, label):
+        return next(f.id for f in self.requirement.form_fields if f.label == label)
+
+    def test_generated_task_exposes_the_templates_fields_by_reference(self):
+        other_lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        other_requirement = other_lead.project.requirements.filter(phase=1, label='Requirement Discussion').first()
+
+        self.assertEqual(self.requirement.template_id, other_requirement.template_id)
+        self.assertEqual(
+            {f.id for f in self.requirement.form_fields},
+            {f.id for f in other_requirement.form_fields},
+        )
+        # Not copies -- the same underlying TaskFormField rows, so there's
+        # still exactly one set of fields per template regardless of how many
+        # projects/tasks reference it.
+        self.assertEqual(TaskFormField.objects.filter(template_id=self.requirement.template_id).count(), 4)
+
+    def test_cannot_complete_task_with_missing_required_fields(self):
+        response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        for label in ('Meeting date', 'Attendees', 'Key requirements captured'):
+            self.assertIn(label, response.data['status'][0])
+        self.requirement.refresh_from_db()
+        self.assertEqual(self.requirement.status, PhaseRequirement.Status.PENDING)
+
+    def test_naming_only_the_fields_still_missing(self):
+        self.client.post(self.answers_url, {
+            'responses': [{'field': self._field_id('Meeting date'), 'value': '2026-01-01'}],
+        }, format='json')
+
+        response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotIn('Meeting date', response.data['status'][0])
+        self.assertIn('Attendees', response.data['status'][0])
+        self.assertIn('Key requirements captured', response.data['status'][0])
+
+    def test_can_complete_once_all_required_fields_are_answered(self):
+        self.client.post(self.answers_url, {
+            'responses': [
+                {'field': self._field_id('Meeting date'), 'value': '2026-01-01'},
+                {'field': self._field_id('Attendees'), 'value': 'Jane Doe'},
+                {'field': self._field_id('Key requirements captured'), 'value': 'SSO integration.'},
+            ],
+        }, format='json')
+
+        response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_unrequired_field_left_blank_does_not_block_completion(self):
+        # "Follow-up needed" (CHECKBOX) is the one non-required field on this
+        # form -- leaving it unanswered must not block completion.
+        self.client.post(self.answers_url, {
+            'responses': [
+                {'field': self._field_id('Meeting date'), 'value': '2026-01-01'},
+                {'field': self._field_id('Attendees'), 'value': 'Jane Doe'},
+                {'field': self._field_id('Key requirements captured'), 'value': 'SSO integration.'},
+            ],
+        }, format='json')
+        response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_answering_a_field_records_an_activity_event(self):
+        response = self.client.post(self.answers_url, {
+            'responses': [{'field': self._field_id('Attendees'), 'value': 'Jane Doe'}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        event = ActivityEvent.objects.get(lead=self.lead, category=ActivityEvent.Category.PHASE)
+        self.assertIn('Attendees', event.description)
+        self.assertEqual(event.actor, self.manager)
+
+    def test_re_answering_a_field_updates_rather_than_duplicates(self):
+        field_id = self._field_id('Attendees')
+        self.client.post(self.answers_url, {'responses': [{'field': field_id, 'value': 'Jane Doe'}]}, format='json')
+        response = self.client.post(
+            self.answers_url, {'responses': [{'field': field_id, 'value': 'Jane Doe, John Smith'}]}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.assertEqual(TaskFormResponse.objects.filter(requirement=self.requirement, field_id=field_id).count(), 1)
+        saved = TaskFormResponse.objects.get(requirement=self.requirement, field_id=field_id)
+        self.assertEqual(saved.value, 'Jane Doe, John Smith')
+
+        # Two edits to the same field -> two events (one per changed save),
+        # not deduplicated -- each is a real audit entry.
+        self.assertEqual(
+            ActivityEvent.objects.filter(lead=self.lead, category=ActivityEvent.Category.PHASE).count(), 2,
+        )
+
+    def test_resaving_the_same_value_does_not_record_a_second_event(self):
+        field_id = self._field_id('Attendees')
+        self.client.post(self.answers_url, {'responses': [{'field': field_id, 'value': 'Jane Doe'}]}, format='json')
+        self.client.post(self.answers_url, {'responses': [{'field': field_id, 'value': 'Jane Doe'}]}, format='json')
+        self.assertEqual(
+            ActivityEvent.objects.filter(lead=self.lead, category=ActivityEvent.Category.PHASE).count(), 1,
+        )
+
+    def test_answers_response_includes_saved_responses_not_a_stale_cache(self):
+        field_id = self._field_id('Attendees')
+        response = self.client.post(self.answers_url, {
+            'responses': [{'field': field_id, 'value': 'Jane Doe'}],
+        }, format='json')
+        saved = next(r for r in response.data['form_responses'] if r['field'] == field_id)
+        self.assertEqual(saved['value'], 'Jane Doe')
+
+    def test_answer_for_field_not_belonging_to_task_is_rejected(self):
+        other_requirement = self.project.requirements.filter(phase=2, label='Budget Proposal').first()
+        foreign_field_id = next(f.id for f in other_requirement.form_fields)
+        response = self.client.post(self.answers_url, {
+            'responses': [{'field': foreign_field_id, 'value': 'x'}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(TaskFormResponse.objects.filter(requirement=self.requirement).exists())
+
+    def test_responses_survive_an_unrelated_patch(self):
+        field_id = self._field_id('Attendees')
+        self.client.post(self.answers_url, {'responses': [{'field': field_id, 'value': 'Jane Doe'}]}, format='json')
+
+        response = self.client.patch(self.detail_url, {'notes': 'Rescheduled once.'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        saved = TaskFormResponse.objects.get(requirement=self.requirement, field_id=field_id)
+        self.assertEqual(saved.value, 'Jane Doe')
+
+    def test_responses_survive_a_committed_date_patch(self):
+        field_id = self._field_id('Attendees')
+        self.client.post(self.answers_url, {'responses': [{'field': field_id, 'value': 'Jane Doe'}]}, format='json')
+
+        response = self.client.patch(self.detail_url, {'committed_date': '2026-02-01'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.assertTrue(TaskFormResponse.objects.filter(requirement=self.requirement, field_id=field_id).exists())
+
+    def test_responses_survive_task_completion(self):
+        self.client.post(self.answers_url, {
+            'responses': [
+                {'field': self._field_id('Meeting date'), 'value': '2026-01-01'},
+                {'field': self._field_id('Attendees'), 'value': 'Jane Doe'},
+                {'field': self._field_id('Key requirements captured'), 'value': 'SSO integration.'},
+            ],
+        }, format='json')
+        response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.assertEqual(
+            TaskFormResponse.objects.filter(requirement=self.requirement).count(), 3,
+        )
+
+
+class ProjectBudgetPanelTests(ProjectRequirementsTestMixin, APITestCase):
+    """
+    proposed_budget/currency/notes on Project: the first two are normally set
+    automatically when the Budget Proposal task's form completes (the
+    "automatic pipeline updates from tasks" requirement), and are otherwise
+    writable only by the managing PM and management roles; notes is writable
+    by anyone who can edit the project at all.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.requirement = self.project.requirements.filter(phase=2, label='Budget Proposal').first()
+        self.answers_url = reverse('phaserequirement-answers', args=[self.requirement.id])
+        self.detail_url = reverse('phaserequirement-detail', args=[self.requirement.id])
+        self.project_url = reverse('project-detail', args=[self.project.id])
+
+    def _field_id(self, label):
+        return next(f.id for f in self.requirement.form_fields if f.label == label)
+
+    def _answer_budget_fields(self, amount='18500', currency='USD'):
+        return self.client.post(self.answers_url, {
+            'responses': [
+                {'field': self._field_id('Proposed budget'), 'value': amount},
+                {'field': self._field_id('Currency'), 'value': currency},
+            ],
+        }, format='json')
+
+    # -- auto-population from the Budget Proposal form -------------------------
+
+    def test_completing_budget_proposal_populates_project_budget(self):
+        self._answer_budget_fields(amount='18500', currency='USD')
+        response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.proposed_budget, Decimal('18500'))
+        self.assertEqual(self.project.currency, 'USD')
+
+    def test_completing_a_different_task_does_not_populate_budget(self):
+        other = self.project.requirements.filter(phase=1, label='Requirement Discussion').first()
+        fields = {f.label: f for f in other.form_fields}
+        self.client.post(reverse('phaserequirement-answers', args=[other.id]), {
+            'responses': [
+                {'field': fields['Meeting date'].id, 'value': '2026-01-01'},
+                {'field': fields['Attendees'].id, 'value': 'Jane Doe'},
+                {'field': fields['Key requirements captured'].id, 'value': 'SSO integration.'},
+            ],
+        }, format='json')
+        response = self.client.patch(
+            reverse('phaserequirement-detail', args=[other.id]),
+            {'status': PhaseRequirement.Status.COMPLETED}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertIsNone(self.project.proposed_budget)
+        self.assertEqual(self.project.currency, '')
+
+    def test_re_saving_the_same_completed_status_does_not_re_trigger(self):
+        # Auto-population only runs on an actual status transition -- editing
+        # the saved answer afterwards and re-PATCHing the (unchanged) status
+        # must not silently overwrite a value someone may have since edited
+        # directly on the project.
+        self._answer_budget_fields(amount='18500', currency='USD')
+        self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+
+        self.client.post(self.answers_url, {
+            'responses': [{'field': self._field_id('Proposed budget'), 'value': '99999'}],
+        }, format='json')
+        response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.proposed_budget, Decimal('18500'))
+
+    def test_non_numeric_budget_value_is_safely_ignored(self):
+        self._answer_budget_fields(amount='not-a-number', currency='GBP')
+        response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertIsNone(self.project.proposed_budget)
+        self.assertEqual(self.project.currency, 'GBP')
+
+    # -- proposed_budget/currency: managing PM + management only ------------
+
+    def test_managing_pm_can_write_budget_and_currency(self):
+        self.client.force_authenticate(self.pm)
+        response = self.client.patch(
+            self.project_url, {'proposed_budget': '25000', 'currency': 'USD'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.proposed_budget, Decimal('25000'))
+        self.assertEqual(self.project.currency, 'USD')
+
+    def test_manager_can_write_budget_and_currency(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.patch(
+            self.project_url, {'proposed_budget': '30000', 'currency': 'GBP'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.proposed_budget, Decimal('30000'))
+
+    def test_assigned_rep_cannot_write_budget(self):
+        # The rep still has general write access to the project (assigned to
+        # its lead) -- the field itself is silently read-only for this role,
+        # same convention as project_manager (see ProjectSerializer.__init__).
+        self.client.force_authenticate(self.rep)
+        response = self.client.patch(
+            self.project_url, {'proposed_budget': '5000', 'currency': 'USD'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertIsNone(self.project.proposed_budget)
+        self.assertEqual(self.project.currency, '')
+
+    def test_unrelated_pm_cannot_write_budget(self):
+        other_pm = User.objects.create_user(username='pm2', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.client.force_authenticate(other_pm)
+        response = self.client.patch(self.project_url, {'proposed_budget': '5000'}, format='json')
+        # Not the managing PM -- scoped out of the queryset entirely.
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_system_admin_cannot_write_budget_or_the_project_at_all(self):
+        admin = User.objects.create_user(username='admin1', password='pass', role=User.Role.SYSTEM_ADMIN)
+        self.client.force_authenticate(admin)
+        response = self.client.patch(self.project_url, {'proposed_budget': '5000'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    # -- notes: writable by anyone who can edit the project ------------------
+
+    def test_assigned_rep_can_write_notes(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.patch(self.project_url, {'notes': 'Client wants weekly updates.'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.notes, 'Client wants weekly updates.')
+
+    def test_managing_pm_can_write_notes(self):
+        self.client.force_authenticate(self.pm)
+        response = self.client.patch(self.project_url, {'notes': 'PM note.'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.notes, 'PM note.')
+
+    def test_manager_can_write_notes(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.patch(self.project_url, {'notes': 'Manager note.'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_unrelated_rep_cannot_write_notes(self):
+        other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.client.force_authenticate(other_rep)
+        response = self.client.patch(self.project_url, {'notes': 'Should not save.'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
 class ProjectPhase1DealAdvanceTests(ProjectRequirementsTestMixin, APITestCase):

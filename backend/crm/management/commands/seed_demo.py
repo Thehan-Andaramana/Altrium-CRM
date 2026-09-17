@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from crm.models import (
     ActivityEvent, ApprovalRequest, Company, Contact, Interaction, Lead, PhaseRequirement, Project,
-    RequirementTemplate, User,
+    RequirementTemplate, TaskFormResponse, User,
 )
 from crm.serializers import ProjectSerializer
 
@@ -62,6 +62,7 @@ class Command(BaseCommand):
             'leads': [0, 0],
             'interactions': [0, 0],
             'approvals': [0, 0],
+            'form_answers': [0, 0],
         }
 
     @transaction.atomic
@@ -74,6 +75,7 @@ class Command(BaseCommand):
         leads = self._seed_leads(companies, contacts, rep1, rep2, mgr1)
         self._seed_interactions(leads, rep1, rep2, mgr1)
         self._seed_project_states(leads, mgr1, pm1)
+        self._seed_form_answers(leads, rep1, pm1)
         self._seed_status_change_requests(leads, rep1, rep2, mgr1)
         self._seed_archived_company(companies, mgr1)
 
@@ -498,6 +500,46 @@ class Command(BaseCommand):
         requirement.updated_by = lead.assigned_to
         requirement.save()
 
+    # -- task form answers ----------------------------------------------------
+    # A couple of already-COMPLETED tasks get their (required) form fields
+    # answered, so the demo doesn't show a "completed" task with an unfilled
+    # form -- plus one still-in-progress task with answers already saved, to
+    # show that saving answers and completing the task are separate actions.
+
+    def _answer_field(self, requirement, label, value, actor):
+        if requirement is None:
+            return
+        field = next((f for f in requirement.form_fields if f.label == label), None)
+        if field is None:
+            return
+        response, created = TaskFormResponse.objects.get_or_create(
+            requirement=requirement, field=field, defaults={'value': value, 'answered_by': actor},
+        )
+        self._track('form_answers', created)
+
+    def _seed_form_answers(self, leads, rep1, pm1):
+        alice_lead, _ = leads[('Acme Corp', 'Alice Anderson')]
+        grace_lead, _ = leads[('Globex Inc', 'Grace Green')]
+
+        for lead in (alice_lead, grace_lead):
+            requirement = lead.project.requirements.filter(phase=1, label='Requirement Discussion').first()
+            self._answer_field(requirement, 'Meeting date', (timezone.now() - timedelta(days=5)).date().isoformat(), rep1)
+            self._answer_field(requirement, 'Attendees', 'Client sponsor, technical lead, account rep.', rep1)
+            self._answer_field(
+                requirement, 'Key requirements captured',
+                'Needs SSO integration and a quarterly reporting export.', rep1,
+            )
+            self._answer_field(requirement, 'Follow-up needed', 'true', rep1)
+
+        # Grace Green's project has Phase 2 active (see
+        # _seed_completed_and_approved_phase) -- Budget Proposal has answers
+        # even though the task itself is still PENDING, demonstrating that
+        # answering a form and completing the task are separate steps.
+        budget_requirement = grace_lead.project.requirements.filter(phase=2, label='Budget Proposal').first()
+        self._answer_field(budget_requirement, 'Proposed budget', '18500', pm1)
+        self._answer_field(budget_requirement, 'Currency', 'USD', pm1)
+        self._answer_field(budget_requirement, 'Payment terms', 'Milestone-based', pm1)
+
     # -- lead status change requests ------------------------------------------
     # Now that neither a RESPONDED interaction nor a client-facing task
     # completion flips a lead's status (Sprint 2), LEAD_STATUS_CHANGE is the
@@ -628,6 +670,7 @@ class Command(BaseCommand):
             'contacts': 'Contacts',
             'leads': 'Leads',
             'interactions': 'Interactions',
+            'form_answers': 'Task form answers',
             'approvals': 'Approval requests',
         }
         for key, label in labels.items():

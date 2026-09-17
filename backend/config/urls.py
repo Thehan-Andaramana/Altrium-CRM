@@ -32,6 +32,7 @@ from crm.views import (
     ProjectViewSet,
     RequirementTemplateViewSet,
     SystemSettingsView,
+    TaskAttachmentViewSet,
     UserViewSet,
 )
 
@@ -44,6 +45,7 @@ router.register('users', UserViewSet, basename='user')
 router.register('projects', ProjectViewSet, basename='project')
 router.register('approvals', ApprovalRequestViewSet, basename='approvalrequest')
 router.register('requirements', PhaseRequirementViewSet, basename='phaserequirement')
+router.register('attachments', TaskAttachmentViewSet, basename='taskattachment')
 router.register('requirement-templates', RequirementTemplateViewSet, basename='requirementtemplate')
 
 urlpatterns = [

@@ -16,7 +16,7 @@ import Spinner from 'react-bootstrap/Spinner'
 import Tab from 'react-bootstrap/Tab'
 import Tabs from 'react-bootstrap/Tabs'
 import { useParams } from 'react-router-dom'
-import { get, patch, post } from '../api'
+import { del, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
@@ -58,6 +58,16 @@ const EXECUTION_STATUS_OPTIONS = [
   { value: 'REVIEW', label: 'Review' },
   { value: 'COMPLETED', label: 'Completed' },
 ]
+
+const EXECUTION_STATUS_LABELS = Object.fromEntries(EXECUTION_STATUS_OPTIONS.map((option) => [option.value, option.label]))
+
+// current_phase on the model isn't kept in sync as phases progress (see
+// Project model) -- the real "which phase are we in" answer is the first
+// phase whose status isn't COMPLETE yet, falling back to the last phase once
+// every phase (including maintenance) is done.
+function getCurrentPhaseNumber(project) {
+  return PHASE_NUMBERS.find((phaseNum) => project[`phase_${phaseNum}_status`] !== 'COMPLETE') ?? PHASE_NUMBERS.at(-1)
+}
 
 const PHASE_STATUS_BADGE_VARIANT = {
   NOT_STARTED: 'secondary',
@@ -315,6 +325,346 @@ function TaskDueDateGroup({ task, showHelpText }) {
   )
 }
 
+// Google Forms links need ?embedded=true to render inside an iframe instead
+// of refusing (Google's own embedding requirement) -- everything else is
+// passed straight through, iframe-or-not being something we can't reliably
+// detect client-side anyway (X-Frame-Options isn't inspectable from here).
+function normalizeEmbedUrl(url) {
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname === 'docs.google.com' && parsed.pathname.includes('/forms/')) {
+      parsed.searchParams.set('embedded', 'true')
+      return parsed.toString()
+    }
+    return url
+  } catch {
+    return url
+  }
+}
+
+function AttachmentPreviewModal({ attachment, onHide }) {
+  if (!attachment) {
+    return null
+  }
+
+  const downloadUrl = `/api/attachments/${attachment.id}/download/`
+  let body
+  if (attachment.kind === 'LINK') {
+    body = (
+      <>
+        <iframe
+          title={attachment.title}
+          src={normalizeEmbedUrl(attachment.url)}
+          style={{ width: '100%', height: '70vh', border: 0 }}
+        />
+        <div className="mt-2">
+          {/* Some sites refuse to render in an iframe (X-Frame-Options) with
+              no way for us to detect that up front -- always offer this. */}
+          <a href={attachment.url} target="_blank" rel="noreferrer">
+            Open in new tab
+          </a>
+        </div>
+      </>
+    )
+  } else if (attachment.content_type === 'application/pdf') {
+    body = <iframe title={attachment.title} src={downloadUrl} style={{ width: '100%', height: '70vh', border: 0 }} />
+  } else if (attachment.content_type?.startsWith('image/')) {
+    body = <img src={downloadUrl} alt={attachment.title} style={{ maxWidth: '100%' }} />
+  } else {
+    body = (
+      <a href={downloadUrl} target="_blank" rel="noreferrer">
+        Download {attachment.original_filename || attachment.title}
+      </a>
+    )
+  }
+
+  return (
+    <Modal show onHide={onHide} centered size="lg">
+      <Modal.Header closeButton>
+        <Modal.Title as="h2" className="h5 mb-0">
+          {attachment.title}
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>{body}</Modal.Body>
+    </Modal>
+  )
+}
+
+function TaskAttachmentsSection({ requirementId }) {
+  const { user } = useAuth()
+  const [attachments, setAttachments] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [previewAttachment, setPreviewAttachment] = useState(null)
+
+  const [addMode, setAddMode] = useState(null)
+  const [file, setFile] = useState(null)
+  const [linkUrl, setLinkUrl] = useState('')
+  const [linkTitle, setLinkTitle] = useState('')
+  const [addSaving, setAddSaving] = useState(false)
+  const [addError, setAddError] = useState(null)
+
+  const [deletingId, setDeletingId] = useState(null)
+  const [deleteError, setDeleteError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchAttachments() {
+      setLoading(true)
+      try {
+        const data = await get(`/api/attachments/?requirement=${requirementId}`)
+        if (!cancelled) setAttachments(data)
+      } catch {
+        if (!cancelled) setAttachments([])
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    fetchAttachments()
+    return () => {
+      cancelled = true
+    }
+  }, [requirementId])
+
+  function canDelete(attachment) {
+    return MANAGEMENT_ROLES.has(user?.role) || attachment.uploaded_by === user?.id
+  }
+
+  async function handleUploadFile(event) {
+    event.preventDefault()
+    if (!file) return
+    setAddSaving(true)
+    setAddError(null)
+    try {
+      const formData = new FormData()
+      formData.append('requirement', requirementId)
+      formData.append('kind', 'FILE')
+      formData.append('file', file)
+      const created = await post('/api/attachments/', formData)
+      setAttachments((prev) => [created, ...prev])
+      setAddMode(null)
+      setFile(null)
+    } catch {
+      setAddError('Failed to upload the file -- PDF, images and .docx only, up to 15 MB.')
+    } finally {
+      setAddSaving(false)
+    }
+  }
+
+  async function handleAddLink(event) {
+    event.preventDefault()
+    setAddSaving(true)
+    setAddError(null)
+    try {
+      const created = await post('/api/attachments/', {
+        requirement: requirementId,
+        kind: 'LINK',
+        url: linkUrl,
+        title: linkTitle,
+      })
+      setAttachments((prev) => [created, ...prev])
+      setAddMode(null)
+      setLinkUrl('')
+      setLinkTitle('')
+    } catch {
+      setAddError('Failed to add the link.')
+    } finally {
+      setAddSaving(false)
+    }
+  }
+
+  async function handleDelete(attachment) {
+    setDeletingId(attachment.id)
+    setDeleteError(null)
+    try {
+      await del(`/api/attachments/${attachment.id}/`)
+      setAttachments((prev) => prev.filter((a) => a.id !== attachment.id))
+    } catch {
+      setDeleteError('Failed to delete the attachment.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  return (
+    <div className="mt-3 pt-3 border-top">
+      <div className="d-flex justify-content-between align-items-center mb-2">
+        <div className="text-body-secondary small fw-semibold">Attachments</div>
+        <div className="d-flex gap-1">
+          <Button size="sm" variant="outline-secondary" onClick={() => setAddMode(addMode === 'file' ? null : 'file')}>
+            + File
+          </Button>
+          <Button size="sm" variant="outline-secondary" onClick={() => setAddMode(addMode === 'link' ? null : 'link')}>
+            + Link
+          </Button>
+        </div>
+      </div>
+
+      {deleteError && <Alert variant="danger" className="py-1 small">{deleteError}</Alert>}
+
+      {loading ? (
+        <Spinner animation="border" size="sm" />
+      ) : attachments.length === 0 ? (
+        <p className="text-body-secondary small mb-2">No attachments yet.</p>
+      ) : (
+        <ListGroup variant="flush" className="mb-2">
+          {attachments.map((attachment) => (
+            <ListGroup.Item key={attachment.id} className="d-flex justify-content-between align-items-center py-1 px-0">
+              <Button variant="link" className="p-0 text-start" onClick={() => setPreviewAttachment(attachment)}>
+                {attachment.title || attachment.original_filename || attachment.url}
+              </Button>
+              {canDelete(attachment) && (
+                <Button
+                  size="sm"
+                  variant="link"
+                  className="text-danger p-0"
+                  disabled={deletingId === attachment.id}
+                  onClick={() => handleDelete(attachment)}
+                >
+                  Delete
+                </Button>
+              )}
+            </ListGroup.Item>
+          ))}
+        </ListGroup>
+      )}
+
+      {addMode === 'file' && (
+        <Form onSubmit={handleUploadFile} className="d-flex gap-2 align-items-center mb-2">
+          <Form.Control
+            size="sm"
+            type="file"
+            onChange={(event) => setFile(event.target.files[0] ?? null)}
+            required
+          />
+          <Button size="sm" type="submit" disabled={addSaving || !file}>
+            {addSaving ? 'Uploading…' : 'Upload'}
+          </Button>
+        </Form>
+      )}
+      {addMode === 'link' && (
+        <Form onSubmit={handleAddLink} className="d-flex flex-column gap-2 mb-2">
+          <Form.Control
+            size="sm"
+            placeholder="Title"
+            value={linkTitle}
+            onChange={(event) => setLinkTitle(event.target.value)}
+            required
+          />
+          <Form.Control
+            size="sm"
+            type="url"
+            placeholder="https://…"
+            value={linkUrl}
+            onChange={(event) => setLinkUrl(event.target.value)}
+            required
+          />
+          <Button size="sm" type="submit" disabled={addSaving} className="align-self-start">
+            {addSaving ? 'Adding…' : 'Add link'}
+          </Button>
+        </Form>
+      )}
+      {addError && <Alert variant="danger" className="py-1 small">{addError}</Alert>}
+
+      <AttachmentPreviewModal attachment={previewAttachment} onHide={() => setPreviewAttachment(null)} />
+    </div>
+  )
+}
+
+// Builds { fieldId: value } from the task's saved form_responses, defaulting
+// any field with no saved response yet to '' -- the shape both the read-only
+// summary and the editor key off of.
+function buildInitialAnswers(task) {
+  const responsesByField = Object.fromEntries((task.form_responses ?? []).map((r) => [r.field, r.value]))
+  return Object.fromEntries((task.form_fields ?? []).map((f) => [f.id, responsesByField[f.id] ?? '']))
+}
+
+function formatAnswerValue(field, value) {
+  if (!value) return '—'
+  if (field.field_type === 'CHECKBOX') return value === 'true' ? 'Yes' : 'No'
+  if (field.field_type === 'DATE') return new Date(value).toLocaleDateString()
+  return value
+}
+
+function TaskFormFieldsReadOnly({ task }) {
+  const fields = task.form_fields ?? []
+  if (fields.length === 0) return null
+  const responsesByField = Object.fromEntries((task.form_responses ?? []).map((r) => [r.field, r.value]))
+  return (
+    <div className="mb-3">
+      <div className="text-body-secondary small fw-semibold mb-1">Form answers</div>
+      {fields.map((field) => (
+        <div key={field.id} className="mb-2">
+          <div className="text-body-secondary small">{field.label}</div>
+          <div>{formatAnswerValue(field, responsesByField[field.id])}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function TaskFormFieldsEditor({ fields, answers, onChange }) {
+  if (fields.length === 0) return null
+  return (
+    <div className="mb-3">
+      <div className="text-body-secondary small fw-semibold mb-2">Form</div>
+      {fields.map((field) => (
+        <Form.Group className="mb-3" key={field.id} controlId={`task-form-field-${field.id}`}>
+          {field.field_type === 'CHECKBOX' ? (
+            <Form.Check
+              type="checkbox"
+              label={field.required ? `${field.label} *` : field.label}
+              checked={answers[field.id] === 'true'}
+              onChange={(event) => onChange(field.id, event.target.checked ? 'true' : 'false')}
+            />
+          ) : (
+            <>
+              <Form.Label>
+                {field.label}
+                {field.required && <span className="text-danger"> *</span>}
+              </Form.Label>
+              {field.field_type === 'TEXTAREA' ? (
+                <Form.Control
+                  as="textarea"
+                  rows={2}
+                  value={answers[field.id] ?? ''}
+                  onChange={(event) => onChange(field.id, event.target.value)}
+                />
+              ) : field.field_type === 'SELECT' ? (
+                <Form.Select
+                  value={answers[field.id] ?? ''}
+                  onChange={(event) => onChange(field.id, event.target.value)}
+                >
+                  <option value="">Choose…</option>
+                  {(field.options ?? []).map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </Form.Select>
+              ) : (
+                <Form.Control
+                  type={
+                    field.field_type === 'DATE'
+                      ? 'date'
+                      : field.field_type === 'NUMBER' || field.field_type === 'CURRENCY'
+                        ? 'number'
+                        : 'text'
+                  }
+                  value={answers[field.id] ?? ''}
+                  onChange={(event) => onChange(field.id, event.target.value)}
+                />
+              )}
+            </>
+          )}
+          {field.help_text && <Form.Text muted>{field.help_text}</Form.Text>}
+        </Form.Group>
+      ))}
+    </div>
+  )
+}
+
 function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEdit, onHide }) {
   const awaitingConfirmation =
     task.status === 'COMPLETED'
@@ -343,6 +693,7 @@ function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEd
             <div>{new Date(task.committed_date).toLocaleDateString()}</div>
           </div>
         )}
+        <TaskFormFieldsReadOnly task={task} />
         <div className="mb-3">
           <div className="text-body-secondary small">Notes</div>
           <div>{task.notes || '—'}</div>
@@ -367,6 +718,7 @@ function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEd
             )}
           </div>
         )}
+        <TaskAttachmentsSection requirementId={task.id} />
       </Modal.Body>
       <Modal.Footer>
         {canConfirm && awaitingConfirmation && (
@@ -393,11 +745,31 @@ function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm
   const [draftStatus, setDraftStatus] = useState(task.status)
   const [draftNotes, setDraftNotes] = useState(task.notes ?? '')
   const [draftCommittedDate, setDraftCommittedDate] = useState(task.committed_date ?? '')
+  const [answers, setAnswers] = useState(() => buildInitialAnswers(task))
+  const [formError, setFormError] = useState(null)
+
+  const fields = task.form_fields ?? []
 
   const awaitingConfirmation =
     task.status === 'COMPLETED'
     && (task.confirmation_authority === 'MANAGER' || task.confirmation_authority === 'PROJECT_MANAGER')
     && !task.confirmed_by
+
+  function updateAnswer(fieldId, value) {
+    setAnswers((prev) => ({ ...prev, [fieldId]: value }))
+  }
+
+  function handleSaveClick() {
+    if (draftStatus === 'COMPLETED') {
+      const missing = fields.filter((field) => field.required && !answers[field.id]).map((field) => field.label)
+      if (missing.length > 0) {
+        setFormError(`Missing required fields: ${missing.join(', ')}.`)
+        return
+      }
+    }
+    setFormError(null)
+    onSave(draftStatus, draftNotes, draftCommittedDate, answers)
+  }
 
   return (
     <>
@@ -408,7 +780,7 @@ function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm
       </Modal.Header>
       <Modal.Body>
         {task.description && <p className="text-body-secondary">{task.description}</p>}
-        {error && <Alert variant="danger">{error}</Alert>}
+        {(formError || error) && <Alert variant="danger">{formError || error}</Alert>}
         <Form.Group className="mb-3" controlId="task-status">
           <Form.Label>Status</Form.Label>
           <Form.Select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
@@ -431,6 +803,7 @@ function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm
             Set this when a client agrees a date on a call -- the earlier of this and the due date above is used.
           </Form.Text>
         </Form.Group>
+        <TaskFormFieldsEditor fields={fields} answers={answers} onChange={updateAnswer} />
         <Form.Group className="mb-3" controlId="task-notes">
           <Form.Label>Notes</Form.Label>
           <Form.Control
@@ -452,6 +825,7 @@ function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm
             'Not yet updated.'
           )}
         </div>
+        <TaskAttachmentsSection requirementId={task.id} />
       </Modal.Body>
       <Modal.Footer>
         {canConfirm && awaitingConfirmation && (
@@ -462,7 +836,7 @@ function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm
         <Button variant="secondary" onClick={onHide} disabled={saving}>
           Cancel
         </Button>
-        <Button variant="primary" disabled={saving} onClick={() => onSave(draftStatus, draftNotes, draftCommittedDate)}>
+        <Button variant="primary" disabled={saving} onClick={handleSaveClick}>
           {saving ? 'Saving…' : 'Save'}
         </Button>
       </Modal.Footer>
@@ -523,6 +897,86 @@ function TaskDetailModal({ task, canConfirm, canEdit, saving, error, onSave, onC
   )
 }
 
+const TASK_AUTHORITY_OPTIONS = [
+  { value: 'REP', label: 'Rep' },
+  { value: 'PROJECT_MANAGER', label: 'Project Manager' },
+  { value: 'MANAGER', label: 'Manager' },
+]
+
+function AddTaskForm({ phaseNum, saving, error, onSave, onHide }) {
+  const [label, setLabel] = useState('')
+  const [description, setDescription] = useState('')
+  const [confirmationAuthority, setConfirmationAuthority] = useState('REP')
+  const [dueDate, setDueDate] = useState('')
+
+  return (
+    <Form
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSave({ label, description, confirmationAuthority, dueDate })
+      }}
+    >
+      <Modal.Header closeButton>
+        <Modal.Title as="h2" className="h5 mb-0">
+          Add Task to Phase {phaseNum}
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {error && <Alert variant="danger">{error}</Alert>}
+        <Form.Group className="mb-3" controlId="add-task-label">
+          <Form.Label>Label</Form.Label>
+          <Form.Control value={label} onChange={(event) => setLabel(event.target.value)} required />
+        </Form.Group>
+        <Form.Group className="mb-3" controlId="add-task-description">
+          <Form.Label>Description</Form.Label>
+          <Form.Control
+            as="textarea"
+            rows={2}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </Form.Group>
+        <Form.Group className="mb-3" controlId="add-task-authority">
+          <Form.Label>Confirmation authority</Form.Label>
+          <Form.Select
+            value={confirmationAuthority}
+            onChange={(event) => setConfirmationAuthority(event.target.value)}
+          >
+            {TASK_AUTHORITY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Form.Select>
+        </Form.Group>
+        <Form.Group controlId="add-task-due-date">
+          <Form.Label>Due date</Form.Label>
+          <Form.Control type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
+          <Form.Text muted>Optional -- leave blank for no deadline.</Form.Text>
+        </Form.Group>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onHide} disabled={saving}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" disabled={saving}>
+          {saving ? 'Creating…' : 'Create'}
+        </Button>
+      </Modal.Footer>
+    </Form>
+  )
+}
+
+function AddTaskModal({ phaseNum, saving, error, onSave, onHide }) {
+  return (
+    <Modal show={phaseNum !== null} onHide={onHide} centered>
+      {phaseNum !== null && (
+        <AddTaskForm key={phaseNum} phaseNum={phaseNum} saving={saving} error={error} onSave={onSave} onHide={onHide} />
+      )}
+    </Modal>
+  )
+}
+
 function PhaseCard({
   phaseNum,
   status,
@@ -536,6 +990,8 @@ function PhaseCard({
   executionStatusSaving,
   onExecutionStatusChange,
   phase3Complete,
+  canAddTask,
+  onAddTask,
 }) {
   const allComplete = progress.total > 0 && progress.completed === progress.total
   const isPhase3 = phaseNum === 3
@@ -585,22 +1041,227 @@ function PhaseCard({
             </Form.Select>
           </Form.Group>
         )}
-        {canRequestSignoff && (
-          <Button
-            size="sm"
-            variant="outline-primary"
-            disabled={pendingSignoff}
-            onClick={() => onRequestSignoff(phaseNum)}
-          >
-            {pendingSignoff ? 'Sign-off requested' : 'Request sign-off'}
-          </Button>
-        )}
+        <div className="d-flex gap-2">
+          {canRequestSignoff && (
+            <Button
+              size="sm"
+              variant="outline-primary"
+              disabled={pendingSignoff}
+              onClick={() => onRequestSignoff(phaseNum)}
+            >
+              {pendingSignoff ? 'Sign-off requested' : 'Request sign-off'}
+            </Button>
+          )}
+          {canAddTask && (
+            <Button size="sm" variant="outline-secondary" onClick={() => onAddTask(phaseNum)}>
+              + Add task
+            </Button>
+          )}
+        </div>
       </Card.Body>
     </Card>
   )
 }
 
-function PhaseTracker({ leadId, leadAssignedTo }) {
+function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
+  const { user } = useAuth()
+  const [project, setProject] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  const [editingBudget, setEditingBudget] = useState(false)
+  const [budgetDraft, setBudgetDraft] = useState('')
+  const [currencyDraft, setCurrencyDraft] = useState('')
+  const [budgetSaving, setBudgetSaving] = useState(false)
+  const [budgetError, setBudgetError] = useState(null)
+
+  const [notesDraft, setNotesDraft] = useState('')
+  const [notesSaving, setNotesSaving] = useState(false)
+  const [notesError, setNotesError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchProject() {
+      setLoading(true)
+      try {
+        const data = await get(`/api/projects/?lead=${leadId}&include_archived=true`)
+        const found = data[0] ?? null
+        if (cancelled) return
+        setProject(found)
+        setBudgetDraft(found?.proposed_budget ?? '')
+        setCurrencyDraft(found?.currency ?? '')
+        setNotesDraft(found?.notes ?? '')
+      } catch {
+        if (!cancelled) setProject(null)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    fetchProject()
+    return () => {
+      cancelled = true
+    }
+  }, [leadId, refreshToken])
+
+  if (loading || !project) {
+    return null
+  }
+
+  const isAssignedPM = user?.role === 'PROJECT_MANAGER' && project.project_manager === user.id
+  const canEditBudget = MANAGER_ROLES.has(user?.role) || isAssignedPM
+  const canEditNotes =
+    canEditBudget || (user?.role === 'SALES_REP' && leadAssignedTo === user?.id)
+  const notesChanged = notesDraft !== (project.notes ?? '')
+
+  async function handleSaveBudget() {
+    setBudgetSaving(true)
+    setBudgetError(null)
+    try {
+      const updated = await patch(`/api/projects/${project.id}/`, {
+        proposed_budget: budgetDraft === '' ? null : budgetDraft,
+        currency: currencyDraft,
+      })
+      setProject(updated)
+      setEditingBudget(false)
+    } catch {
+      setBudgetError('Failed to save the budget.')
+    } finally {
+      setBudgetSaving(false)
+    }
+  }
+
+  async function handleSaveNotes() {
+    setNotesSaving(true)
+    setNotesError(null)
+    try {
+      const updated = await patch(`/api/projects/${project.id}/`, { notes: notesDraft })
+      setProject(updated)
+    } catch {
+      setNotesError('Failed to save notes.')
+    } finally {
+      setNotesSaving(false)
+    }
+  }
+
+  return (
+    <Card className="mb-4">
+      <Card.Body>
+        <Row className="gy-3">
+          <Col sm={6} md={3}>
+            <div className="text-body-secondary small">Proposed budget</div>
+            {editingBudget ? (
+              <div className="d-flex gap-1">
+                <Form.Control
+                  size="sm"
+                  type="number"
+                  step="0.01"
+                  style={{ maxWidth: '7rem' }}
+                  value={budgetDraft}
+                  onChange={(event) => setBudgetDraft(event.target.value)}
+                  disabled={budgetSaving}
+                />
+                <Form.Control
+                  size="sm"
+                  type="text"
+                  placeholder="USD"
+                  maxLength={8}
+                  style={{ maxWidth: '5rem' }}
+                  value={currencyDraft}
+                  onChange={(event) => setCurrencyDraft(event.target.value)}
+                  disabled={budgetSaving}
+                />
+              </div>
+            ) : (
+              <div>
+                {project.proposed_budget
+                  ? `${project.currency ? `${project.currency} ` : ''}${project.proposed_budget}`
+                  : '—'}
+              </div>
+            )}
+            {canEditBudget && (
+              <div className="mt-1">
+                {editingBudget ? (
+                  <>
+                    <Button size="sm" variant="link" className="p-0 me-2" disabled={budgetSaving} onClick={handleSaveBudget}>
+                      {budgetSaving ? 'Saving…' : 'Save'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="link"
+                      className="p-0 text-body-secondary"
+                      disabled={budgetSaving}
+                      onClick={() => {
+                        setEditingBudget(false)
+                        setBudgetDraft(project.proposed_budget ?? '')
+                        setCurrencyDraft(project.currency ?? '')
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" variant="link" className="p-0" onClick={() => setEditingBudget(true)}>
+                    Edit
+                  </Button>
+                )}
+              </div>
+            )}
+            {budgetError && <div className="text-danger small mt-1">{budgetError}</div>}
+          </Col>
+          <Col sm={6} md={3}>
+            <div className="text-body-secondary small">Current phase</div>
+            <div>Phase {getCurrentPhaseNumber(project)}</div>
+          </Col>
+          <Col sm={6} md={3}>
+            <div className="text-body-secondary small">Phase 3 execution status</div>
+            <div>
+              {project.phase_3_execution_status
+                ? EXECUTION_STATUS_LABELS[project.phase_3_execution_status] ?? project.phase_3_execution_status
+                : '—'}
+            </div>
+          </Col>
+          <Col sm={6} md={3}>
+            <div className="text-body-secondary small">Overall progress</div>
+            <div className="d-flex align-items-center gap-2">
+              <ProgressBar now={project.overall_progress} className="progress-thin flex-grow-1" />
+              <span className="small text-body-secondary flex-shrink-0">{project.overall_progress}%</span>
+            </div>
+          </Col>
+          <Col sm={6} md={3}>
+            <div className="text-body-secondary small">Project Manager</div>
+            <div>{project.project_manager_username ?? 'Unassigned'}</div>
+          </Col>
+        </Row>
+        <div className="mt-3 pt-3 border-top">
+          <div className="text-body-secondary small mb-1">Notes</div>
+          <Form.Control
+            as="textarea"
+            rows={2}
+            value={notesDraft}
+            disabled={!canEditNotes || notesSaving}
+            onChange={(event) => setNotesDraft(event.target.value)}
+          />
+          {canEditNotes && (
+            <div className="mt-1">
+              <Button
+                size="sm"
+                variant="outline-secondary"
+                disabled={notesSaving || !notesChanged}
+                onClick={handleSaveNotes}
+              >
+                {notesSaving ? 'Saving…' : 'Save notes'}
+              </Button>
+            </div>
+          )}
+          {notesError && <div className="text-danger small mt-1">{notesError}</div>}
+        </div>
+      </Card.Body>
+    </Card>
+  )
+}
+
+function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
   const { user } = useAuth()
   const canManageProject = MANAGER_ROLES.has(user?.role)
 
@@ -630,6 +1291,10 @@ function PhaseTracker({ leadId, leadAssignedTo }) {
 
   const [executionStatusSaving, setExecutionStatusSaving] = useState(false)
   const [executionStatusError, setExecutionStatusError] = useState(null)
+
+  const [addTaskPhase, setAddTaskPhase] = useState(null)
+  const [addTaskSaving, setAddTaskSaving] = useState(false)
+  const [addTaskError, setAddTaskError] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -678,6 +1343,11 @@ function PhaseTracker({ leadId, leadAssignedTo }) {
   async function refreshProject() {
     const refreshed = await get(`/api/projects/${project.id}/?include_archived=true`)
     setProject(refreshed)
+    // Lets the sibling ProjectSummaryPanel (proposed_budget/current phase/
+    // etc., which fetches independently) know to refetch too -- covers every
+    // path that can change those fields, including the Budget Proposal
+    // task's auto-population, without threading project state through props.
+    onProjectChange?.()
   }
 
   useEffect(() => {
@@ -734,11 +1404,17 @@ function PhaseTracker({ leadId, leadAssignedTo }) {
     }
   }
 
-  async function applyTaskUpdate(payload) {
+  async function applyTaskUpdate(payload, answers) {
     if (!activeTask) return
     setTaskSaving(true)
     setTaskError(null)
     try {
+      // Answers are saved through their own endpoint (so the completion gate
+      // below sees them as already-saved) before the status/notes PATCH.
+      if (answers && (activeTask.form_fields ?? []).length > 0) {
+        const responses = Object.entries(answers).map(([field, value]) => ({ field: Number(field), value }))
+        await post(`/api/requirements/${activeTask.id}/answers/`, { responses })
+      }
       const updated = await patch(`/api/requirements/${activeTask.id}/`, payload)
       setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
       await refreshProject()
@@ -750,8 +1426,8 @@ function PhaseTracker({ leadId, leadAssignedTo }) {
     }
   }
 
-  function handleSaveTask(taskStatus, notes, committedDate) {
-    applyTaskUpdate({ status: taskStatus, notes, committed_date: committedDate || null })
+  function handleSaveTask(taskStatus, notes, committedDate, answers) {
+    applyTaskUpdate({ status: taskStatus, notes, committed_date: committedDate || null }, answers)
   }
 
   function handleConfirmTask() {
@@ -777,6 +1453,28 @@ function PhaseTracker({ leadId, leadAssignedTo }) {
       await refreshProject()
     } catch {
       setSignoffError(`Failed to request phase ${phaseNum} sign-off.`)
+    }
+  }
+
+  async function handleAddTask({ label, description, confirmationAuthority, dueDate }) {
+    setAddTaskSaving(true)
+    setAddTaskError(null)
+    try {
+      const created = await post('/api/requirements/', {
+        project: project.id,
+        phase: addTaskPhase,
+        label,
+        description,
+        confirmation_authority: confirmationAuthority,
+        due_date: dueDate || null,
+      })
+      setTasks((prev) => [...prev, created])
+      await refreshProject()
+      setAddTaskPhase(null)
+    } catch {
+      setAddTaskError('Failed to create the task.')
+    } finally {
+      setAddTaskSaving(false)
     }
   }
 
@@ -894,6 +1592,8 @@ function PhaseTracker({ leadId, leadAssignedTo }) {
               executionStatusSaving={executionStatusSaving}
               onExecutionStatusChange={handleExecutionStatusChange}
               phase3Complete={project.phase_3_status === 'COMPLETE'}
+              canAddTask={canEditTasks}
+              onAddTask={setAddTaskPhase}
             />
           ))}
         </>
@@ -908,6 +1608,14 @@ function PhaseTracker({ leadId, leadAssignedTo }) {
         onSave={handleSaveTask}
         onConfirm={handleConfirmTask}
         onHide={closeTaskModal}
+      />
+
+      <AddTaskModal
+        phaseNum={addTaskPhase}
+        saving={addTaskSaving}
+        error={addTaskError}
+        onSave={handleAddTask}
+        onHide={() => setAddTaskPhase(null)}
       />
     </div>
   )
@@ -1199,6 +1907,12 @@ export default function LeadDetail() {
   const [statusChangeError, setStatusChangeError] = useState(null)
   const [pendingStatusChangeRequest, setPendingStatusChangeRequest] = useState(null)
 
+  // Bumped whenever PhaseTracker refreshes the project (task completion, PM
+  // assignment, execution status, phase changes) so ProjectSummaryPanel --
+  // which fetches the project independently -- knows to refetch too.
+  const [projectRefreshToken, setProjectRefreshToken] = useState(0)
+  const bumpProjectRefresh = () => setProjectRefreshToken((token) => token + 1)
+
   useEffect(() => {
     let cancelled = false
 
@@ -1436,6 +2150,12 @@ export default function LeadDetail() {
             </div>
           </div>
 
+          <ProjectSummaryPanel
+            leadId={lead.id}
+            leadAssignedTo={lead.assigned_to}
+            refreshToken={projectRefreshToken}
+          />
+
           <Row className="mb-4 gy-2">
             <Col sm={6} md={3}>
               <div className="text-body-secondary small">Assigned to</div>
@@ -1490,7 +2210,11 @@ export default function LeadDetail() {
 
           <Tabs defaultActiveKey="phases" id="lead-detail-tabs" className="mb-4">
             <Tab eventKey="phases" title="Phases">
-              <PhaseTracker leadId={lead.id} leadAssignedTo={lead.assigned_to} />
+              <PhaseTracker
+                leadId={lead.id}
+                leadAssignedTo={lead.assigned_to}
+                onProjectChange={bumpProjectRefresh}
+              />
             </Tab>
             <Tab
               eventKey="activity"

@@ -147,6 +147,14 @@ STATIC_URL = 'static/'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# TaskAttachment files live here instead of under MEDIA_ROOT -- these are
+# client-confidential documents, and MEDIA_ROOT is served unauthenticated via
+# django.views.static.serve (see config/urls.py's DEBUG-only static() call).
+# Nothing maps this directory to a public URL; it's only ever read through
+# TaskAttachmentViewSet.download, which re-runs the same permission check as
+# everywhere else before streaming the file.
+PRIVATE_MEDIA_ROOT = BASE_DIR / 'private_media'
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
