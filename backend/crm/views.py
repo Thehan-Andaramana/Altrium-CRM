@@ -244,7 +244,8 @@ class LeadViewSet(viewsets.ModelViewSet):
         lead = self.get_object()
         tagged = [
             ('INTERACTION', 'INTERACTION', i.occurred_at, i)
-            for i in lead.interactions.select_related('created_by').prefetch_related('mentions__user')
+            for i in lead.interactions.select_related('created_by', 'lead__project')
+            .prefetch_related('mentions__user')
         ] + [
             ('APPROVAL_REQUEST', 'APPROVAL', a.created_at, a)
             for a in ApprovalRequest.objects.filter(
@@ -315,7 +316,10 @@ class InteractionViewSet(viewsets.ModelViewSet):
     ordering = ['-occurred_at']
 
     def get_queryset(self):
-        queryset = Interaction.objects.select_related('lead', 'created_by').prefetch_related('mentions__user')
+        queryset = (
+            Interaction.objects.select_related('lead', 'lead__project', 'created_by')
+            .prefetch_related('mentions__user')
+        )
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(lead__assigned_to=user)
@@ -624,7 +628,7 @@ class MentionViewSet(
 
     def get_queryset(self):
         queryset = Mention.objects.filter(user=self.request.user).select_related(
-            'interaction__lead', 'created_by',
+            'interaction__lead', 'created_by', 'task',
         )
         if self.action == 'list':
             queryset = queryset.filter(read_at__isnull=True)

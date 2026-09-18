@@ -18,6 +18,7 @@ from .models import (
     Project,
     RequirementTemplate,
     SystemSettings,
+    TASK_REFERENCE_PATTERN,
     TaskAttachment,
     TaskFormField,
     TaskFormResponse,
@@ -206,17 +207,35 @@ class InteractionSerializer(serializers.ModelSerializer):
     # real mentions in `notes` rather than re-parsing (and mis-highlighting
     # unknown-username or self-mention "@word" text) on the client.
     mentioned_usernames = serializers.SerializerMethodField()
+    # Every "#<id>" in notes that resolves to a real task on this
+    # interaction's own project -- unlike mentioned_usernames, this is NOT
+    # sourced from Mention rows: a task reference renders as a link
+    # regardless of who wrote it or whether it happened to notify anyone
+    # (see Interaction._create_task_mentions, which is the notify-or-not
+    # decision; this field is purely "what's linkable").
+    referenced_tasks = serializers.SerializerMethodField()
 
     class Meta:
         model = Interaction
         fields = [
             'id', 'lead', 'type', 'outcome', 'notes', 'occurred_at', 'created_by', 'created_by_username',
-            'mentioned_usernames',
+            'mentioned_usernames', 'referenced_tasks',
         ]
         read_only_fields = ['created_by']
 
     def get_mentioned_usernames(self, obj):
-        return list(obj.mentions.values_list('user__username', flat=True))
+        # Filtering in Python (not .filter() on the manager) so this can use
+        # the ViewSet's mentions__user prefetch instead of a fresh query.
+        return [m.user.username for m in obj.mentions.all() if m.task_id is None]
+
+    def get_referenced_tasks(self, obj):
+        task_ids = {int(match) for match in TASK_REFERENCE_PATTERN.findall(obj.notes or '')}
+        if not task_ids:
+            return []
+        # Lead.project is a reverse OneToOne descriptor, not a field -- no
+        # project_id shortcut, so this fetches the Project itself.
+        tasks = PhaseRequirement.objects.filter(pk__in=task_ids, project=obj.lead.project)
+        return [{'id': task.id, 'label': task.label} for task in tasks]
 
     def validate(self, attrs):
         itype = attrs.get('type', getattr(self.instance, 'type', None))
@@ -239,6 +258,10 @@ class MentionSerializer(serializers.ModelSerializer):
     lead_id = serializers.IntegerField(source='interaction.lead_id', read_only=True)
     lead_name = serializers.CharField(source='interaction.lead.name', read_only=True)
     note_snippet = serializers.SerializerMethodField()
+    # Only set when this notification exists because a task was tagged
+    # ("#42"), not a plain "@username" mention -- lets the notification
+    # centre say "tagged your task X" instead of the generic note snippet.
+    task_label = serializers.CharField(source='task.label', read_only=True, default=None)
 
     SNIPPET_LENGTH = 140
 
@@ -246,6 +269,7 @@ class MentionSerializer(serializers.ModelSerializer):
         model = Mention
         fields = [
             'id', 'interaction', 'lead_id', 'lead_name', 'note_snippet',
+            'task', 'task_label',
             'created_by', 'created_by_username', 'created_at', 'read_at',
         ]
         # Every field is read-only -- a Mention is only ever created as a
@@ -617,6 +641,32 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
             for field_name in self.CREATE_ONLY_FIELDS:
                 self.fields[field_name].read_only = True
 
+    # Who may move a task INTO Completed is purely a function of its phase,
+    # not its confirmation_authority (that governs a separate, later
+    # confirmation step -- see update()). Phase 1/4 are the assigned rep's;
+    # phase 2/3 are the assigned PM's -- a PM can't complete a rep's task and
+    # a rep can't complete a PM's, and no management role can complete any
+    # task at all (they read, confirm, and edit metadata, never complete).
+    # The phase->role mapping and "who is that, concretely" resolution live
+    # on PhaseRequirement itself (COMPLETION_ROLE_BY_PHASE/responsible_user)
+    # since Interaction._create_task_mentions needs the exact same rule to
+    # decide who a tagged task notifies.
+    @classmethod
+    def _user_can_complete(cls, instance, user):
+        if user is None:
+            return False
+        required_role = PhaseRequirement.COMPLETION_ROLE_BY_PHASE.get(instance.phase)
+        if user.role != required_role:
+            return False
+        responsible = instance.responsible_user
+        return responsible is not None and responsible.id == user.id
+
+    @staticmethod
+    def _completion_denied_message(instance):
+        if instance.phase in (1, 4):
+            return 'Only the sales rep assigned to this lead can mark this task complete.'
+        return 'Only the project manager assigned to this project can mark this task complete.'
+
     def validate(self, attrs):
         # confirmed_by/confirmed_at/is_custom/created_by are read-only, so
         # DRF would otherwise just silently drop them from the input --
@@ -628,11 +678,22 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
                 field: 'This field is set automatically and cannot be provided directly.' for field in submitted
             })
 
-        # A task with required fields can't complete until every one of them
-        # has a saved (non-blank) answer -- checked against whatever is
-        # already saved, since answers are written through a separate
-        # endpoint (PhaseRequirementViewSet.answers), not this PATCH.
         if self.instance is not None and attrs.get('status') == PhaseRequirement.Status.COMPLETED:
+            newly_completing = self.instance.status != PhaseRequirement.Status.COMPLETED
+            if newly_completing:
+                # A resend of the same already-COMPLETED value is a
+                # confirmation attempt (see update()), not a completion --
+                # this gate only applies to an actual transition into it.
+                request = self.context.get('request')
+                user = request.user if request else None
+                if not self._user_can_complete(self.instance, user):
+                    raise serializers.ValidationError({'status': self._completion_denied_message(self.instance)})
+
+            # A task with required fields can't complete until every one of
+            # them has a saved (non-blank) answer -- checked against
+            # whatever is already saved, since answers are written through a
+            # separate endpoint (PhaseRequirementViewSet.answers), not this
+            # PATCH.
             required_fields = [f for f in self.instance.form_fields if f.required]
             if required_fields:
                 answered_field_ids = set(
@@ -683,19 +744,28 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
         newly_confirmed = False
         if new_status == PhaseRequirement.Status.COMPLETED:
             if instance.status != PhaseRequirement.Status.COMPLETED:
+                # A fresh completion never also confirms it in the same
+                # request, even for a confirmation_authority the completer
+                # would otherwise be eligible to confirm (e.g. the PM who
+                # completes a PROJECT_MANAGER-authority Phase 2 task) --
+                # completion and confirmation are deliberately separate
+                # actions, so confirming always takes its own subsequent
+                # PATCH (validate() only lets this branch run for whoever
+                # this task's phase says may complete it in the first place).
                 validated_data['completed_at'] = timezone.now()
-            can_confirm = False
-            if instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.MANAGER:
-                can_confirm = user is not None and user.role in FULL_ACCESS_ROLES
-            elif instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.PROJECT_MANAGER:
-                can_confirm = user is not None and (
-                    user.role in FULL_ACCESS_ROLES
-                    or (user.role == User.Role.PROJECT_MANAGER and instance.project.project_manager_id == user.id)
-                )
-            if can_confirm:
-                validated_data['confirmed_by'] = user
-                validated_data['confirmed_at'] = timezone.now()
-                newly_confirmed = instance.confirmed_by_id is None
+            else:
+                can_confirm = False
+                if instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.MANAGER:
+                    can_confirm = user is not None and user.role in FULL_ACCESS_ROLES
+                elif instance.confirmation_authority == PhaseRequirement.ConfirmationAuthority.PROJECT_MANAGER:
+                    can_confirm = user is not None and (
+                        user.role in FULL_ACCESS_ROLES
+                        or (user.role == User.Role.PROJECT_MANAGER and instance.project.project_manager_id == user.id)
+                    )
+                if can_confirm:
+                    validated_data['confirmed_by'] = user
+                    validated_data['confirmed_at'] = timezone.now()
+                    newly_confirmed = instance.confirmed_by_id is None
         else:
             validated_data['confirmed_by'] = None
             validated_data['confirmed_at'] = None

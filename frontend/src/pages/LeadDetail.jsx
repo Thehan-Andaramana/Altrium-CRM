@@ -15,7 +15,7 @@ import Row from 'react-bootstrap/Row'
 import Spinner from 'react-bootstrap/Spinner'
 import Tab from 'react-bootstrap/Tab'
 import Tabs from 'react-bootstrap/Tabs'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { del, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
@@ -97,6 +97,16 @@ const TASK_STATUS_BADGE_VARIANT = {
   IN_PROGRESS: 'info',
   COMPLETED: 'success',
   NOT_APPLICABLE: 'secondary',
+}
+
+// Mirrors PhaseRequirementSerializer.COMPLETION_ROLE_BY_PHASE on the backend
+// -- who is allowed to move a task INTO Completed depends only on its phase,
+// never on confirmation_authority or a general "can edit this task" right.
+function completionResponsibilityMessage(task) {
+  if (task.phase === 1 || task.phase === 4) {
+    return 'Only the sales rep assigned to this lead can mark this task complete.'
+  }
+  return 'Only the project manager assigned to this project can mark this task complete.'
 }
 
 // A task that's already done just displays what was recorded -- opening it
@@ -739,7 +749,7 @@ function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEd
   )
 }
 
-function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailEditForm({ task, canConfirm, canComplete, saving, error, onSave, onConfirm, onHide }) {
   // Keyed by task.id from the parent, so switching tasks remounts this with
   // fresh initial state instead of needing an effect to resync it.
   const [draftStatus, setDraftStatus] = useState(task.status)
@@ -781,16 +791,26 @@ function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm
       <Modal.Body>
         {task.description && <p className="text-body-secondary">{task.description}</p>}
         {(formError || error) && <Alert variant="danger">{formError || error}</Alert>}
-        <Form.Group className="mb-3" controlId="task-status">
-          <Form.Label>Status</Form.Label>
-          <Form.Select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
-            {TASK_STATUS_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </Form.Select>
-        </Form.Group>
+        {canComplete ? (
+          <Form.Group className="mb-3" controlId="task-status">
+            <Form.Label>Status</Form.Label>
+            <Form.Select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
+              {TASK_STATUS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Form.Select>
+          </Form.Group>
+        ) : (
+          <div className="mb-3">
+            <div className="text-body-secondary small">Status</div>
+            <Badge bg={TASK_STATUS_BADGE_VARIANT[task.status] ?? 'secondary'}>
+              {TASK_STATUS_LABELS[task.status] ?? task.status}
+            </Badge>
+            <div className="text-body-secondary small mt-1">{completionResponsibilityMessage(task)}</div>
+          </div>
+        )}
         <TaskDueDateGroup task={task} showHelpText />
         <Form.Group className="mb-3" controlId="task-committed-date">
           <Form.Label>Committed date</Form.Label>
@@ -844,7 +864,7 @@ function TaskDetailEditForm({ task, canConfirm, saving, error, onSave, onConfirm
   )
 }
 
-function TaskDetailForm({ task, canConfirm, canEdit, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailForm({ task, canConfirm, canEdit, canComplete, saving, error, onSave, onConfirm, onHide }) {
   // Keyed by task.id from the parent (via TaskDetailModal), so switching
   // tasks remounts this with a fresh `editing` default instead of carrying
   // the previous task's mode over.
@@ -868,6 +888,7 @@ function TaskDetailForm({ task, canConfirm, canEdit, saving, error, onSave, onCo
     <TaskDetailEditForm
       task={task}
       canConfirm={canConfirm}
+      canComplete={canComplete}
       saving={saving}
       error={error}
       onSave={onSave}
@@ -877,7 +898,7 @@ function TaskDetailForm({ task, canConfirm, canEdit, saving, error, onSave, onCo
   )
 }
 
-function TaskDetailModal({ task, canConfirm, canEdit, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailModal({ task, canConfirm, canEdit, canComplete, saving, error, onSave, onConfirm, onHide }) {
   return (
     <Modal show={Boolean(task)} onHide={onHide} centered>
       {task && (
@@ -886,6 +907,7 @@ function TaskDetailModal({ task, canConfirm, canEdit, saving, error, onSave, onC
           task={task}
           canConfirm={canConfirm}
           canEdit={canEdit}
+          canComplete={canComplete}
           saving={saving}
           error={error}
           onSave={onSave}
@@ -1223,13 +1245,6 @@ function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
             </div>
           </Col>
           <Col sm={6} md={3}>
-            <div className="text-body-secondary small">Overall progress</div>
-            <div className="d-flex align-items-center gap-2">
-              <ProgressBar now={project.overall_progress} className="progress-thin flex-grow-1" />
-              <span className="small text-body-secondary flex-shrink-0">{project.overall_progress}%</span>
-            </div>
-          </Col>
-          <Col sm={6} md={3}>
             <div className="text-body-secondary small">Project Manager</div>
             <div>{project.project_manager_username ?? 'Unassigned'}</div>
           </Col>
@@ -1264,6 +1279,7 @@ function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
 
 function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
   const { user } = useAuth()
+  const [searchParams] = useSearchParams()
   const canManageProject = MANAGER_ROLES.has(user?.role)
 
   const [project, setProject] = useState(null)
@@ -1274,9 +1290,20 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
   // execution status only on the project they're assigned to manage --
   // computed once `project` has loaded, since it depends on project.project_manager.
   const isAssignedPM = Boolean(project) && user?.role === 'PROJECT_MANAGER' && project.project_manager === user.id
+  const isAssignedRep = user?.role === 'SALES_REP' && user.id === leadAssignedTo
   const canConfirm = MANAGEMENT_ROLES.has(user?.role) || isAssignedPM
-  const canEditTasks = canConfirm || user?.id === leadAssignedTo
+  const canEditTasks = canConfirm || isAssignedRep
   const canEditExecutionStatus = MANAGEMENT_ROLES.has(user?.role) || isAssignedPM
+
+  // Mirrors PhaseRequirementSerializer.COMPLETION_ROLE_BY_PHASE: completion
+  // is phase-based, not "can edit this task" -- a management role or the
+  // wrong one of rep/PM never gets the interactive status control.
+  function canCompleteTask(task) {
+    if (!task) return false
+    if (task.phase === 1 || task.phase === 4) return isAssignedRep
+    if (task.phase === 2 || task.phase === 3) return isAssignedPM
+    return false
+  }
 
   const [tasks, setTasks] = useState([])
 
@@ -1430,6 +1457,22 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
   function handleConfirmTask() {
     applyTaskUpdate({ status: 'COMPLETED' })
   }
+
+  // A "#<id>" reference in the timeline links here with ?task=<id> -- once
+  // this project's tasks have loaded, open that one automatically. The ref
+  // guard means it only ever auto-opens once per page load, not every time
+  // `tasks` re-fetches (e.g. after closing the very modal this just opened).
+  const autoOpenedTaskRef = useRef(false)
+  useEffect(() => {
+    if (autoOpenedTaskRef.current || tasks.length === 0) return
+    const taskId = Number(searchParams.get('task'))
+    if (!taskId) return
+    const match = tasks.find((t) => t.id === taskId)
+    if (match) {
+      autoOpenedTaskRef.current = true
+      openTask(match)
+    }
+  }, [tasks, searchParams])
 
   function openTask(task) {
     setTaskError(null)
@@ -1600,6 +1643,7 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
         task={activeTask}
         canConfirm={canConfirm}
         canEdit={canEditTasks}
+        canComplete={canCompleteTask(activeTask)}
         saving={taskSaving}
         error={taskError}
         onSave={handleSaveTask}
@@ -1865,47 +1909,90 @@ function StatusChangeRequestModal({ show, currentStatus, saving, error, onSave, 
   )
 }
 
-// Renders interaction notes as plain text, except that any "@username" token
+// Splits every plain-string element of `segments` on `pattern` (which must
+// have exactly one capturing group around the whole token, so String.split
+// interleaves the matches into the result), replacing each match with
+// `makeTag(matchedText)`. Already-tagged (non-string) elements are passed
+// through untouched -- lets @mention and #task passes run one after another
+// over the same notes without either one re-processing the other's output.
+function splitAndTag(segments, pattern, makeTag) {
+  const result = []
+  for (const segment of segments) {
+    if (typeof segment !== 'string') {
+      result.push(segment)
+      continue
+    }
+    segment.split(pattern).forEach((part, index) => {
+      if (part === '') return
+      result.push(index % 2 === 1 ? makeTag(part) : part)
+    })
+  }
+  return result
+}
+
+// Renders interaction notes as plain text, except: any "@username" token
 // naming a user this interaction actually mentioned (per the backend's own
 // parsing -- see mentionedUsernames, from Interaction.mentioned_usernames)
-// is wrapped and highlighted. Deliberately not a client-side re-parse of the
-// raw text: that would highlight unknown-username or self-mention "@word"
-// text the backend itself ignored, which would misrepresent what actually
-// notified anyone.
-function NotesWithMentions({ notes, mentionedUsernames }) {
+// is highlighted, and any "#<id>" token that resolved to a real task on this
+// lead's project (see referencedTasks, from Interaction.referenced_tasks)
+// becomes a link to that task. Deliberately not a client-side re-parse of
+// raw "@word"/"#word" text -- that would highlight/link things the backend
+// itself didn't recognize, misrepresenting what's actually there.
+function NotesWithMentions({ notes, mentionedUsernames, referencedTasks, leadId }) {
   if (!notes) return null
-  if (!mentionedUsernames || mentionedUsernames.length === 0) {
+  const hasMentions = mentionedUsernames && mentionedUsernames.length > 0
+  const hasTasks = referencedTasks && referencedTasks.length > 0
+  if (!hasMentions && !hasTasks) {
     return <p className="mb-1">{notes}</p>
   }
-  const escaped = mentionedUsernames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-  // Capturing group so String.split includes the matched mentions themselves
-  // in the result, interleaved at odd indices -- avoids relying on a global
-  // regex's stateful lastIndex (which a separate .test() call per part would
-  // need, and get wrong).
-  const pattern = new RegExp(`((?:^|(?<=\\s))@(?:${escaped.join('|')})\\b)`, 'gi')
-  const parts = notes.split(pattern)
+
+  let segments = [notes]
+  if (hasMentions) {
+    const escaped = mentionedUsernames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    const pattern = new RegExp(`((?:^|(?<=\\s))@(?:${escaped.join('|')})\\b)`, 'gi')
+    segments = splitAndTag(segments, pattern, (text) => ({ type: 'mention', text }))
+  }
+  if (hasTasks) {
+    const ids = referencedTasks.map((task) => task.id).join('|')
+    const pattern = new RegExp(`((?:^|(?<=\\s))#(?:${ids})\\b)`, 'g')
+    segments = splitAndTag(segments, pattern, (text) => {
+      const task = referencedTasks.find((t) => t.id === Number(text.slice(1)))
+      return { type: 'task', text, task }
+    })
+  }
+
   return (
     <p className="mb-1">
-      {parts.map((part, index) =>
-        index % 2 === 1 ? (
-          <span key={index} className="fw-semibold text-primary">
-            {part}
-          </span>
-        ) : (
-          part
-        ),
-      )}
+      {segments.map((segment, index) => {
+        if (typeof segment === 'string') return <span key={index}>{segment}</span>
+        if (segment.type === 'mention') {
+          return (
+            <span key={index} className="fw-semibold text-primary">
+              {segment.text}
+            </span>
+          )
+        }
+        return (
+          <Link key={index} to={`/leads/${leadId}?tab=phases&task=${segment.task.id}`} className="fw-semibold">
+            #{segment.task.label}
+          </Link>
+        )
+      })}
     </p>
   )
 }
 
 const MENTION_AUTOCOMPLETE_LIMIT = 6
 
-// A plain textarea, except typing "@" opens a small autocomplete of
-// /api/users/ filtered by whatever's typed after it -- selecting one
-// replaces the in-progress "@partial" with the full "@username ".
-function MentionAutocompleteTextarea({ value, onChange, ...controlProps }) {
+// A plain textarea, except typing "@" opens an autocomplete of /api/users/
+// (inserting "@username ") and typing "#" opens one of this lead's tasks
+// (inserting "#<id> ", so the same token PhaseRequirementSerializer's
+// mention parsing and InteractionSerializer.referenced_tasks both read back)
+// -- each filtered by whatever's typed after the trigger.
+function MentionAutocompleteTextarea({ leadId, value, onChange, ...controlProps }) {
   const [users, setUsers] = useState([])
+  const [tasks, setTasks] = useState([])
+  // { trigger: '@' | '#', query, start, end } or null.
   const [suggestion, setSuggestion] = useState(null)
   const textareaRef = useRef(null)
 
@@ -1925,13 +2012,37 @@ function MentionAutocompleteTextarea({ value, onChange, ...controlProps }) {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    async function fetchTasks() {
+      try {
+        const projects = await get(`/api/projects/?lead=${leadId}`)
+        const project = projects[0]
+        const data = project ? await get(`/api/requirements/?project=${project.id}`) : []
+        if (!cancelled) setTasks(data)
+      } catch {
+        if (!cancelled) setTasks([])
+      }
+    }
+    fetchTasks()
+    return () => {
+      cancelled = true
+    }
+  }, [leadId])
+
   function updateSuggestion(text, cursor) {
-    const match = text.slice(0, cursor).match(/(?:^|\s)@(\w*)$/)
-    if (!match) {
-      setSuggestion(null)
+    const uptoCursor = text.slice(0, cursor)
+    const userMatch = uptoCursor.match(/(?:^|\s)@(\w*)$/)
+    if (userMatch) {
+      setSuggestion({ trigger: '@', query: userMatch[1], start: cursor - userMatch[1].length - 1, end: cursor })
       return
     }
-    setSuggestion({ query: match[1], start: cursor - match[1].length - 1, end: cursor })
+    const taskMatch = uptoCursor.match(/(?:^|\s)#(\w*)$/)
+    if (taskMatch) {
+      setSuggestion({ trigger: '#', query: taskMatch[1], start: cursor - taskMatch[1].length - 1, end: cursor })
+      return
+    }
+    setSuggestion(null)
   }
 
   function handleChange(event) {
@@ -1939,26 +2050,32 @@ function MentionAutocompleteTextarea({ value, onChange, ...controlProps }) {
     updateSuggestion(event.target.value, event.target.selectionStart)
   }
 
-  function handleSelect(username) {
+  function insertToken(token) {
     const before = value.slice(0, suggestion.start)
     const after = value.slice(suggestion.end)
-    const nextValue = `${before}@${username} ${after}`
-    onChange({ target: { value: nextValue } })
+    onChange({ target: { value: `${before}${token} ${after}` } })
     setSuggestion(null)
     requestAnimationFrame(() => {
       const el = textareaRef.current
       if (!el) return
-      const caret = before.length + username.length + 2
+      const caret = before.length + token.length + 1
       el.focus()
       el.setSelectionRange(caret, caret)
     })
   }
 
-  const matches = suggestion
-    ? users
-        .filter((u) => u.username.toLowerCase().startsWith(suggestion.query.toLowerCase()))
-        .slice(0, MENTION_AUTOCOMPLETE_LIMIT)
-    : []
+  const userMatches =
+    suggestion?.trigger === '@'
+      ? users
+          .filter((u) => u.username.toLowerCase().startsWith(suggestion.query.toLowerCase()))
+          .slice(0, MENTION_AUTOCOMPLETE_LIMIT)
+      : []
+  const taskMatches =
+    suggestion?.trigger === '#'
+      ? tasks
+          .filter((t) => t.label.toLowerCase().includes(suggestion.query.toLowerCase()))
+          .slice(0, MENTION_AUTOCOMPLETE_LIMIT)
+      : []
 
   return (
     <div className="position-relative">
@@ -1971,9 +2088,9 @@ function MentionAutocompleteTextarea({ value, onChange, ...controlProps }) {
         // via preventDefault below) still lands before the dropdown closes.
         onBlur={() => setTimeout(() => setSuggestion(null), 150)}
       />
-      {suggestion && matches.length > 0 && (
+      {userMatches.length > 0 && (
         <ListGroup className="position-absolute shadow-sm" style={{ zIndex: 1060, minWidth: '12rem', top: '100%' }}>
-          {matches.map((u) => (
+          {userMatches.map((u) => (
             <ListGroup.Item
               key={u.id}
               action
@@ -1981,9 +2098,26 @@ function MentionAutocompleteTextarea({ value, onChange, ...controlProps }) {
               type="button"
               className="py-1"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => handleSelect(u.username)}
+              onClick={() => insertToken(`@${u.username}`)}
             >
               @{u.username}
+            </ListGroup.Item>
+          ))}
+        </ListGroup>
+      )}
+      {taskMatches.length > 0 && (
+        <ListGroup className="position-absolute shadow-sm" style={{ zIndex: 1060, minWidth: '16rem', top: '100%' }}>
+          {taskMatches.map((t) => (
+            <ListGroup.Item
+              key={t.id}
+              action
+              as="button"
+              type="button"
+              className="py-1"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => insertToken(`#${t.id}`)}
+            >
+              #{t.id} · {t.label}
             </ListGroup.Item>
           ))}
         </ListGroup>
@@ -2399,6 +2533,7 @@ export default function LeadDetail() {
                         <Form.Group controlId="interaction-notes">
                           <Form.Label className="small mb-1">Notes</Form.Label>
                           <MentionAutocompleteTextarea
+                            leadId={id}
                             as="textarea"
                             rows={1}
                             size="sm"
@@ -2472,7 +2607,12 @@ export default function LeadDetail() {
                             {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
                           </span>
                         </div>
-                        <NotesWithMentions notes={entry.notes} mentionedUsernames={entry.mentioned_usernames} />
+                        <NotesWithMentions
+                          notes={entry.notes}
+                          mentionedUsernames={entry.mentioned_usernames}
+                          referencedTasks={entry.referenced_tasks}
+                          leadId={id}
+                        />
                         <div className="text-body-secondary small">
                           Logged by {entry.created_by_username ?? 'Unknown'}
                         </div>

@@ -596,6 +596,181 @@ class MentionParsingTests(TestCase):
         self.assertTrue(Mention.objects.filter(interaction=interaction, user=self.other).exists())
 
 
+class TaskMentionParsingTests(ProjectRequirementsTestMixin, APITestCase):
+    """
+    "#<id>" task references in Interaction notes -- Interaction.save() only
+    turns one into a notification (a Mention with task set) when the author
+    is a manager or PM, addressed to whoever COMPLETION_ROLE_BY_PHASE says is
+    responsible for that task. Rendering the reference as a link is a
+    separate, unconditional concern -- see InteractionApiTests below.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.phase1_task = self.project.requirements.filter(phase=1).first()
+        self.phase2_task = self.project.requirements.filter(phase=2).first()
+        self.phase3_task = self.project.requirements.filter(phase=3).first()
+        self.phase4_task = self.project.requirements.filter(phase=4).first()
+
+    def _note(self, text, author):
+        return Interaction.objects.create(
+            lead=self.lead, type=Interaction.Type.NOTE, notes=text, created_by=author,
+        )
+
+    def test_manager_tagging_a_phase1_task_notifies_the_assigned_rep(self):
+        interaction = self._note(f'@{self.rep.username} please pick this up #{self.phase1_task.id}', self.manager)
+        mention = Mention.objects.get(interaction=interaction, task=self.phase1_task)
+        self.assertEqual(mention.user, self.rep)
+        self.assertEqual(mention.created_by, self.manager)
+
+    def test_manager_tagging_a_phase2_task_notifies_the_assigned_pm(self):
+        interaction = self._note(f'Flagging #{self.phase2_task.id} for review.', self.manager)
+        mention = Mention.objects.get(interaction=interaction, task=self.phase2_task)
+        self.assertEqual(mention.user, self.pm)
+
+    def test_manager_tagging_a_phase3_task_notifies_the_assigned_pm(self):
+        interaction = self._note(f'#{self.phase3_task.id} needs attention.', self.manager)
+        mention = Mention.objects.get(interaction=interaction, task=self.phase3_task)
+        self.assertEqual(mention.user, self.pm)
+
+    def test_manager_tagging_a_phase4_task_notifies_the_assigned_rep(self):
+        interaction = self._note(f'#{self.phase4_task.id} -- client is asking.', self.manager)
+        mention = Mention.objects.get(interaction=interaction, task=self.phase4_task)
+        self.assertEqual(mention.user, self.rep)
+
+    def test_pm_tagging_a_rep_task_notifies_the_rep(self):
+        interaction = self._note(f'Could you check #{self.phase1_task.id}?', self.pm)
+        mention = Mention.objects.get(interaction=interaction, task=self.phase1_task)
+        self.assertEqual(mention.user, self.rep)
+
+    def test_pm_tagging_their_own_task_does_not_self_notify(self):
+        # self.pm is the assigned PM -- tagging a Phase 2 task means tagging
+        # their own responsibility.
+        interaction = self._note(f'Noting progress on #{self.phase2_task.id}.', self.pm)
+        self.assertFalse(Mention.objects.filter(interaction=interaction, task=self.phase2_task).exists())
+
+    def test_rep_tagging_a_task_does_not_notify_anyone(self):
+        interaction = self._note(f'Working on #{self.phase1_task.id} now.', self.rep)
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+
+    def test_system_admin_tagging_a_task_does_not_notify_anyone(self):
+        admin = User.objects.create_user(username='admin1', password='pass', role=User.Role.SYSTEM_ADMIN)
+        interaction = self._note(f'#{self.phase1_task.id} for the record.', admin)
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+
+    def test_unknown_task_id_is_ignored(self):
+        interaction = self._note('See #999999 for context.', self.manager)
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+
+    def test_task_belonging_to_a_different_lead_is_ignored(self):
+        other_lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        other_task = other_lead.project.requirements.filter(phase=1).first()
+        interaction = self._note(f'Unrelated: #{other_task.id}', self.manager)
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+
+    def test_no_notification_when_phase_2_task_has_no_assigned_pm(self):
+        self.project.project_manager = None
+        self.project.save(update_fields=['project_manager'])
+        interaction = self._note(f'#{self.phase2_task.id} needs a PM.', self.manager)
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+
+    def test_multiple_task_references_each_create_their_own_mention(self):
+        interaction = self._note(
+            f'#{self.phase1_task.id} and #{self.phase2_task.id} both need eyes.', self.manager,
+        )
+        mentions = {m.task_id: m.user_id for m in Mention.objects.filter(interaction=interaction)}
+        self.assertEqual(mentions, {self.phase1_task.id: self.rep.id, self.phase2_task.id: self.pm.id})
+
+    def test_user_mention_and_task_reference_to_the_same_person_both_create_mentions(self):
+        # @rep1 by name AND #<phase1_task> (the rep's own task) in one note --
+        # two distinct reasons to notify the same person, not a collision
+        # with the (user, interaction, task) uniqueness.
+        interaction = self._note(f'@{self.rep.username} re: #{self.phase1_task.id}', self.manager)
+        self.assertEqual(Mention.objects.filter(interaction=interaction, user=self.rep).count(), 2)
+        self.assertTrue(Mention.objects.filter(interaction=interaction, user=self.rep, task__isnull=True).exists())
+        self.assertTrue(
+            Mention.objects.filter(interaction=interaction, user=self.rep, task=self.phase1_task).exists(),
+        )
+
+    def test_resaving_does_not_duplicate_the_task_mention(self):
+        interaction = self._note(f'#{self.phase1_task.id}', self.manager)
+        interaction.save()
+        interaction.save()
+        self.assertEqual(
+            Mention.objects.filter(interaction=interaction, task=self.phase1_task, user=self.rep).count(), 1,
+        )
+
+
+class TaskReferenceApiTests(ProjectRequirementsTestMixin, APITestCase):
+    """
+    referenced_tasks on InteractionSerializer renders any "#<id>" regardless
+    of who wrote it or whether it notified anyone; a task-tag notification's
+    payload names the task; and a PM can now log an interaction (needed to
+    tag a task at all) on a project they manage, but not elsewhere.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.phase1_task = self.project.requirements.filter(phase=1).first()
+        self.phase2_task = self.project.requirements.filter(phase=2).first()
+
+    def test_referenced_tasks_appear_even_when_the_rep_tags_their_own_task(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(reverse('interaction-list'), {
+            'lead': self.lead.id, 'type': Interaction.Type.NOTE,
+            'notes': f'Working on #{self.phase1_task.id} now.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['referenced_tasks'], [{'id': self.phase1_task.id, 'label': self.phase1_task.label}])
+        # Rendered, but never a notification -- a rep's own tag isn't one.
+        self.assertFalse(Mention.objects.filter(interaction=response.data['id']).exists())
+
+    def test_referenced_tasks_omits_unknown_ids(self):
+        response = self.client.post(reverse('interaction-list'), {
+            'lead': self.lead.id, 'type': Interaction.Type.NOTE, 'notes': 'See #999999 please.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['referenced_tasks'], [])
+
+    def test_notification_payload_for_a_task_tag_includes_the_task(self):
+        self.client.post(reverse('interaction-list'), {
+            'lead': self.lead.id, 'type': Interaction.Type.NOTE,
+            'notes': f'Please review #{self.phase2_task.id}.',
+        }, format='json')
+
+        self.client.force_authenticate(self.pm)
+        response = self.client.get(reverse('notification-list'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        row = next(r for r in response.data if r['task'] == self.phase2_task.id)
+        self.assertEqual(row['task_label'], self.phase2_task.label)
+
+    def test_plain_mention_notification_has_no_task(self):
+        self.client.post(reverse('interaction-list'), {
+            'lead': self.lead.id, 'type': Interaction.Type.NOTE, 'notes': f'cc @{self.rep.username}',
+        }, format='json')
+
+        self.client.force_authenticate(self.rep)
+        response = self.client.get(reverse('notification-list'))
+        row = response.data[0]
+        self.assertIsNone(row['task'])
+        self.assertIsNone(row['task_label'])
+
+    def test_pm_can_log_an_interaction_on_a_project_they_manage(self):
+        self.client.force_authenticate(self.pm)
+        response = self.client.post(reverse('interaction-list'), {
+            'lead': self.lead.id, 'type': Interaction.Type.NOTE, 'notes': f'#{self.phase2_task.id} in progress.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_pm_cannot_log_an_interaction_on_a_project_they_do_not_manage(self):
+        other_pm = User.objects.create_user(username='pm2', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.client.force_authenticate(other_pm)
+        response = self.client.post(reverse('interaction-list'), {
+            'lead': self.lead.id, 'type': Interaction.Type.NOTE, 'notes': 'Not my project.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
 class NotificationApiTests(APITestCase):
     def setUp(self):
         self.rep1 = User.objects.create_user(username='rep1', password='pass', role=User.Role.SALES_REP)
@@ -807,6 +982,153 @@ class PhaseRequirementConfirmationTests(ProjectRequirementsTestMixin, APITestCas
         self.assertEqual(response.data['phase_progress'][1], {'completed': 1, 'total': 1, 'percent': 100})
 
 
+class TaskCompletionAuthorityTests(ProjectRequirementsTestMixin, APITestCase):
+    """
+    Who may move a task's status INTO Completed: the assigned rep for Phase
+    1/4, the assigned PM for Phase 2/3. Management roles never complete a
+    task directly -- they read, confirm MANAGER-authority tasks someone else
+    completed, and edit metadata, but completion itself is off-limits.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.other_pm = User.objects.create_user(username='pm2', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.exec_manager = User.objects.create_user(
+            username='exec1', password='pass', role=User.Role.EXECUTIVE_MANAGER,
+        )
+        self.admin = User.objects.create_user(username='admin1', password='pass', role=User.Role.SYSTEM_ADMIN)
+        self.phase1_task = self.project.requirements.filter(phase=1).first()
+        self.phase2_task = self.project.requirements.filter(phase=2).first()
+        self.phase3_task = self.project.requirements.filter(phase=3).first()
+        # 'Handover Note' specifically -- unlike 'Client Acceptance' (also
+        # phase 4), it has no required form fields, so completing it in these
+        # tests exercises only the completion-authority gate, not the
+        # required-fields one.
+        self.phase4_task = self.project.requirements.get(phase=4, label='Handover Note')
+
+    def _complete(self, task, actor):
+        self.client.force_authenticate(actor)
+        url = reverse('phaserequirement-detail', args=[task.id])
+        return self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+
+    # -- rejections -----------------------------------------------------------
+
+    def test_sales_manager_cannot_complete_any_task(self):
+        for task in (self.phase1_task, self.phase2_task, self.phase3_task, self.phase4_task):
+            response = self._complete(task, self.manager)
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, task.label)
+            self.assertIn('status', response.data)
+            task.refresh_from_db()
+            self.assertNotEqual(task.status, PhaseRequirement.Status.COMPLETED)
+
+    def test_executive_manager_cannot_complete_any_task(self):
+        response = self._complete(self.phase1_task, self.exec_manager)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_system_admin_cannot_complete_any_task(self):
+        response = self._complete(self.phase1_task, self.admin)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_pm_cannot_complete_a_phase_1_task(self):
+        response = self._complete(self.phase1_task, self.pm)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('sales rep', response.data['status'][0])
+        self.phase1_task.refresh_from_db()
+        self.assertNotEqual(self.phase1_task.status, PhaseRequirement.Status.COMPLETED)
+
+    def test_pm_cannot_complete_a_phase_4_task(self):
+        response = self._complete(self.phase4_task, self.pm)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_rep_cannot_complete_a_phase_2_task(self):
+        response = self._complete(self.phase2_task, self.rep)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('project manager', response.data['status'][0])
+        self.phase2_task.refresh_from_db()
+        self.assertNotEqual(self.phase2_task.status, PhaseRequirement.Status.COMPLETED)
+
+    def test_rep_cannot_complete_a_phase_3_task(self):
+        response = self._complete(self.phase3_task, self.rep)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unrelated_pm_cannot_complete_a_phase_2_task(self):
+        # A real PM, just not the one assigned to this project -- scoped out
+        # of the queryset entirely (PhaseRequirementPermission), so this is a
+        # 404 like any other unrelated object in this codebase, not a 400
+        # from the completion-authority check (which never gets reached).
+        response = self._complete(self.phase2_task, self.other_pm)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_unrelated_rep_cannot_complete_a_phase_1_task(self):
+        other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        response = self._complete(self.phase1_task, other_rep)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- allowed completions ----------------------------------------------------
+
+    def test_assigned_rep_can_complete_phase_1_and_4_tasks(self):
+        for task in (self.phase1_task, self.phase4_task):
+            response = self._complete(task, self.rep)
+            self.assertEqual(response.status_code, status.HTTP_200_OK, task.label)
+            task.refresh_from_db()
+            self.assertEqual(task.status, PhaseRequirement.Status.COMPLETED)
+
+    def test_assigned_pm_can_complete_phase_2_and_3_tasks(self):
+        for task in (self.phase2_task, self.phase3_task):
+            response = self._complete(task, self.pm)
+            self.assertEqual(response.status_code, status.HTTP_200_OK, task.label)
+            task.refresh_from_db()
+            self.assertEqual(task.status, PhaseRequirement.Status.COMPLETED)
+
+    # -- completion and confirmation stay separate ---------------------------
+
+    def test_completing_does_not_also_confirm_even_when_completer_could_confirm(self):
+        # The Phase 2 task's confirmation_authority is PROJECT_MANAGER, and
+        # the assigned PM (the only one who can complete it) would also be
+        # an eligible confirmer -- completing it still must not auto-confirm.
+        self.assertEqual(self.phase2_task.confirmation_authority, PhaseRequirement.ConfirmationAuthority.PROJECT_MANAGER)
+        response = self._complete(self.phase2_task, self.pm)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.phase2_task.refresh_from_db()
+        self.assertEqual(self.phase2_task.status, PhaseRequirement.Status.COMPLETED)
+        self.assertIsNone(self.phase2_task.confirmed_by)
+
+    def test_confirmation_path_still_works_for_managers(self):
+        # Someone else (the assigned PM, per phase) completes it first --
+        # confirmation is a genuinely separate, later action.
+        self._complete(self.phase2_task, self.pm)
+        self.phase2_task.refresh_from_db()
+        self.assertIsNone(self.phase2_task.confirmed_by)
+
+        self.client.force_authenticate(self.manager)
+        url = reverse('phaserequirement-detail', args=[self.phase2_task.id])
+        response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.phase2_task.refresh_from_db()
+        self.assertEqual(self.phase2_task.confirmed_by, self.manager)
+        self.assertIsNotNone(self.phase2_task.confirmed_at)
+        self.assertTrue(self.phase2_task.is_confirmed_complete)
+
+    # -- management roles retain everything except completion -----------------
+
+    def test_manager_can_still_edit_task_notes_and_committed_date(self):
+        url = reverse('phaserequirement-detail', args=[self.phase1_task.id])
+        response = self.client.patch(
+            url, {'notes': 'Called client, rescheduling.', 'committed_date': '2026-03-01'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.phase1_task.refresh_from_db()
+        self.assertEqual(self.phase1_task.notes, 'Called client, rescheduling.')
+        self.assertEqual(str(self.phase1_task.committed_date), '2026-03-01')
+
+    def test_manager_can_still_read_any_task(self):
+        for task in (self.phase1_task, self.phase2_task, self.phase3_task, self.phase4_task):
+            url = reverse('phaserequirement-detail', args=[task.id])
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
 class CustomTaskTests(ProjectRequirementsTestMixin, APITestCase):
     def setUp(self):
         super().setUp()
@@ -902,6 +1224,8 @@ class CustomTaskTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(after.data['phase_progress'][2]['completed'], 0)
 
         complete_url = reverse('phaserequirement-detail', args=[create.data['id']])
+        # Phase 2 -- only the assigned PM may complete it.
+        self.client.force_authenticate(self.pm)
         complete_response = self.client.patch(complete_url, {'status': 'COMPLETED'}, format='json')
         self.assertEqual(complete_response.status_code, status.HTTP_200_OK)
 
@@ -1149,6 +1473,9 @@ class TaskFormFieldTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(TaskFormField.objects.filter(template_id=self.requirement.template_id).count(), 4)
 
     def test_cannot_complete_task_with_missing_required_fields(self):
+        # Phase 1 -- only the assigned rep may complete it; authenticating as
+        # them isolates this test to the required-fields gate specifically.
+        self.client.force_authenticate(self.rep)
         response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         for label in ('Meeting date', 'Attendees', 'Key requirements captured'):
@@ -1161,6 +1488,7 @@ class TaskFormFieldTests(ProjectRequirementsTestMixin, APITestCase):
             'responses': [{'field': self._field_id('Meeting date'), 'value': '2026-01-01'}],
         }, format='json')
 
+        self.client.force_authenticate(self.rep)
         response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertNotIn('Meeting date', response.data['status'][0])
@@ -1176,6 +1504,7 @@ class TaskFormFieldTests(ProjectRequirementsTestMixin, APITestCase):
             ],
         }, format='json')
 
+        self.client.force_authenticate(self.rep)
         response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -1189,6 +1518,7 @@ class TaskFormFieldTests(ProjectRequirementsTestMixin, APITestCase):
                 {'field': self._field_id('Key requirements captured'), 'value': 'SSO integration.'},
             ],
         }, format='json')
+        self.client.force_authenticate(self.rep)
         response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -1272,6 +1602,7 @@ class TaskFormFieldTests(ProjectRequirementsTestMixin, APITestCase):
                 {'field': self._field_id('Key requirements captured'), 'value': 'SSO integration.'},
             ],
         }, format='json')
+        self.client.force_authenticate(self.rep)
         response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -1311,6 +1642,8 @@ class ProjectBudgetPanelTests(ProjectRequirementsTestMixin, APITestCase):
 
     def test_completing_budget_proposal_populates_project_budget(self):
         self._answer_budget_fields(amount='18500', currency='USD')
+        # Phase 2 -- only the assigned PM may complete it.
+        self.client.force_authenticate(self.pm)
         response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -1328,6 +1661,8 @@ class ProjectBudgetPanelTests(ProjectRequirementsTestMixin, APITestCase):
                 {'field': fields['Key requirements captured'].id, 'value': 'SSO integration.'},
             ],
         }, format='json')
+        # Phase 1 -- only the assigned rep may complete it.
+        self.client.force_authenticate(self.rep)
         response = self.client.patch(
             reverse('phaserequirement-detail', args=[other.id]),
             {'status': PhaseRequirement.Status.COMPLETED}, format='json',
@@ -1344,6 +1679,7 @@ class ProjectBudgetPanelTests(ProjectRequirementsTestMixin, APITestCase):
         # must not silently overwrite a value someone may have since edited
         # directly on the project.
         self._answer_budget_fields(amount='18500', currency='USD')
+        self.client.force_authenticate(self.pm)
         self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
 
         self.client.post(self.answers_url, {
@@ -1357,6 +1693,7 @@ class ProjectBudgetPanelTests(ProjectRequirementsTestMixin, APITestCase):
 
     def test_non_numeric_budget_value_is_safely_ignored(self):
         self._answer_budget_fields(amount='not-a-number', currency='GBP')
+        self.client.force_authenticate(self.pm)
         response = self.client.patch(self.detail_url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -2492,19 +2829,22 @@ class PhaseActivityEventTests(ProjectRequirementsTestMixin, APITestCase):
         ).first()
 
     def test_completing_a_task_creates_a_phase_activity_event(self):
+        # Phase 1 -- only the assigned rep may complete it.
+        self.client.force_authenticate(self.rep)
         url = reverse('phaserequirement-detail', args=[self.requirement.id])
         response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         event = ActivityEvent.objects.get(lead=self.lead, category=ActivityEvent.Category.PHASE)
         self.assertIn(self.requirement.label, event.description)
-        self.assertEqual(event.actor, self.manager)
+        self.assertEqual(event.actor, self.rep)
 
     # Whether completing a task flips a COLD lead to HOT is now conditional
     # on client_facing (see ClientFacingTaskActivityTests below) -- this
     # class only covers the ActivityEvent/timeline side of task completion.
 
     def test_task_activity_event_appears_in_the_timeline(self):
+        self.client.force_authenticate(self.rep)
         url = reverse('phaserequirement-detail', args=[self.requirement.id])
         self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
 
@@ -2528,6 +2868,8 @@ class ClientFacingTaskActivityTests(ProjectRequirementsTestMixin, APITestCase):
         requirement = self.project.requirements.get(label='Client Proposal Confirmation')
         self.assertTrue(requirement.client_facing)
 
+        # Phase 1 -- only the assigned rep may complete it.
+        self.client.force_authenticate(self.rep)
         url = reverse('phaserequirement-detail', args=[requirement.id])
         response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -2544,6 +2886,8 @@ class ClientFacingTaskActivityTests(ProjectRequirementsTestMixin, APITestCase):
         requirement = self.project.requirements.get(label='Technical Specification')
         self.assertFalse(requirement.client_facing)
 
+        # Phase 3 -- only the assigned PM may complete it.
+        self.client.force_authenticate(self.pm)
         url = reverse('phaserequirement-detail', args=[requirement.id])
         response = self.client.patch(url, {'status': PhaseRequirement.Status.COMPLETED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)

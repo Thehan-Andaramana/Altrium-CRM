@@ -24,14 +24,20 @@ class RoleBasedAccess(BasePermission):
     SALES_REP: full access, but only to records they own / are assigned to.
     SALES_MANAGER, EXECUTIVE_MANAGER, SYSTEM_ADMIN: full access to all records.
     PROJECT_MANAGER: read-only, except full write on an object tied to a
-    project they manage (see project_manager_id on Project/PhaseRequirement)
-    -- an Interaction has no such property, so PM stays read-only there.
+    project they manage (see project_manager_id on Project/PhaseRequirement),
+    or -- for Interaction specifically, which has no such property -- on a
+    new interaction logged against a lead whose project they manage (needed
+    so a PM can tag a task in a note at all; see Interaction.project_manager_id).
     """
 
     def has_permission(self, request, view):
         role = request.user.role
         if role == User.Role.PROJECT_MANAGER:
-            return request.method != 'POST'
+            if request.method != 'POST':
+                return True
+            lead_id = request.data.get('lead')
+            lead = Lead.objects.select_related('project').filter(pk=lead_id).first() if lead_id else None
+            return lead is not None and lead.project.project_manager_id == request.user.id
         return True
 
     def has_object_permission(self, request, view, obj):

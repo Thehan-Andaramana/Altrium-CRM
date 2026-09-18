@@ -16,6 +16,12 @@ from .storage import PrivateAttachmentStorage
 # "domain".
 MENTION_PATTERN = re.compile(r'(?:^|(?<=\s))@(\w+)')
 
+# Matches "#<id>" task references -- the PhaseRequirement's numeric primary
+# key, the same "#123" convention issue trackers use, not its (often
+# multi-word) label. The autocomplete inserts this token directly; rendering
+# it back as the task's actual label is the frontend/serializer's job.
+TASK_REFERENCE_PATTERN = re.compile(r'(?:^|(?<=\s))#(\d+)')
+
 
 class User(AbstractUser):
     class Role(models.TextChoices):
@@ -239,6 +245,19 @@ class Interaction(models.Model):
         # way it scopes a Lead, without duplicating the permission class.
         return self.lead.assigned_to_id
 
+    @property
+    def project_manager_id(self):
+        # Lets a PROJECT_MANAGER write an existing interaction logged against
+        # a lead whose project they manage (see RoleBasedAccess) -- needed so
+        # a PM can, for example, edit a note after tagging a task in it.
+        return self.lead.project.project_manager_id
+
+    # Roles whose task references ("#42") actually notify the responsible
+    # person -- a rep's or an admin's #reference still renders as a link in
+    # the timeline (see InteractionSerializer.get_referenced_tasks), it just
+    # doesn't page anyone.
+    TASK_TAG_NOTIFY_ROLES = {User.Role.SALES_MANAGER, User.Role.EXECUTIVE_MANAGER, User.Role.PROJECT_MANAGER}
+
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         # QuerySet.update() bypasses Lead.last_activity_at's auto_now, so
@@ -248,9 +267,10 @@ class Interaction(models.Model):
         # LEAD_STATUS_CHANGE request; see ApprovalRequestSerializer).
         if self.type == Interaction.Type.NOTE or self.outcome == Interaction.Outcome.RESPONDED:
             Lead.objects.filter(pk=self.lead_id).update(last_activity_at=self.occurred_at)
-        self._create_mentions()
+        self._create_user_mentions()
+        self._create_task_mentions()
 
-    def _create_mentions(self):
+    def _create_user_mentions(self):
         # Mention is defined later in this module; that's fine since this
         # only resolves at call time, well after import (same pattern as
         # Project.save()'s forward reference to PhaseRequirement).
@@ -267,7 +287,31 @@ class Interaction(models.Model):
             # every update too (e.g. editing notes), and re-parsing the same
             # already-mentioned name shouldn't raise or duplicate-notify.
             Mention.objects.get_or_create(
-                user=user, interaction=self, defaults={'created_by_id': self.created_by_id},
+                user=user, interaction=self, task=None, defaults={'created_by_id': self.created_by_id},
+            )
+
+    def _create_task_mentions(self):
+        # Only a manager or PM tagging a task notifies anyone -- a rep
+        # referencing a task (typically their own) isn't "assigning" it to
+        # someone, so it's just a link, not a notification.
+        if self.created_by.role not in self.TASK_TAG_NOTIFY_ROLES:
+            return
+        task_ids = {int(m) for m in TASK_REFERENCE_PATTERN.findall(self.notes or '')}
+        if not task_ids:
+            return
+        # Scoped to this interaction's own project -- a stray id belonging to
+        # some other lead's task is treated the same as an unknown one.
+        # (Lead.project is a reverse OneToOne descriptor, not a field, so
+        # there's no project_id shortcut here the way there is on Project.)
+        tasks = PhaseRequirement.objects.filter(pk__in=task_ids, project=self.lead.project)
+        for task in tasks:
+            responsible = task.responsible_user
+            if responsible is None or responsible.id == self.created_by_id:
+                # Nobody currently responsible (e.g. no PM assigned yet), or
+                # the tagger tagging their own task -- both silently ignored.
+                continue
+            Mention.objects.get_or_create(
+                user=responsible, interaction=self, task=task, defaults={'created_by_id': self.created_by_id},
             )
 
 
@@ -547,6 +591,26 @@ class PhaseRequirement(models.Model):
         # via "manages this task's project", without a bespoke permission
         # class -- same pattern as owner_id/assigned_to_id above.
         return self.project.project_manager_id
+
+    # Who may move a task INTO Completed (see PhaseRequirementSerializer's
+    # completion-authority gate) -- and, by the same rule, who a task
+    # reference notifies: Phase 1/4 are the assigned rep's, Phase 2/3 are the
+    # assigned PM's.
+    COMPLETION_ROLE_BY_PHASE = {
+        1: User.Role.SALES_REP,
+        2: User.Role.PROJECT_MANAGER,
+        3: User.Role.PROJECT_MANAGER,
+        4: User.Role.SALES_REP,
+    }
+
+    @property
+    def responsible_user(self):
+        role = self.COMPLETION_ROLE_BY_PHASE.get(self.phase)
+        if role == User.Role.SALES_REP:
+            return self.project.lead.assigned_to
+        if role == User.Role.PROJECT_MANAGER:
+            return self.project.project_manager
+        return None
 
     @property
     def is_confirmed_complete(self):
@@ -903,6 +967,17 @@ class Mention(models.Model):
         on_delete=models.CASCADE,
         related_name='mentions',
     )
+    # Null for a plain "@username" mention; set when this notification exists
+    # because a manager/PM referenced this task ("#42") instead -- see
+    # Interaction._create_task_mentions. Same model either way, per "extend
+    # Mention with a nullable task FK rather than a parallel model".
+    task = models.ForeignKey(
+        PhaseRequirement,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='mentions',
+    )
     created_by = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -914,10 +989,19 @@ class Mention(models.Model):
     class Meta:
         ordering = ['-created_at']
         constraints = [
-            models.UniqueConstraint(fields=['user', 'interaction'], name='mention_unique_user_interaction'),
+            # A user can get at most one notification per interaction for a
+            # given reason: task=NULL is the "@mention" bucket, and each
+            # distinct referenced task is its own bucket -- so the same
+            # interaction can notify one person twice (named directly, and
+            # via their tagged task) without being a duplicate.
+            models.UniqueConstraint(
+                fields=['user', 'interaction', 'task'], name='mention_unique_user_interaction_task',
+            ),
         ]
 
     def __str__(self):
+        if self.task_id is not None:
+            return f'task #{self.task_id} referenced for {self.user.username} in interaction {self.interaction_id}'
         return f'@{self.user.username} in interaction {self.interaction_id}'
 
 
