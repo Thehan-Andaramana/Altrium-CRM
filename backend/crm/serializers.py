@@ -13,6 +13,7 @@ from .models import (
     ExecutionStatusEvent,
     Interaction,
     Lead,
+    Mention,
     PhaseRequirement,
     Project,
     RequirementTemplate,
@@ -200,13 +201,22 @@ class LeadSerializer(serializers.ModelSerializer):
 
 class InteractionSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, default=None)
+    # The exact set of usernames Interaction.save() actually turned into a
+    # Mention (i.e. known, non-self) -- lets the timeline highlight only
+    # real mentions in `notes` rather than re-parsing (and mis-highlighting
+    # unknown-username or self-mention "@word" text) on the client.
+    mentioned_usernames = serializers.SerializerMethodField()
 
     class Meta:
         model = Interaction
         fields = [
             'id', 'lead', 'type', 'outcome', 'notes', 'occurred_at', 'created_by', 'created_by_username',
+            'mentioned_usernames',
         ]
         read_only_fields = ['created_by']
+
+    def get_mentioned_usernames(self, obj):
+        return list(obj.mentions.values_list('user__username', flat=True))
 
     def validate(self, attrs):
         itype = attrs.get('type', getattr(self.instance, 'type', None))
@@ -224,6 +234,33 @@ class InteractionSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class MentionSerializer(serializers.ModelSerializer):
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, default=None)
+    lead_id = serializers.IntegerField(source='interaction.lead_id', read_only=True)
+    lead_name = serializers.CharField(source='interaction.lead.name', read_only=True)
+    note_snippet = serializers.SerializerMethodField()
+
+    SNIPPET_LENGTH = 140
+
+    class Meta:
+        model = Mention
+        fields = [
+            'id', 'interaction', 'lead_id', 'lead_name', 'note_snippet',
+            'created_by', 'created_by_username', 'created_at', 'read_at',
+        ]
+        # Every field is read-only -- a Mention is only ever created as a
+        # side effect of Interaction.save(), and the one thing a client can
+        # actually change (read_at) is set by MentionViewSet.update, not by
+        # whatever value the client happens to PATCH in.
+        read_only_fields = fields
+
+    def get_note_snippet(self, obj):
+        notes = obj.interaction.notes or ''
+        if len(notes) <= self.SNIPPET_LENGTH:
+            return notes
+        return notes[:self.SNIPPET_LENGTH].rstrip() + '…'
+
+
 class ProjectSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='company.name', read_only=True, default=None)
     project_manager_username = serializers.CharField(source='project_manager.username', read_only=True, default=None)
@@ -236,8 +273,11 @@ class ProjectSerializer(serializers.ModelSerializer):
     PHASE_SIGNOFF_TYPES = {
         1: ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
         2: ApprovalRequest.RequestType.PHASE_2_SIGNOFF,
-        # No entry for 3 -- Phase 3 has no signoff request; it's gated on
-        # phase_3_execution_status instead (see update() below).
+        # Phase 3's request is raised automatically (see update() below) when
+        # its execution status reaches Completed, rather than by a manual
+        # "Request sign-off" action like 1/2/4 -- but completion itself goes
+        # through the exact same approved-signoff gate once requested.
+        3: ApprovalRequest.RequestType.PHASE_3_SIGNOFF,
         4: ApprovalRequest.RequestType.PHASE_4_SIGNOFF,
     }
 
@@ -315,6 +355,29 @@ class ProjectSerializer(serializers.ModelSerializer):
             and validated_data['phase_3_execution_status'] != instance.phase_3_execution_status
         )
         old_execution_status = instance.phase_3_execution_status
+        new_execution_status = validated_data.get('phase_3_execution_status', instance.phase_3_execution_status)
+
+        if execution_status_changing:
+            if instance.phase_3_status == Project.PhaseStatus.COMPLETE:
+                # Locked once Phase 3 is actually done -- there's nothing left
+                # for the execution status to track at that point. Backward
+                # moves (e.g. Review -> Building) are otherwise unrestricted
+                # right up until completion, including while a sign-off is
+                # already pending.
+                raise serializers.ValidationError({
+                    'phase_3_execution_status': 'Phase 3 is already complete -- its execution status is locked.',
+                })
+            if (
+                new_execution_status == Project.ExecutionStatus.COMPLETED
+                and instance.phase_3_status == Project.PhaseStatus.IN_PROGRESS
+            ):
+                phase_3_requirements = self._applicable(
+                    r for r in instance.requirements.all() if r.phase == 3
+                )
+                if any(not r.is_confirmed_complete for r in phase_3_requirements):
+                    raise serializers.ValidationError({
+                        'phase_3_execution_status': 'Phase 3 still has incomplete requirements.',
+                    })
 
         for phase_num, field_name in enumerate(self.PHASE_FIELDS, start=1):
             if field_name not in validated_data:
@@ -341,31 +404,19 @@ class ProjectSerializer(serializers.ModelSerializer):
                         field_name: f'Phase {phase_num} still has incomplete requirements.',
                     })
 
-            if new_status == Project.PhaseStatus.COMPLETE:
-                if phase_num == 3:
-                    # No signoff request for Phase 3 -- it's PM-driven: it
-                    # completes once the PM has marked execution Completed,
-                    # not through a manager-approved ApprovalRequest.
-                    execution_status = validated_data.get(
-                        'phase_3_execution_status', instance.phase_3_execution_status,
-                    )
-                    if execution_status != Project.ExecutionStatus.COMPLETED:
-                        raise serializers.ValidationError({
-                            field_name: 'Phase 3 cannot complete until its execution status is Completed.',
-                        })
-                elif phase_num in self.PHASE_SIGNOFF_TYPES:
-                    has_approval = ApprovalRequest.objects.filter(
-                        project=instance,
-                        request_type=self.PHASE_SIGNOFF_TYPES[phase_num],
-                        status=ApprovalRequest.Status.APPROVED,
-                    ).exists()
-                    if not has_approval:
-                        raise serializers.ValidationError({
-                            field_name: (
-                                f'Phase {phase_num} needs an approved '
-                                f'{self.PHASE_SIGNOFF_TYPES[phase_num].label} request first.'
-                            ),
-                        })
+            if new_status == Project.PhaseStatus.COMPLETE and phase_num in self.PHASE_SIGNOFF_TYPES:
+                has_approval = ApprovalRequest.objects.filter(
+                    project=instance,
+                    request_type=self.PHASE_SIGNOFF_TYPES[phase_num],
+                    status=ApprovalRequest.Status.APPROVED,
+                ).exists()
+                if not has_approval:
+                    raise serializers.ValidationError({
+                        field_name: (
+                            f'Phase {phase_num} needs an approved '
+                            f'{self.PHASE_SIGNOFF_TYPES[phase_num].label} request first.'
+                        ),
+                    })
 
         project = super().update(instance, validated_data)
 
@@ -376,9 +427,9 @@ class ProjectSerializer(serializers.ModelSerializer):
                 # Mirrors what complete_phase() does after marking a phase
                 # complete via an approved signoff -- a phase completed
                 # straight through this direct PATCH (as every phase can be,
-                # and as Phase 3 always is, having no signoff of its own)
-                # needs the same downstream advancement, not just the ones
-                # that happened to go through an ApprovalRequest first.
+                # once its approval exists) needs the same downstream
+                # advancement, not just the ones that went through
+                # ApprovalRequestSerializer's approval side effect.
                 self._advance_after_phase_complete(project, phase_num)
 
         if request and changed_phases:
@@ -398,6 +449,27 @@ class ProjectSerializer(serializers.ModelSerializer):
                 to_status=project.phase_3_execution_status,
                 changed_by=request.user,
             )
+            if (
+                new_execution_status == Project.ExecutionStatus.COMPLETED
+                and project.phase_3_status == Project.PhaseStatus.IN_PROGRESS
+            ):
+                # Phase 3's sign-off is raised automatically here rather than
+                # by a manual "Request sign-off" action like 1/2/4 -- the PM
+                # marking execution Completed *is* the request.
+                project.phase_3_status = Project.PhaseStatus.AWAITING_APPROVAL
+                project.save(update_fields=['phase_3_status'])
+                ApprovalRequest.objects.create(
+                    project=project,
+                    request_type=ApprovalRequest.RequestType.PHASE_3_SIGNOFF,
+                    requested_by=request.user,
+                )
+                ActivityEvent.record(
+                    project.lead,
+                    ActivityEvent.Category.PHASE,
+                    f'Phase 3 moved to {Project.PhaseStatus.AWAITING_APPROVAL}',
+                    actor=request.user,
+                )
+                Lead.objects.filter(pk=project.lead_id).update(last_internal_activity_at=timezone.now())
 
         if all(getattr(project, f) == Project.PhaseStatus.COMPLETE for f in self.PHASE_FIELDS):
             if not project.maintenance:
@@ -797,6 +869,7 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
     PHASE_SIGNOFF_PHASE_NUMBERS = {
         ApprovalRequest.RequestType.PHASE_1_SIGNOFF: 1,
         ApprovalRequest.RequestType.PHASE_2_SIGNOFF: 2,
+        ApprovalRequest.RequestType.PHASE_3_SIGNOFF: 3,
         ApprovalRequest.RequestType.PHASE_4_SIGNOFF: 4,
     }
 
@@ -970,9 +1043,29 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
             return
         project = instance.project
         field_name = ProjectSerializer.PHASE_FIELDS[phase_num - 1]
-        if getattr(project, field_name) == Project.PhaseStatus.AWAITING_APPROVAL:
-            setattr(project, field_name, Project.PhaseStatus.IN_PROGRESS)
-            project.save(update_fields=[field_name])
+        if getattr(project, field_name) != Project.PhaseStatus.AWAITING_APPROVAL:
+            return
+
+        setattr(project, field_name, Project.PhaseStatus.IN_PROGRESS)
+        update_fields = [field_name]
+        if phase_num == 3:
+            # Phase 3's sign-off is raised by the execution status reaching
+            # Completed, not by a separate manual action -- rejecting it
+            # reverts that same axis back to Review (one step short of the
+            # Completed that triggered it) so the PM has somewhere sensible
+            # to resume from, not just the bare phase status.
+            old_execution_status = project.phase_3_execution_status
+            project.phase_3_execution_status = Project.ExecutionStatus.REVIEW
+            update_fields.append('phase_3_execution_status')
+        project.save(update_fields=update_fields)
+
+        if phase_num == 3 and old_execution_status != Project.ExecutionStatus.REVIEW:
+            ExecutionStatusEvent.objects.create(
+                project=project,
+                from_status=old_execution_status,
+                to_status=Project.ExecutionStatus.REVIEW,
+                changed_by=instance.decided_by,
+            )
 
 
 class ActivityEventSerializer(serializers.ModelSerializer):

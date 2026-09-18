@@ -1,5 +1,5 @@
 import { formatDistanceToNow } from 'date-fns'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
@@ -15,7 +15,7 @@ import Row from 'react-bootstrap/Row'
 import Spinner from 'react-bootstrap/Spinner'
 import Tab from 'react-bootstrap/Tab'
 import Tabs from 'react-bootstrap/Tabs'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { del, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
@@ -996,9 +996,10 @@ function PhaseCard({
   const allComplete = progress.total > 0 && progress.completed === progress.total
   const isPhase3 = phaseNum === 3
   const isPhase4 = phaseNum === 4
-  // Phase 3 completes via execution status, not a sign-off request. Phase 4's
-  // sign-off only makes sense (and is only ever reachable) once Phase 3 has
-  // actually completed.
+  // Phase 3's sign-off is raised automatically (see the execution status
+  // Select below) once its execution status reaches Completed -- there's no
+  // manual "Request sign-off" button for it. Phase 4's sign-off only makes
+  // sense (and is only ever reachable) once Phase 3 has actually completed.
   const canRequestSignoff = !isPhase3 && allComplete && status !== 'COMPLETE' && (!isPhase4 || phase3Complete)
   const hasOverdueTask = tasks.some((task) => task.is_overdue)
 
@@ -1388,14 +1389,10 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
     setExecutionStatusSaving(true)
     setExecutionStatusError(null)
     try {
-      const payload = { phase_3_execution_status: newStatus }
-      // Selecting "Completed" is what completes Phase 3 -- there's no
-      // separate sign-off request for it, so this drives phase_3_status
-      // straight to COMPLETE in the same request.
-      if (newStatus === 'COMPLETED') {
-        payload.phase_3_status = 'COMPLETE'
-      }
-      await patch(`/api/projects/${project.id}/`, payload)
+      // Selecting "Completed" raises the Phase 3 sign-off automatically on
+      // the backend (moving phase_3_status to AWAITING_APPROVAL, not
+      // COMPLETE) -- nothing more to send here.
+      await patch(`/api/projects/${project.id}/`, { phase_3_execution_status: newStatus })
       await refreshProject()
     } catch {
       setExecutionStatusError('Failed to update the execution status.')
@@ -1868,9 +1865,140 @@ function StatusChangeRequestModal({ show, currentStatus, saving, error, onSave, 
   )
 }
 
+// Renders interaction notes as plain text, except that any "@username" token
+// naming a user this interaction actually mentioned (per the backend's own
+// parsing -- see mentionedUsernames, from Interaction.mentioned_usernames)
+// is wrapped and highlighted. Deliberately not a client-side re-parse of the
+// raw text: that would highlight unknown-username or self-mention "@word"
+// text the backend itself ignored, which would misrepresent what actually
+// notified anyone.
+function NotesWithMentions({ notes, mentionedUsernames }) {
+  if (!notes) return null
+  if (!mentionedUsernames || mentionedUsernames.length === 0) {
+    return <p className="mb-1">{notes}</p>
+  }
+  const escaped = mentionedUsernames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  // Capturing group so String.split includes the matched mentions themselves
+  // in the result, interleaved at odd indices -- avoids relying on a global
+  // regex's stateful lastIndex (which a separate .test() call per part would
+  // need, and get wrong).
+  const pattern = new RegExp(`((?:^|(?<=\\s))@(?:${escaped.join('|')})\\b)`, 'gi')
+  const parts = notes.split(pattern)
+  return (
+    <p className="mb-1">
+      {parts.map((part, index) =>
+        index % 2 === 1 ? (
+          <span key={index} className="fw-semibold text-primary">
+            {part}
+          </span>
+        ) : (
+          part
+        ),
+      )}
+    </p>
+  )
+}
+
+const MENTION_AUTOCOMPLETE_LIMIT = 6
+
+// A plain textarea, except typing "@" opens a small autocomplete of
+// /api/users/ filtered by whatever's typed after it -- selecting one
+// replaces the in-progress "@partial" with the full "@username ".
+function MentionAutocompleteTextarea({ value, onChange, ...controlProps }) {
+  const [users, setUsers] = useState([])
+  const [suggestion, setSuggestion] = useState(null)
+  const textareaRef = useRef(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function fetchUsers() {
+      try {
+        const data = await get('/api/users/')
+        if (!cancelled) setUsers(data)
+      } catch {
+        if (!cancelled) setUsers([])
+      }
+    }
+    fetchUsers()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  function updateSuggestion(text, cursor) {
+    const match = text.slice(0, cursor).match(/(?:^|\s)@(\w*)$/)
+    if (!match) {
+      setSuggestion(null)
+      return
+    }
+    setSuggestion({ query: match[1], start: cursor - match[1].length - 1, end: cursor })
+  }
+
+  function handleChange(event) {
+    onChange(event)
+    updateSuggestion(event.target.value, event.target.selectionStart)
+  }
+
+  function handleSelect(username) {
+    const before = value.slice(0, suggestion.start)
+    const after = value.slice(suggestion.end)
+    const nextValue = `${before}@${username} ${after}`
+    onChange({ target: { value: nextValue } })
+    setSuggestion(null)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      const caret = before.length + username.length + 2
+      el.focus()
+      el.setSelectionRange(caret, caret)
+    })
+  }
+
+  const matches = suggestion
+    ? users
+        .filter((u) => u.username.toLowerCase().startsWith(suggestion.query.toLowerCase()))
+        .slice(0, MENTION_AUTOCOMPLETE_LIMIT)
+    : []
+
+  return (
+    <div className="position-relative">
+      <Form.Control
+        {...controlProps}
+        ref={textareaRef}
+        value={value}
+        onChange={handleChange}
+        // Delayed so a suggestion's onClick (which itself fires on mousedown
+        // via preventDefault below) still lands before the dropdown closes.
+        onBlur={() => setTimeout(() => setSuggestion(null), 150)}
+      />
+      {suggestion && matches.length > 0 && (
+        <ListGroup className="position-absolute shadow-sm" style={{ zIndex: 1060, minWidth: '12rem', top: '100%' }}>
+          {matches.map((u) => (
+            <ListGroup.Item
+              key={u.id}
+              action
+              as="button"
+              type="button"
+              className="py-1"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => handleSelect(u.username)}
+            >
+              @{u.username}
+            </ListGroup.Item>
+          ))}
+        </ListGroup>
+      )}
+    </div>
+  )
+}
+
 export default function LeadDetail() {
   const { id } = useParams()
   const { user } = useAuth()
+  // Lets a notification-centre link land straight on the Activity tab
+  // (e.g. /leads/12?tab=activity) instead of always opening on Phases.
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') === 'activity' ? 'activity' : 'phases'
 
   const [lead, setLead] = useState(null)
   const [loadingLead, setLoadingLead] = useState(true)
@@ -2208,7 +2336,7 @@ export default function LeadDetail() {
             />
           )}
 
-          <Tabs defaultActiveKey="phases" id="lead-detail-tabs" className="mb-4">
+          <Tabs defaultActiveKey={initialTab} id="lead-detail-tabs" className="mb-4">
             <Tab eventKey="phases" title="Phases">
               <PhaseTracker
                 leadId={lead.id}
@@ -2270,7 +2398,7 @@ export default function LeadDetail() {
                       <Col sm={type !== 'NOTE' ? 4 : 7}>
                         <Form.Group controlId="interaction-notes">
                           <Form.Label className="small mb-1">Notes</Form.Label>
-                          <Form.Control
+                          <MentionAutocompleteTextarea
                             as="textarea"
                             rows={1}
                             size="sm"
@@ -2344,7 +2472,7 @@ export default function LeadDetail() {
                             {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
                           </span>
                         </div>
-                        {entry.notes && <p className="mb-1">{entry.notes}</p>}
+                        <NotesWithMentions notes={entry.notes} mentionedUsernames={entry.mentioned_usernames} />
                         <div className="text-body-secondary small">
                           Logged by {entry.created_by_username ?? 'Unknown'}
                         </div>

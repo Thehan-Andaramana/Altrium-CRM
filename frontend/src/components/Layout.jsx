@@ -1,4 +1,6 @@
+import { formatDistanceToNow } from 'date-fns'
 import {
+  Bell,
   Building2,
   CheckSquare,
   ChevronDown,
@@ -16,20 +18,23 @@ import { useEffect, useRef, useState } from 'react'
 import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
 import Container from 'react-bootstrap/Container'
+import Dropdown from 'react-bootstrap/Dropdown'
 import Form from 'react-bootstrap/Form'
 import InputGroup from 'react-bootstrap/InputGroup'
 import ListGroup from 'react-bootstrap/ListGroup'
 import Nav from 'react-bootstrap/Nav'
 import Navbar from 'react-bootstrap/Navbar'
 import NavDropdown from 'react-bootstrap/NavDropdown'
+import Spinner from 'react-bootstrap/Spinner'
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { get } from '../api'
+import { get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import { useTheme } from '../ThemeContext.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 const SIDEBAR_WIDTH = '240px'
 const SEARCH_DEBOUNCE_MS = 300
+const NOTIFICATION_POLL_MS = 60000
 
 const NAV_ITEMS = [
   { to: '/', end: true, label: 'Home', Icon: LayoutDashboard },
@@ -234,9 +239,139 @@ function UserAvatar({ username }) {
   )
 }
 
+function NotificationBell({ user }) {
+  const navigate = useNavigate()
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [mentions, setMentions] = useState([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+
+    async function fetchUnreadCount() {
+      try {
+        const data = await get('/api/notifications/unread_count/')
+        // Leave the last known count on a transient failure rather than
+        // flashing it to zero -- the next poll self-corrects either way.
+        if (!cancelled) setUnreadCount(data.unread_count)
+      } catch {
+        // Same reasoning -- nothing to do here.
+      }
+    }
+
+    fetchUnreadCount()
+    const intervalId = setInterval(fetchUnreadCount, NOTIFICATION_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(intervalId)
+    }
+  }, [user])
+
+  async function handleToggle(nextOpen) {
+    if (!nextOpen) return
+    setLoading(true)
+    try {
+      const data = await get('/api/notifications/')
+      setMentions(data)
+    } catch {
+      setMentions([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function handleSelect(mention) {
+    setMentions((prev) => prev.filter((m) => m.id !== mention.id))
+    setUnreadCount((prev) => Math.max(0, prev - 1))
+    navigate(`/leads/${mention.lead_id}?tab=activity`)
+    // Best-effort -- if this fails, the mention just reappears on the next
+    // full list fetch and the badge self-corrects on the next 60s poll.
+    patch(`/api/notifications/${mention.id}/`, {}).catch(() => {})
+  }
+
+  async function handleMarkAllRead(event) {
+    event.stopPropagation()
+    const previousMentions = mentions
+    const previousCount = unreadCount
+    setMentions([])
+    setUnreadCount(0)
+    try {
+      await post('/api/notifications/mark-all-read/', {})
+    } catch {
+      setMentions(previousMentions)
+      setUnreadCount(previousCount)
+    }
+  }
+
+  return (
+    <Dropdown align="end" onToggle={handleToggle}>
+      <Dropdown.Toggle
+        variant="outline-secondary"
+        size="sm"
+        className="border-0 rounded-circle p-2 position-relative dropdown-toggle-no-caret"
+        id="notification-bell"
+        aria-label="Notifications"
+        title="Notifications"
+      >
+        <Bell size={18} />
+        {unreadCount > 0 && (
+          <Badge
+            bg="danger"
+            pill
+            className="position-absolute top-0 start-100 translate-middle"
+            style={{ fontSize: '0.6rem' }}
+          >
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </Badge>
+        )}
+      </Dropdown.Toggle>
+      <Dropdown.Menu style={{ minWidth: '22rem', maxHeight: '24rem', overflowY: 'auto' }}>
+        <div className="d-flex justify-content-between align-items-center px-3 py-1">
+          <span className="fw-semibold small">Mentions</span>
+          {mentions.length > 0 && (
+            <Button variant="link" size="sm" className="p-0" onClick={handleMarkAllRead}>
+              Mark all read
+            </Button>
+          )}
+        </div>
+        <Dropdown.Divider />
+        {loading ? (
+          <div className="text-center py-3">
+            <Spinner animation="border" size="sm" />
+          </div>
+        ) : mentions.length === 0 ? (
+          <div className="text-body-secondary small px-3 py-2">No unread mentions.</div>
+        ) : (
+          mentions.map((mention) => (
+            <Dropdown.Item
+              key={mention.id}
+              as="button"
+              type="button"
+              className="py-2"
+              style={{ whiteSpace: 'normal' }}
+              onClick={() => handleSelect(mention)}
+            >
+              <div className="d-flex justify-content-between gap-2">
+                <span className="fw-semibold small">{mention.created_by_username ?? 'Someone'}</span>
+                <span className="text-body-secondary small flex-shrink-0">
+                  {formatDistanceToNow(new Date(mention.created_at), { addSuffix: true })}
+                </span>
+              </div>
+              <div className="text-body-secondary small">{mention.lead_name}</div>
+              <div className="small text-truncate">{mention.note_snippet}</div>
+            </Dropdown.Item>
+          ))
+        )}
+      </Dropdown.Menu>
+    </Dropdown>
+  )
+}
+
 function UserActions({ theme, onToggleTheme, user, canSeeSettings, onLogout }) {
   return (
     <>
+      <NotificationBell user={user} />
       <Button
         variant="outline-secondary"
         size="sm"

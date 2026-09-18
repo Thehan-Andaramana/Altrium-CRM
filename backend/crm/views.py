@@ -5,7 +5,7 @@ from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Q, Subqu
 from django.http import FileResponse
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
-from rest_framework import generics, status, viewsets
+from rest_framework import generics, mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -19,6 +19,7 @@ from .models import (
     Deal,
     Interaction,
     Lead,
+    Mention,
     PhaseRequirement,
     Project,
     RequirementTemplate,
@@ -33,7 +34,6 @@ from .permissions import (
     CompanyPermission,
     ContactPermission,
     FULL_ACCESS_ROLES,
-    ManagementRolePermission,
     ManagementWritePermission,
     PhaseRequirementPermission,
     RoleBasedAccess,
@@ -47,6 +47,7 @@ from .serializers import (
     ContactSerializer,
     InteractionSerializer,
     LeadSerializer,
+    MentionSerializer,
     PhaseRequirementSerializer,
     ProjectSerializer,
     RequirementTemplateSerializer,
@@ -243,7 +244,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         lead = self.get_object()
         tagged = [
             ('INTERACTION', 'INTERACTION', i.occurred_at, i)
-            for i in lead.interactions.select_related('created_by')
+            for i in lead.interactions.select_related('created_by').prefetch_related('mentions__user')
         ] + [
             ('APPROVAL_REQUEST', 'APPROVAL', a.created_at, a)
             for a in ApprovalRequest.objects.filter(
@@ -314,7 +315,7 @@ class InteractionViewSet(viewsets.ModelViewSet):
     ordering = ['-occurred_at']
 
     def get_queryset(self):
-        queryset = Interaction.objects.select_related('lead', 'created_by')
+        queryset = Interaction.objects.select_related('lead', 'created_by').prefetch_related('mentions__user')
         user = self.request.user
         if user.role == User.Role.SALES_REP:
             queryset = queryset.filter(lead__assigned_to=user)
@@ -594,10 +595,60 @@ class DashboardView(APIView):
 
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
+    # Read-only for any authenticated user (not just management) -- the
+    # @mention autocomplete needs every role, including SALES_REP, to be able
+    # to list users. Existing management-only actions (e.g. reassigning a
+    # lead's owner) stay gated by their own view's permission, not this one.
     serializer_class = UserSummarySerializer
-    permission_classes = [IsAuthenticated, ManagementRolePermission]
+    permission_classes = [IsAuthenticated]
     filterset_fields = ['role']
     queryset = User.objects.all().order_by('username')
+
+
+class MentionViewSet(
+    mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet,
+):
+    """
+    The notification centre, backed by Mention rows. No create/destroy --
+    mentions are only ever created as a side effect of Interaction.save().
+
+    list: the current user's *unread* mentions only (the notification
+    centre's whole point). retrieve/update stay reachable for an
+    already-read mention too (scoped to the user either way) so marking one
+    read twice is a harmless no-op rather than a 404.
+    """
+
+    serializer_class = MentionSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ['get', 'patch', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        queryset = Mention.objects.filter(user=self.request.user).select_related(
+            'interaction__lead', 'created_by',
+        )
+        if self.action == 'list':
+            queryset = queryset.filter(read_at__isnull=True)
+        return queryset
+
+    def update(self, request, *args, **kwargs):
+        # Only ever transitions read_at from null to now -- there's nothing
+        # else on a Mention for a client to change, so every field is
+        # read-only on the serializer and the actual write happens here.
+        instance = self.get_object()
+        if instance.read_at is None:
+            instance.read_at = timezone.now()
+            instance.save(update_fields=['read_at'])
+        return Response(self.get_serializer(instance).data)
+
+    @action(detail=False, methods=['get'])
+    def unread_count(self, request):
+        count = Mention.objects.filter(user=request.user, read_at__isnull=True).count()
+        return Response({'unread_count': count})
+
+    @action(detail=False, methods=['post'], url_path='mark-all-read')
+    def mark_all_read(self, request):
+        Mention.objects.filter(user=request.user, read_at__isnull=True).update(read_at=timezone.now())
+        return Response({'unread_count': 0})
 
 
 class SystemSettingsView(generics.RetrieveUpdateAPIView):

@@ -28,6 +28,7 @@ from crm.views import (
     DashboardView,
     InteractionViewSet,
     LeadViewSet,
+    MentionViewSet,
     PhaseRequirementViewSet,
     ProjectViewSet,
     RequirementTemplateViewSet,
@@ -47,6 +48,7 @@ router.register('approvals', ApprovalRequestViewSet, basename='approvalrequest')
 router.register('requirements', PhaseRequirementViewSet, basename='phaserequirement')
 router.register('attachments', TaskAttachmentViewSet, basename='taskattachment')
 router.register('requirement-templates', RequirementTemplateViewSet, basename='requirementtemplate')
+router.register('notifications', MentionViewSet, basename='notification')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

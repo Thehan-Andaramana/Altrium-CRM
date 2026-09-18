@@ -20,6 +20,7 @@ const REQUEST_TYPE_LABELS = {
   LEAD_STATUS_CHANGE: 'Lead Status Change',
   PHASE_1_SIGNOFF: 'Phase 1 Signoff',
   PHASE_2_SIGNOFF: 'Phase 2 Signoff',
+  PHASE_3_SIGNOFF: 'Phase 3 Signoff',
   PHASE_4_SIGNOFF: 'Phase 4 Signoff',
 }
 

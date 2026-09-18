@@ -11,7 +11,7 @@ from rest_framework.reverse import reverse
 from rest_framework.test import APIClient, APITestCase
 
 from .models import (
-    ActivityEvent, ApprovalRequest, Company, Contact, Deal, ExecutionStatusEvent, Interaction, Lead,
+    ActivityEvent, ApprovalRequest, Company, Contact, Deal, ExecutionStatusEvent, Interaction, Lead, Mention,
     PhaseRequirement, Project, TaskAttachment, TaskFormField, TaskFormResponse, User,
 )
 
@@ -268,16 +268,35 @@ class ProjectPhaseTransitionTests(ProjectRequirementsTestMixin, APITestCase):
         self.project.refresh_from_db()
         self.assertFalse(self.project.maintenance)
 
-        # Phase 3 has no signoff request -- it completes once the PM marks
-        # execution Completed.
+        # Phase 3 follows the same approval-driven path as 1/2 -- setting
+        # execution status to Completed raises the sign-off automatically
+        # (moving the phase to AWAITING_APPROVAL, not straight to COMPLETE)
+        # once its requirements are confirmed complete. Done as the assigned
+        # PM, not self.manager, so the manager can still decide it afterwards
+        # -- a request can't be decided by whoever raised it.
+        self.project.requirements.filter(phase=3).update(
+            status=PhaseRequirement.Status.COMPLETED, confirmed_by=self.manager, confirmed_at=timezone.now(),
+        )
+        self.client.force_authenticate(self.pm)
         exec_response = self._patch_project(phase_3_execution_status=Project.ExecutionStatus.COMPLETED)
         self.assertEqual(exec_response.status_code, status.HTTP_200_OK)
-        response = self._patch_project(phase_3_status=Project.PhaseStatus.COMPLETE)
+        self.client.force_authenticate(self.manager)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.AWAITING_APPROVAL)
+
+        approval = ApprovalRequest.objects.get(
+            project=self.project,
+            request_type=ApprovalRequest.RequestType.PHASE_3_SIGNOFF,
+            status=ApprovalRequest.Status.PENDING,
+        )
+        url = reverse('approvalrequest-detail', args=[approval.id])
+        response = self.client.patch(url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         # Phase 4 auto-advances to IN_PROGRESS as a side effect of Phase 3
         # completing.
         self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.COMPLETE)
         self.assertEqual(self.project.phase_4_status, Project.PhaseStatus.IN_PROGRESS)
         self.assertFalse(self.project.maintenance)
 
@@ -495,6 +514,203 @@ class InteractionOutcomeTests(APITestCase):
         self.lead.refresh_from_db()
         self.assertEqual(self.lead.status, Lead.Status.COLD)
         self.assertGreater(self.lead.last_activity_at, original_last_activity)
+
+
+class MentionParsingTests(TestCase):
+    """
+    Interaction.save() parses @username out of notes and creates a Mention
+    per known, non-self match -- these tests exercise that model-level
+    behaviour directly, independent of the API.
+    """
+
+    def setUp(self):
+        self.rep = User.objects.create_user(username='rep1', password='pass', role=User.Role.SALES_REP)
+        self.other = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.company = Company.objects.create(name='Acme', owner=self.rep)
+        self.lead = Lead.objects.create(company=self.company, assigned_to=self.rep)
+
+    def _note(self, text, author=None):
+        return Interaction.objects.create(
+            lead=self.lead, type=Interaction.Type.NOTE, notes=text, created_by=author or self.rep,
+        )
+
+    def test_mentioning_a_known_user_creates_a_mention(self):
+        interaction = self._note('Looping in @rep2 on this one.')
+        mention = Mention.objects.get(interaction=interaction)
+        self.assertEqual(mention.user, self.other)
+        self.assertEqual(mention.created_by, self.rep)
+        self.assertIsNone(mention.read_at)
+
+    def test_mention_matching_is_case_insensitive(self):
+        interaction = self._note('cc @REP2 please review.')
+        self.assertTrue(Mention.objects.filter(interaction=interaction, user=self.other).exists())
+
+    def test_multiple_mentions_each_create_a_mention(self):
+        third = User.objects.create_user(username='mgr1', password='pass', role=User.Role.SALES_MANAGER)
+        interaction = self._note('@rep2 and @mgr1 please take a look.')
+        mentioned = set(Mention.objects.filter(interaction=interaction).values_list('user_id', flat=True))
+        self.assertEqual(mentioned, {self.other.id, third.id})
+
+    def test_self_mention_is_ignored(self):
+        interaction = self._note('Reminder to myself: @rep1 follow up Monday.')
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+
+    def test_unknown_username_is_ignored(self):
+        interaction = self._note('cc @nobody_by_this_name')
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+        # Doesn't raise, and the known mention alongside it still works.
+        interaction2 = self._note('cc @nobody_by_this_name and @rep2')
+        self.assertEqual(
+            list(Mention.objects.filter(interaction=interaction2).values_list('user_id', flat=True)),
+            [self.other.id],
+        )
+
+    def test_email_address_in_notes_is_not_mistaken_for_a_mention(self):
+        # "@rep2" here is the tail of an email address, not a real mention --
+        # the pattern requires the '@' to start the text or follow whitespace.
+        interaction = self._note('Reach them at jane@rep2.example.com for now.')
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+
+    def test_notes_with_no_mentions_creates_none(self):
+        interaction = self._note('Had a good call, no follow-up needed.')
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+
+    def test_resaving_the_same_notes_does_not_duplicate_the_mention(self):
+        interaction = self._note('cc @rep2')
+        interaction.save()
+        interaction.save()
+        self.assertEqual(Mention.objects.filter(interaction=interaction, user=self.other).count(), 1)
+
+    def test_editing_notes_to_add_a_mention_creates_it(self):
+        interaction = self._note('No mentions yet.')
+        self.assertFalse(Mention.objects.filter(interaction=interaction).exists())
+        interaction.notes = 'Now looping in @rep2.'
+        interaction.save()
+        self.assertTrue(Mention.objects.filter(interaction=interaction, user=self.other).exists())
+
+    def test_mention_works_on_non_note_interaction_types(self):
+        interaction = Interaction.objects.create(
+            lead=self.lead, type=Interaction.Type.CALL, outcome=Interaction.Outcome.RESPONDED,
+            notes='Discussed pricing, cc @rep2', created_by=self.rep,
+        )
+        self.assertTrue(Mention.objects.filter(interaction=interaction, user=self.other).exists())
+
+
+class NotificationApiTests(APITestCase):
+    def setUp(self):
+        self.rep1 = User.objects.create_user(username='rep1', password='pass', role=User.Role.SALES_REP)
+        self.rep2 = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.rep3 = User.objects.create_user(username='rep3', password='pass', role=User.Role.SALES_REP)
+        self.company = Company.objects.create(name='Acme', owner=self.rep1)
+        self.lead = Lead.objects.create(company=self.company, assigned_to=self.rep1)
+        self.client.force_authenticate(self.rep1)
+
+    def _mention(self, target_username, author=None):
+        interaction = Interaction.objects.create(
+            lead=self.lead, type=Interaction.Type.NOTE,
+            notes=f'cc @{target_username} for visibility', created_by=author or self.rep1,
+        )
+        return Mention.objects.get(interaction=interaction)
+
+    def test_notification_list_only_returns_the_current_users_unread_mentions(self):
+        mine = self._mention('rep2')
+        self._mention('rep3')  # someone else's mention -- must not appear
+
+        self.client.force_authenticate(self.rep2)
+        response = self.client.get(reverse('notification-list'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids, [mine.id])
+
+    def test_notification_payload_includes_interaction_lead_and_author(self):
+        self._mention('rep2', author=self.rep1)
+        self.client.force_authenticate(self.rep2)
+        response = self.client.get(reverse('notification-list'))
+        row = response.data[0]
+        self.assertEqual(row['lead_id'], self.lead.id)
+        self.assertEqual(row['lead_name'], self.lead.name)
+        self.assertEqual(row['created_by_username'], 'rep1')
+        self.assertIn('cc @rep2 for visibility', row['note_snippet'])
+        self.assertIn('interaction', row)
+
+    def test_read_mentions_are_excluded_from_the_list(self):
+        mention = self._mention('rep2')
+        mention.read_at = timezone.now()
+        mention.save(update_fields=['read_at'])
+
+        self.client.force_authenticate(self.rep2)
+        response = self.client.get(reverse('notification-list'))
+        self.assertEqual(response.data, [])
+
+    def test_marking_one_mention_read(self):
+        mention = self._mention('rep2')
+        self.client.force_authenticate(self.rep2)
+
+        url = reverse('notification-detail', args=[mention.id])
+        response = self.client.patch(url, {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(response.data['read_at'])
+
+        mention.refresh_from_db()
+        self.assertIsNotNone(mention.read_at)
+
+        list_response = self.client.get(reverse('notification-list'))
+        self.assertEqual(list_response.data, [])
+
+    def test_marking_an_already_read_mention_again_is_a_harmless_no_op(self):
+        mention = self._mention('rep2')
+        self.client.force_authenticate(self.rep2)
+        url = reverse('notification-detail', args=[mention.id])
+
+        first = self.client.patch(url, {}, format='json')
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        first_read_at = mention.__class__.objects.get(pk=mention.id).read_at
+
+        second = self.client.patch(url, {}, format='json')
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        mention.refresh_from_db()
+        self.assertEqual(mention.read_at, first_read_at)
+
+    def test_cannot_mark_someone_elses_mention_read(self):
+        mention = self._mention('rep2')
+        self.client.force_authenticate(self.rep3)
+        url = reverse('notification-detail', args=[mention.id])
+        response = self.client.patch(url, {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mention.refresh_from_db()
+        self.assertIsNone(mention.read_at)
+
+    def test_unread_count_reflects_only_this_users_unread_mentions(self):
+        self._mention('rep2')
+        self._mention('rep2')
+        self._mention('rep3')
+
+        self.client.force_authenticate(self.rep2)
+        response = self.client.get(reverse('notification-unread-count'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['unread_count'], 2)
+
+    def test_mark_all_read_clears_every_unread_mention_for_this_user(self):
+        self._mention('rep2')
+        self._mention('rep2')
+        other_mention = self._mention('rep3')
+
+        self.client.force_authenticate(self.rep2)
+        response = self.client.post(reverse('notification-mark-all-read'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['unread_count'], 0)
+
+        self.assertEqual(
+            Mention.objects.filter(user=self.rep2, read_at__isnull=True).count(), 0,
+        )
+        # Someone else's unread mention is untouched.
+        other_mention.refresh_from_db()
+        self.assertIsNone(other_mention.read_at)
+
+    def test_unauthenticated_request_is_rejected(self):
+        self.client.force_authenticate(None)
+        response = self.client.get(reverse('notification-list'))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
 class PhaseRequirementConfirmationTests(ProjectRequirementsTestMixin, APITestCase):
@@ -1305,9 +1521,10 @@ class ApprovalPhaseSignoffAutoCompletionTests(ProjectRequirementsTestMixin, APIT
         self.assertEqual(self.project.phase_2_status, Project.PhaseStatus.COMPLETE)
         self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.IN_PROGRESS)
 
-    def test_phase_3_cannot_complete_without_execution_status_completed(self):
-        # Phase 3 has no signoff type -- it's gated on phase_3_execution_status
-        # instead (see ProjectSerializer.update()).
+    def test_phase_3_cannot_complete_without_approved_signoff(self):
+        # Phase 3 now follows the exact same gate as 1/2/4 -- a direct PATCH
+        # to COMPLETE fails without an approved PHASE_3_SIGNOFF, regardless of
+        # execution status.
         self.project.phase_1_status = Project.PhaseStatus.COMPLETE
         self.project.phase_2_status = Project.PhaseStatus.COMPLETE
         self.project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
@@ -1317,25 +1534,106 @@ class ApprovalPhaseSignoffAutoCompletionTests(ProjectRequirementsTestMixin, APIT
         response = self.client.patch(url, {'phase_3_status': Project.PhaseStatus.COMPLETE}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_completing_phase_3_via_execution_status_advances_phase_4(self):
+    def _start_phase_3(self):
         self.project.phase_1_status = Project.PhaseStatus.COMPLETE
         self.project.phase_2_status = Project.PhaseStatus.COMPLETE
         self.project.phase_3_status = Project.PhaseStatus.IN_PROGRESS
         self.project.save()
 
-        url = reverse('project-detail', args=[self.project.id])
-        exec_response = self.client.patch(
-            url, {'phase_3_execution_status': Project.ExecutionStatus.COMPLETED}, format='json',
+    def _confirm_phase_3_requirements(self):
+        self.project.requirements.filter(phase=3).update(
+            status=PhaseRequirement.Status.COMPLETED, confirmed_by=self.manager, confirmed_at=timezone.now(),
         )
-        self.assertEqual(exec_response.status_code, status.HTTP_200_OK)
 
-        complete_response = self.client.patch(url, {'phase_3_status': Project.PhaseStatus.COMPLETE}, format='json')
-        self.assertEqual(complete_response.status_code, status.HTTP_200_OK)
+    def _pending_phase_3_signoff(self):
+        return ApprovalRequest.objects.get(
+            project=self.project,
+            request_type=ApprovalRequest.RequestType.PHASE_3_SIGNOFF,
+            status=ApprovalRequest.Status.PENDING,
+        )
+
+    def _set_execution_status(self, value):
+        # The assigned PM is the one who moves execution status -- doing so
+        # as self.manager instead would make the manager both the auto-raised
+        # request's requester and (later) its decider, which
+        # ApprovalRequestPermission correctly refuses as self-approval.
+        self.client.force_authenticate(self.pm)
+        url = reverse('project-detail', args=[self.project.id])
+        response = self.client.patch(url, {'phase_3_execution_status': value}, format='json')
+        self.client.force_authenticate(self.manager)
+        return response
+
+    def test_execution_status_completed_moves_phase_3_to_awaiting_approval_not_complete(self):
+        self._start_phase_3()
+        self._confirm_phase_3_requirements()
+
+        response = self._set_execution_status(Project.ExecutionStatus.COMPLETED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.AWAITING_APPROVAL)
+        self.assertNotEqual(self.project.phase_3_status, Project.PhaseStatus.COMPLETE)
+        self.assertTrue(
+            ApprovalRequest.objects.filter(
+                project=self.project,
+                request_type=ApprovalRequest.RequestType.PHASE_3_SIGNOFF,
+                status=ApprovalRequest.Status.PENDING,
+            ).exists(),
+        )
+
+    def test_approving_phase_3_signoff_completes_it_and_starts_phase_4(self):
+        self._start_phase_3()
+        self._confirm_phase_3_requirements()
+        self._set_execution_status(Project.ExecutionStatus.COMPLETED)
+
+        response = self._decide(self._pending_phase_3_signoff(), ApprovalRequest.Status.APPROVED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         self.project.refresh_from_db()
         self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.COMPLETE)
         self.assertEqual(self.project.phase_4_status, Project.PhaseStatus.IN_PROGRESS)
         self.assertFalse(self.project.maintenance)
+
+    def test_rejecting_phase_3_signoff_returns_it_to_in_progress_and_review(self):
+        self._start_phase_3()
+        self._confirm_phase_3_requirements()
+        self._set_execution_status(Project.ExecutionStatus.COMPLETED)
+
+        response = self._decide(self._pending_phase_3_signoff(), ApprovalRequest.Status.REJECTED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_3_status, Project.PhaseStatus.IN_PROGRESS)
+        self.assertEqual(self.project.phase_3_execution_status, Project.ExecutionStatus.REVIEW)
+        self.assertTrue(
+            ExecutionStatusEvent.objects.filter(
+                project=self.project,
+                from_status=Project.ExecutionStatus.COMPLETED,
+                to_status=Project.ExecutionStatus.REVIEW,
+            ).exists(),
+        )
+
+    def test_execution_status_can_move_backwards_before_phase_3_completes(self):
+        self._start_phase_3()
+        response = self._set_execution_status(Project.ExecutionStatus.REVIEW)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Review -> Building: backwards, but Phase 3 isn't COMPLETE yet.
+        response = self._set_execution_status(Project.ExecutionStatus.BUILDING)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_3_execution_status, Project.ExecutionStatus.BUILDING)
+
+    def test_execution_status_cannot_change_once_phase_3_is_complete(self):
+        self._start_phase_3()
+        self._confirm_phase_3_requirements()
+        self._set_execution_status(Project.ExecutionStatus.COMPLETED)
+        self._decide(self._pending_phase_3_signoff(), ApprovalRequest.Status.APPROVED)
+
+        response = self._set_execution_status(Project.ExecutionStatus.REVIEW)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_3_execution_status, Project.ExecutionStatus.COMPLETED)
 
         event = ExecutionStatusEvent.objects.get(project=self.project)
         self.assertIsNone(event.from_status)

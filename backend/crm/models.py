@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta
 
 from django.contrib.auth.models import AbstractUser
@@ -6,6 +7,14 @@ from django.db import models
 from django.utils import timezone
 
 from .storage import PrivateAttachmentStorage
+
+# Matches "@username" tokens in free text -- only word characters (letters,
+# digits, underscore), which covers every username actually seeded/used in
+# this app. Anchored to start-of-string or a preceding whitespace character
+# (via lookbehind, since a variable-width alternation can't sit inside a
+# lookbehind directly) so "email@domain" isn't misread as a mention of
+# "domain".
+MENTION_PATTERN = re.compile(r'(?:^|(?<=\s))@(\w+)')
 
 
 class User(AbstractUser):
@@ -239,6 +248,27 @@ class Interaction(models.Model):
         # LEAD_STATUS_CHANGE request; see ApprovalRequestSerializer).
         if self.type == Interaction.Type.NOTE or self.outcome == Interaction.Outcome.RESPONDED:
             Lead.objects.filter(pk=self.lead_id).update(last_activity_at=self.occurred_at)
+        self._create_mentions()
+
+    def _create_mentions(self):
+        # Mention is defined later in this module; that's fine since this
+        # only resolves at call time, well after import (same pattern as
+        # Project.save()'s forward reference to PhaseRequirement).
+        usernames = set(MENTION_PATTERN.findall(self.notes or ''))
+        if not usernames:
+            return
+        for username in usernames:
+            user = User.objects.filter(username__iexact=username).exclude(pk=self.created_by_id).first()
+            if user is None:
+                # Unknown username, or the author mentioning themselves --
+                # both are silently ignored, not an error.
+                continue
+            # get_or_create rather than a blind create(): save() runs on
+            # every update too (e.g. editing notes), and re-parsing the same
+            # already-mentioned name shouldn't raise or duplicate-notify.
+            Mention.objects.get_or_create(
+                user=user, interaction=self, defaults={'created_by_id': self.created_by_id},
+            )
 
 
 class RequirementTemplate(models.Model):
@@ -729,6 +759,7 @@ class ApprovalRequest(models.Model):
         LEAD_STATUS_CHANGE = 'LEAD_STATUS_CHANGE', 'Lead Status Change'
         PHASE_1_SIGNOFF = 'PHASE_1_SIGNOFF', 'Phase 1 Signoff'
         PHASE_2_SIGNOFF = 'PHASE_2_SIGNOFF', 'Phase 2 Signoff'
+        PHASE_3_SIGNOFF = 'PHASE_3_SIGNOFF', 'Phase 3 Signoff'
         PHASE_4_SIGNOFF = 'PHASE_4_SIGNOFF', 'Phase 4 Signoff'
 
     class Status(models.TextChoices):
@@ -859,6 +890,35 @@ class ActivityEvent(models.Model):
         # (e.g. a PHASE event from a client_facing task completion vs. any
         # other task/phase change -- see PhaseRequirementSerializer.update).
         return cls.objects.create(lead=lead, category=category, description=description, actor=actor)
+
+
+class Mention(models.Model):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='mentions',
+    )
+    interaction = models.ForeignKey(
+        Interaction,
+        on_delete=models.CASCADE,
+        related_name='mentions',
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='mentions_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'interaction'], name='mention_unique_user_interaction'),
+        ]
+
+    def __str__(self):
+        return f'@{self.user.username} in interaction {self.interaction_id}'
 
 
 class SystemSettings(models.Model):
