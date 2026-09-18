@@ -52,3 +52,30 @@
 .progress-thin {
   height: 0.5rem;
 }
+
+// Calendar.jsx's month grid -- hand-rolled CSS Grid (no calendar library).
+// Pure structural/spacing rules, no colour, so dark mode is unaffected --
+// --bs-border-color is Bootstrap's own theme-aware border variable, so cell
+// borders already track light/dark automatically.
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-top: 1px solid var(--bs-border-color);
+  border-left: 1px solid var(--bs-border-color);
+}
+
+.calendar-cell {
+  min-height: 6rem;
+  border-right: 1px solid var(--bs-border-color);
+  border-bottom: 1px solid var(--bs-border-color);
+  padding: 0.35rem;
+  overflow-y: auto;
+}
+
+.calendar-entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

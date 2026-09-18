@@ -23,6 +23,7 @@ from rest_framework.routers import DefaultRouter
 
 from crm.views import (
     ApprovalRequestViewSet,
+    CalendarView,
     CompanyViewSet,
     ContactViewSet,
     DashboardView,
@@ -55,6 +56,7 @@ urlpatterns = [
     path('api/auth/', include('crm.urls')),
     path('api/settings/', SystemSettingsView.as_view(), name='system-settings'),
     path('api/dashboard/', DashboardView.as_view(), name='dashboard'),
+    path('api/calendar/', CalendarView.as_view(), name='calendar'),
     path('api/', include(router.urls)),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path(

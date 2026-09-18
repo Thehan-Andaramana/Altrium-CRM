@@ -2,6 +2,7 @@ import { formatDistanceToNow } from 'date-fns'
 import {
   Bell,
   Building2,
+  Calendar,
   CheckSquare,
   ChevronDown,
   GitBranch,
@@ -39,6 +40,7 @@ const NOTIFICATION_POLL_MS = 60000
 const NAV_ITEMS = [
   { to: '/', end: true, label: 'Home', Icon: LayoutDashboard },
   { to: '/leads', label: 'Pipeline', Icon: GitBranch },
+  { to: '/calendar', label: 'Calendar', Icon: Calendar },
   { to: '/companies', label: 'Companies', Icon: Building2, requiresCompaniesAccess: true },
   { to: '/contacts', label: 'Contacts', Icon: Users },
   { to: '/approvals', label: 'Approvals', Icon: CheckSquare, showApprovalsBadge: true },

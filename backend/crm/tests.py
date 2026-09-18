@@ -12,7 +12,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from .models import (
     ActivityEvent, ApprovalRequest, Company, Contact, Deal, ExecutionStatusEvent, Interaction, Lead, Mention,
-    PhaseRequirement, Project, TaskAttachment, TaskFormField, TaskFormResponse, User,
+    PhaseRequirement, Project, RequirementTemplate, TaskAttachment, TaskFormField, TaskFormResponse, User,
 )
 
 
@@ -380,6 +380,171 @@ class DashboardScopingTests(APITestCase):
         ids = {row['id'] for row in response.data['overdue_tasks']['results']}
         self.assertIn(requirement1.id, ids)
         self.assertIn(requirement2.id, ids)
+
+
+class CalendarApiTests(ProjectRequirementsTestMixin, APITestCase):
+    """
+    /api/calendar/ -- role-scoped like the dashboard's overdue-tasks list,
+    except PROJECT_MANAGER gets a real scope here (their own managed
+    projects), since the dashboard never implemented one for that role.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.today = timezone.localdate()
+        self.this_year, self.this_month = self.today.year, self.today.month
+        self.phase1_task = self.project.requirements.filter(phase=1).first()
+        self.phase2_task = self.project.requirements.filter(phase=2).first()
+
+        self.other_rep = User.objects.create_user(username='rep2', password='pass', role=User.Role.SALES_REP)
+        self.other_pm = User.objects.create_user(username='pm2', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.other_company = Company.objects.create(name='Other Co', owner=self.other_rep)
+        self.other_lead = Lead.objects.create(company=self.other_company, assigned_to=self.other_rep)
+        self.other_lead.project.project_manager = self.other_pm
+        self.other_lead.project.save(update_fields=['project_manager'])
+        self.other_task = self.other_lead.project.requirements.filter(phase=1).first()
+
+    def _set_due_date(self, task, due_date):
+        task.due_date = due_date
+        task.save(update_fields=['due_date'])
+
+    def _calendar(self, year=None, month=None):
+        params = {}
+        if year is not None:
+            params['year'] = year
+        if month is not None:
+            params['month'] = month
+        return self.client.get(reverse('calendar'), params)
+
+    def test_rep_sees_only_tasks_on_their_assigned_leads(self):
+        self._set_due_date(self.phase1_task, self.today)
+        self._set_due_date(self.other_task, self.today)
+
+        self.client.force_authenticate(self.rep)
+        response = self._calendar(self.this_year, self.this_month)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.phase1_task.id, ids)
+        self.assertNotIn(self.other_task.id, ids)
+
+    def test_pm_sees_only_tasks_on_projects_they_manage(self):
+        self._set_due_date(self.phase2_task, self.today)
+        self._set_due_date(self.other_task, self.today)
+
+        self.client.force_authenticate(self.pm)
+        response = self._calendar(self.this_year, self.this_month)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.phase2_task.id, ids)
+        self.assertNotIn(self.other_task.id, ids)
+
+    def test_manager_sees_everything(self):
+        self._set_due_date(self.phase1_task, self.today)
+        self._set_due_date(self.other_task, self.today)
+
+        response = self._calendar(self.this_year, self.this_month)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.phase1_task.id, ids)
+        self.assertIn(self.other_task.id, ids)
+
+    def test_system_admin_sees_everything(self):
+        admin = User.objects.create_user(username='admin1', password='pass', role=User.Role.SYSTEM_ADMIN)
+        self._set_due_date(self.phase1_task, self.today)
+        self._set_due_date(self.other_task, self.today)
+
+        self.client.force_authenticate(admin)
+        response = self._calendar(self.this_year, self.this_month)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.phase1_task.id, ids)
+        self.assertIn(self.other_task.id, ids)
+
+    def test_tasks_outside_the_requested_month_are_excluded(self):
+        # +32 days from the 1st guarantees a different month than today's,
+        # though not necessarily "next" month if today's month has 31 days --
+        # doesn't matter, both assertions key off this same date either way.
+        other_month = self.today.replace(day=1) + timedelta(days=32)
+        self._set_due_date(self.phase1_task, other_month)
+
+        response = self._calendar(self.this_year, self.this_month)
+        ids = {row['id'] for row in response.data}
+        self.assertNotIn(self.phase1_task.id, ids)
+
+        response = self._calendar(other_month.year, other_month.month)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.phase1_task.id, ids)
+
+    def test_not_applicable_tasks_are_excluded(self):
+        self._set_due_date(self.phase1_task, self.today)
+        self.phase1_task.status = PhaseRequirement.Status.NOT_APPLICABLE
+        self.phase1_task.save(update_fields=['status'])
+
+        response = self._calendar(self.this_year, self.this_month)
+        ids = {row['id'] for row in response.data}
+        self.assertNotIn(self.phase1_task.id, ids)
+
+    def test_calendar_status_overdue(self):
+        due = self.today - timedelta(days=1)
+        self._set_due_date(self.phase1_task, due)
+        response = self._calendar(due.year, due.month)
+        row = next(r for r in response.data if r['id'] == self.phase1_task.id)
+        self.assertEqual(row['calendar_status'], 'OVERDUE')
+
+    def test_calendar_status_due_soon(self):
+        due = self.today + timedelta(days=2)
+        self._set_due_date(self.phase1_task, due)
+        response = self._calendar(due.year, due.month)
+        row = next(r for r in response.data if r['id'] == self.phase1_task.id)
+        self.assertEqual(row['calendar_status'], 'DUE_SOON')
+
+    def test_calendar_status_upcoming(self):
+        self._set_due_date(self.phase1_task, self.today + timedelta(days=10))
+        due = self.today + timedelta(days=10)
+        response = self._calendar(due.year, due.month)
+        row = next(r for r in response.data if r['id'] == self.phase1_task.id)
+        self.assertEqual(row['calendar_status'], 'UPCOMING')
+
+    def test_calendar_status_complete(self):
+        due = self.today - timedelta(days=1)
+        self._set_due_date(self.phase1_task, due)
+        self.phase1_task.status = PhaseRequirement.Status.COMPLETED
+        self.phase1_task.save(update_fields=['status'])
+
+        response = self._calendar(due.year, due.month)
+        row = next(r for r in response.data if r['id'] == self.phase1_task.id)
+        # phase1_task's confirmation_authority is REP -- no separate
+        # confirmation step needed for is_confirmed_complete to be True.
+        self.assertEqual(row['calendar_status'], 'COMPLETE')
+
+    def test_response_includes_lead_and_phase_info(self):
+        self._set_due_date(self.phase1_task, self.today)
+        response = self._calendar(self.this_year, self.this_month)
+        row = next(r for r in response.data if r['id'] == self.phase1_task.id)
+        self.assertEqual(row['lead_id'], self.lead.id)
+        self.assertEqual(row['lead_name'], self.lead.name)
+        self.assertEqual(row['phase'], 1)
+        self.assertEqual(row['label'], self.phase1_task.label)
+        self.assertEqual(row['due_date'], self.today.isoformat())
+
+    def test_defaults_to_current_month_when_no_params_given(self):
+        self._set_due_date(self.phase1_task, self.today)
+        response = self._calendar()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.phase1_task.id, ids)
+
+    def test_invalid_month_returns_400(self):
+        response = self._calendar(self.this_year, 13)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_non_integer_query_params_return_400(self):
+        response = self._calendar('not-a-year', 'not-a-month')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unauthenticated_request_is_rejected(self):
+        self.client.force_authenticate(None)
+        response = self._calendar(self.this_year, self.this_month)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
 class ProjectProgressTests(ProjectRequirementsTestMixin, APITestCase):
@@ -1609,6 +1774,126 @@ class TaskFormFieldTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(
             TaskFormResponse.objects.filter(requirement=self.requirement).count(), 3,
         )
+
+
+class RequirementTemplateFormFieldTests(APITestCase):
+    """
+    RequirementTemplateSerializer's nested, writable form_fields -- managers
+    can add/edit/reorder/delete a template's fields via the same "resend the
+    whole list" PATCH, matching TaskFormField's existing SELECT-options
+    validation.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(username='mgr', password='pass', role=User.Role.SALES_MANAGER)
+        self.admin = User.objects.create_user(username='admin1', password='pass', role=User.Role.SYSTEM_ADMIN)
+        self.rep = User.objects.create_user(username='rep', password='pass', role=User.Role.SALES_REP)
+        self.template = RequirementTemplate.objects.create(
+            phase=1, label='Discovery Call', order=100, confirmation_authority='REP',
+        )
+        self.client.force_authenticate(self.manager)
+
+    def _detail_url(self):
+        return reverse('requirementtemplate-detail', args=[self.template.id])
+
+    def test_creating_a_template_with_form_fields(self):
+        response = self.client.post(reverse('requirementtemplate-list'), {
+            'phase': 2, 'label': 'New Template', 'order': 100, 'confirmation_authority': 'PROJECT_MANAGER',
+            'form_fields': [
+                {'label': 'Est. hours', 'field_type': 'NUMBER', 'required': True, 'order': 1},
+                {'label': 'Risk', 'field_type': 'SELECT', 'options': ['Low', 'High'], 'required': False, 'order': 2},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        template = RequirementTemplate.objects.get(pk=response.data['id'])
+        self.assertEqual(template.form_fields.count(), 2)
+        self.assertEqual(response.data['form_fields'][0]['label'], 'Est. hours')
+
+    def test_select_field_without_options_is_rejected_on_create(self):
+        response = self.client.post(reverse('requirementtemplate-list'), {
+            'phase': 2, 'label': 'New Template', 'order': 100, 'confirmation_authority': 'REP',
+            'form_fields': [{'label': 'Risk', 'field_type': 'SELECT', 'options': [], 'required': True, 'order': 1}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(RequirementTemplate.objects.filter(label='New Template').exists())
+
+    def test_adding_a_field_to_an_existing_template(self):
+        response = self.client.patch(self._detail_url(), {
+            'form_fields': [{'label': 'Meeting notes', 'field_type': 'TEXTAREA', 'required': False, 'order': 1}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.template.form_fields.count(), 1)
+        self.assertEqual(self.template.form_fields.get().label, 'Meeting notes')
+
+    def test_editing_an_existing_field_in_place_does_not_duplicate_it(self):
+        field = TaskFormField.objects.create(template=self.template, label='Old label', field_type='TEXT', order=1)
+        response = self.client.patch(self._detail_url(), {
+            'form_fields': [
+                {'id': field.id, 'label': 'New label', 'field_type': 'TEXT', 'required': True, 'order': 1},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.template.form_fields.count(), 1)
+        field.refresh_from_db()
+        self.assertEqual(field.label, 'New label')
+        self.assertTrue(field.required)
+
+    def test_reordering_fields(self):
+        first = TaskFormField.objects.create(template=self.template, label='A', field_type='TEXT', order=1)
+        second = TaskFormField.objects.create(template=self.template, label='B', field_type='TEXT', order=2)
+        response = self.client.patch(self._detail_url(), {
+            'form_fields': [
+                {'id': first.id, 'label': 'A', 'field_type': 'TEXT', 'required': False, 'order': 2},
+                {'id': second.id, 'label': 'B', 'field_type': 'TEXT', 'required': False, 'order': 1},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ordered_labels = list(self.template.form_fields.order_by('order').values_list('label', flat=True))
+        self.assertEqual(ordered_labels, ['B', 'A'])
+
+    def test_omitting_an_existing_field_deletes_it(self):
+        keep = TaskFormField.objects.create(template=self.template, label='Keep', field_type='TEXT', order=1)
+        TaskFormField.objects.create(template=self.template, label='Remove me', field_type='TEXT', order=2)
+        response = self.client.patch(self._detail_url(), {
+            'form_fields': [{'id': keep.id, 'label': 'Keep', 'field_type': 'TEXT', 'required': False, 'order': 1}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list(self.template.form_fields.values_list('label', flat=True)), ['Keep'])
+
+    def test_omitting_form_fields_entirely_leaves_existing_fields_untouched(self):
+        TaskFormField.objects.create(template=self.template, label='Untouched', field_type='TEXT', order=1)
+        response = self.client.patch(self._detail_url(), {'description': 'Updated description only.'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.template.form_fields.count(), 1)
+
+    def test_select_field_without_options_is_rejected_on_update(self):
+        response = self.client.patch(self._detail_url(), {
+            'form_fields': [{'label': 'Risk', 'field_type': 'SELECT', 'options': [], 'required': True, 'order': 1}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.template.form_fields.count(), 0)
+
+    def test_system_admin_can_author_template_form_fields(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(self._detail_url(), {
+            'form_fields': [{'label': 'Notes', 'field_type': 'TEXT', 'required': False, 'order': 1}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_sales_rep_cannot_author_template_form_fields(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.patch(self._detail_url(), {
+            'form_fields': [{'label': 'Notes', 'field_type': 'TEXT', 'required': False, 'order': 1}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.template.form_fields.count(), 0)
+
+    def test_sales_rep_can_still_read_template_form_fields(self):
+        TaskFormField.objects.create(template=self.template, label='Visible', field_type='TEXT', order=1)
+        self.client.force_authenticate(self.rep)
+        response = self.client.get(self._detail_url())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['form_fields'][0]['label'], 'Visible')
 
 
 class ProjectBudgetPanelTests(ProjectRequirementsTestMixin, APITestCase):

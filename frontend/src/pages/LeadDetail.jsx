@@ -19,7 +19,9 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { del, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
+import FormFieldsEditor from '../components/FormFieldsEditor.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
+import { formFieldsPayload } from '../formFields.js'
 
 const STATUS_BADGE_VARIANT = {
   HOT: 'warning',
@@ -315,6 +317,11 @@ function TaskRow({ task, onOpen }) {
       <span className={`flex-grow-1 ${state === 'not_applicable' ? 'text-decoration-line-through text-body-secondary' : ''}`}>
         {task.label}
       </span>
+      {hasOutstandingRequiredFields(task) && (
+        <Badge bg="warning" text="dark" title="Required form fields outstanding">
+          Form
+        </Badge>
+      )}
       <Badge bg={AUTHORITY_BADGE_VARIANT[task.confirmation_authority] ?? 'secondary'}>
         {AUTHORITY_LABEL[task.confirmation_authority] ?? task.confirmation_authority}
       </Badge>
@@ -590,6 +597,17 @@ function buildInitialAnswers(task) {
   return Object.fromEntries((task.form_fields ?? []).map((f) => [f.id, responsesByField[f.id] ?? '']))
 }
 
+// Drives both the task row's indicator and the form section's own summary --
+// a required field counts as outstanding only when it has no saved
+// (non-blank) response yet, matching the backend's own completion gate
+// (PhaseRequirementSerializer.validate).
+function hasOutstandingRequiredFields(task) {
+  const required = (task.form_fields ?? []).filter((f) => f.required)
+  if (required.length === 0) return false
+  const answeredIds = new Set((task.form_responses ?? []).filter((r) => r.value).map((r) => r.field))
+  return required.some((f) => !answeredIds.has(f.id))
+}
+
 function formatAnswerValue(field, value) {
   if (!value) return '—'
   if (field.field_type === 'CHECKBOX') return value === 'true' ? 'Yes' : 'No'
@@ -675,7 +693,114 @@ function TaskFormFieldsEditor({ fields, answers, onChange }) {
   )
 }
 
-function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEdit, onHide }) {
+// Full-screen so a form with several fields (e.g. Budget Proposal's four)
+// has real room, instead of being squeezed into the task detail modal
+// alongside status/notes/attachments. A self-contained save -- posts
+// straight to the answers action and hands the refreshed task back via
+// onSaved, independent of the task's own status/notes/committed_date save.
+function TaskFormModal({ task, show, onHide, onSaved }) {
+  const [answers, setAnswers] = useState(() => buildInitialAnswers(task))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const [wasShown, setWasShown] = useState(show)
+
+  // Resyncs to the latest saved answers every time the modal transitions to
+  // open (not just when the task itself changes) -- otherwise Cancel
+  // wouldn't really discard: reopening the same task's form would show the
+  // abandoned draft. Adjusting state during render (React's documented
+  // pattern for resetting state when a prop changes) rather than an effect,
+  // since a post-render effect here would just cost an extra render for the
+  // same result.
+  if (show !== wasShown) {
+    setWasShown(show)
+    if (show) {
+      setAnswers(buildInitialAnswers(task))
+      setError(null)
+    }
+  }
+
+  const fields = task.form_fields ?? []
+
+  function updateAnswer(fieldId, value) {
+    setAnswers((prev) => ({ ...prev, [fieldId]: value }))
+  }
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    try {
+      const responses = Object.entries(answers).map(([field, value]) => ({ field: Number(field), value }))
+      const updated = await post(`/api/requirements/${task.id}/answers/`, { responses })
+      onSaved(updated)
+      onHide()
+    } catch {
+      setError('Failed to save the form.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal show={show} onHide={onHide} fullscreen>
+      <Modal.Header closeButton>
+        <Modal.Title as="h2" className="h5 mb-0">
+          {task.label} — Form
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {error && <Alert variant="danger">{error}</Alert>}
+        <TaskFormFieldsEditor fields={fields} answers={answers} onChange={updateAnswer} />
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onHide} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  )
+}
+
+// Shown in place of the form fields themselves, in both the read-only and
+// editable task detail views -- a compact summary plus the "Fill form"
+// button that opens TaskFormModal. Renders nothing for a task with no form.
+function TaskFormSection({ task, onFormSaved }) {
+  const [showFormModal, setShowFormModal] = useState(false)
+  const fields = task.form_fields ?? []
+  if (fields.length === 0) return null
+
+  const answeredCount = (task.form_responses ?? []).filter((r) => r.value).length
+  const outstanding = hasOutstandingRequiredFields(task)
+
+  return (
+    <div className="mb-3">
+      <div className="d-flex justify-content-between align-items-center">
+        <div className="text-body-secondary small fw-semibold">Form</div>
+        <Button size="sm" variant={outstanding ? 'outline-warning' : 'outline-secondary'} onClick={() => setShowFormModal(true)}>
+          Fill form
+        </Button>
+      </div>
+      <div className="text-body-secondary small">
+        {answeredCount} of {fields.length} field{fields.length === 1 ? '' : 's'} answered
+        {outstanding && (
+          <Badge bg="warning" text="dark" className="ms-2">
+            Required fields outstanding
+          </Badge>
+        )}
+      </div>
+      <TaskFormModal
+        task={task}
+        show={showFormModal}
+        onHide={() => setShowFormModal(false)}
+        onSaved={onFormSaved}
+      />
+    </div>
+  )
+}
+
+function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEdit, onHide, onFormSaved }) {
   const awaitingConfirmation =
     task.status === 'COMPLETED'
     && (task.confirmation_authority === 'MANAGER' || task.confirmation_authority === 'PROJECT_MANAGER')
@@ -703,7 +828,11 @@ function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEd
             <div>{new Date(task.committed_date).toLocaleDateString()}</div>
           </div>
         )}
-        <TaskFormFieldsReadOnly task={task} />
+        {canEdit ? (
+          <TaskFormSection task={task} onFormSaved={onFormSaved} />
+        ) : (
+          <TaskFormFieldsReadOnly task={task} />
+        )}
         <div className="mb-3">
           <div className="text-body-secondary small">Notes</div>
           <div>{task.notes || '—'}</div>
@@ -749,36 +878,26 @@ function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEd
   )
 }
 
-function TaskDetailEditForm({ task, canConfirm, canComplete, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailEditForm({ task, canConfirm, canComplete, saving, error, onSave, onConfirm, onHide, onFormSaved }) {
   // Keyed by task.id from the parent, so switching tasks remounts this with
   // fresh initial state instead of needing an effect to resync it.
   const [draftStatus, setDraftStatus] = useState(task.status)
   const [draftNotes, setDraftNotes] = useState(task.notes ?? '')
   const [draftCommittedDate, setDraftCommittedDate] = useState(task.committed_date ?? '')
-  const [answers, setAnswers] = useState(() => buildInitialAnswers(task))
-  const [formError, setFormError] = useState(null)
-
-  const fields = task.form_fields ?? []
 
   const awaitingConfirmation =
     task.status === 'COMPLETED'
     && (task.confirmation_authority === 'MANAGER' || task.confirmation_authority === 'PROJECT_MANAGER')
     && !task.confirmed_by
 
-  function updateAnswer(fieldId, value) {
-    setAnswers((prev) => ({ ...prev, [fieldId]: value }))
-  }
-
   function handleSaveClick() {
-    if (draftStatus === 'COMPLETED') {
-      const missing = fields.filter((field) => field.required && !answers[field.id]).map((field) => field.label)
-      if (missing.length > 0) {
-        setFormError(`Missing required fields: ${missing.join(', ')}.`)
-        return
-      }
-    }
-    setFormError(null)
-    onSave(draftStatus, draftNotes, draftCommittedDate, answers)
+    // No client-side required-fields pre-check here any more -- the form's
+    // own answers are saved independently via TaskFormModal now, not as
+    // part of this payload, so this save can't see draft-in-progress answers
+    // to check against anyway. The server's own gate (PhaseRequirementSerializer
+    // .validate) still rejects completing with fields outstanding, surfaced
+    // through the `error` prop below like any other save failure.
+    onSave(draftStatus, draftNotes, draftCommittedDate)
   }
 
   return (
@@ -790,7 +909,7 @@ function TaskDetailEditForm({ task, canConfirm, canComplete, saving, error, onSa
       </Modal.Header>
       <Modal.Body>
         {task.description && <p className="text-body-secondary">{task.description}</p>}
-        {(formError || error) && <Alert variant="danger">{formError || error}</Alert>}
+        {error && <Alert variant="danger">{error}</Alert>}
         {canComplete ? (
           <Form.Group className="mb-3" controlId="task-status">
             <Form.Label>Status</Form.Label>
@@ -823,7 +942,7 @@ function TaskDetailEditForm({ task, canConfirm, canComplete, saving, error, onSa
             Set this when a client agrees a date on a call -- the earlier of this and the due date above is used.
           </Form.Text>
         </Form.Group>
-        <TaskFormFieldsEditor fields={fields} answers={answers} onChange={updateAnswer} />
+        <TaskFormSection task={task} onFormSaved={onFormSaved} />
         <Form.Group className="mb-3" controlId="task-notes">
           <Form.Label>Notes</Form.Label>
           <Form.Control
@@ -864,7 +983,7 @@ function TaskDetailEditForm({ task, canConfirm, canComplete, saving, error, onSa
   )
 }
 
-function TaskDetailForm({ task, canConfirm, canEdit, canComplete, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailForm({ task, canConfirm, canEdit, canComplete, saving, error, onSave, onConfirm, onHide, onFormSaved }) {
   // Keyed by task.id from the parent (via TaskDetailModal), so switching
   // tasks remounts this with a fresh `editing` default instead of carrying
   // the previous task's mode over.
@@ -880,6 +999,7 @@ function TaskDetailForm({ task, canConfirm, canEdit, canComplete, saving, error,
         onConfirm={onConfirm}
         onEdit={() => setEditing(true)}
         onHide={onHide}
+        onFormSaved={onFormSaved}
       />
     )
   }
@@ -894,11 +1014,12 @@ function TaskDetailForm({ task, canConfirm, canEdit, canComplete, saving, error,
       onSave={onSave}
       onConfirm={onConfirm}
       onHide={onHide}
+      onFormSaved={onFormSaved}
     />
   )
 }
 
-function TaskDetailModal({ task, canConfirm, canEdit, canComplete, saving, error, onSave, onConfirm, onHide }) {
+function TaskDetailModal({ task, canConfirm, canEdit, canComplete, saving, error, onSave, onConfirm, onHide, onFormSaved }) {
   return (
     <Modal show={Boolean(task)} onHide={onHide} centered>
       {task && (
@@ -913,6 +1034,7 @@ function TaskDetailModal({ task, canConfirm, canEdit, canComplete, saving, error
           onSave={onSave}
           onConfirm={onConfirm}
           onHide={onHide}
+          onFormSaved={onFormSaved}
         />
       )}
     </Modal>
@@ -930,12 +1052,13 @@ function AddTaskForm({ phaseNum, saving, error, onSave, onHide }) {
   const [description, setDescription] = useState('')
   const [confirmationAuthority, setConfirmationAuthority] = useState('REP')
   const [dueDate, setDueDate] = useState('')
+  const [fields, setFields] = useState([])
 
   return (
     <Form
       onSubmit={(event) => {
         event.preventDefault()
-        onSave({ label, description, confirmationAuthority, dueDate })
+        onSave({ label, description, confirmationAuthority, dueDate, customFields: formFieldsPayload(fields) })
       }}
     >
       <Modal.Header closeButton>
@@ -971,11 +1094,13 @@ function AddTaskForm({ phaseNum, saving, error, onSave, onHide }) {
             ))}
           </Form.Select>
         </Form.Group>
-        <Form.Group controlId="add-task-due-date">
+        <Form.Group className="mb-3" controlId="add-task-due-date">
           <Form.Label>Due date</Form.Label>
           <Form.Control type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
           <Form.Text muted>Optional -- leave blank for no deadline.</Form.Text>
         </Form.Group>
+        <hr />
+        <FormFieldsEditor fields={fields} setFields={setFields} />
       </Modal.Body>
       <Modal.Footer>
         <Button variant="secondary" onClick={onHide} disabled={saving}>
@@ -1428,17 +1553,11 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
     }
   }
 
-  async function applyTaskUpdate(payload, answers) {
+  async function applyTaskUpdate(payload) {
     if (!activeTask) return
     setTaskSaving(true)
     setTaskError(null)
     try {
-      // Answers are saved through their own endpoint (so the completion gate
-      // below sees them as already-saved) before the status/notes PATCH.
-      if (answers && (activeTask.form_fields ?? []).length > 0) {
-        const responses = Object.entries(answers).map(([field, value]) => ({ field: Number(field), value }))
-        await post(`/api/requirements/${activeTask.id}/answers/`, { responses })
-      }
       const updated = await patch(`/api/requirements/${activeTask.id}/`, payload)
       setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
       await refreshProject()
@@ -1450,8 +1569,17 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
     }
   }
 
-  function handleSaveTask(taskStatus, notes, committedDate, answers) {
-    applyTaskUpdate({ status: taskStatus, notes, committed_date: committedDate || null }, answers)
+  function handleSaveTask(taskStatus, notes, committedDate) {
+    applyTaskUpdate({ status: taskStatus, notes, committed_date: committedDate || null })
+  }
+
+  // TaskFormModal saves answers through its own endpoint, independent of the
+  // task's status/notes/committed_date -- this just reflects the refreshed
+  // task (with its new form_responses) back into local state afterward, the
+  // same way applyTaskUpdate does for its own PATCHes.
+  function handleTaskFormSaved(updatedTask) {
+    setTasks((prev) => prev.map((t) => (t.id === updatedTask.id ? updatedTask : t)))
+    setActiveTask(updatedTask)
   }
 
   function handleConfirmTask() {
@@ -1496,7 +1624,7 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
     }
   }
 
-  async function handleAddTask({ label, description, confirmationAuthority, dueDate }) {
+  async function handleAddTask({ label, description, confirmationAuthority, dueDate, customFields }) {
     setAddTaskSaving(true)
     setAddTaskError(null)
     try {
@@ -1507,6 +1635,7 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
         description,
         confirmation_authority: confirmationAuthority,
         due_date: dueDate || null,
+        custom_fields: customFields,
       })
       setTasks((prev) => [...prev, created])
       await refreshProject()
@@ -1649,6 +1778,7 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
         onSave={handleSaveTask}
         onConfirm={handleConfirmTask}
         onHide={closeTaskModal}
+        onFormSaved={handleTaskFormSaved}
       />
 
       <AddTaskModal

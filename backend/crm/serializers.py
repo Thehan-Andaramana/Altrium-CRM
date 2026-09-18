@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -580,6 +581,15 @@ class TaskFormFieldSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class TemplateFormFieldSerializer(TaskFormFieldSerializer):
+    # Unlike TaskFormFieldSerializer (id read-only -- used where a field is
+    # only ever created once, at task-creation time), id is writable here:
+    # RequirementTemplateSerializer._sync_form_fields matches a submitted
+    # field back to an existing row by id to update it in place, rather than
+    # treating every save as delete-everything-and-recreate.
+    id = serializers.IntegerField(required=False)
+
+
 class TaskFormResponseSerializer(serializers.ModelSerializer):
     answered_by_username = serializers.CharField(source='answered_by.username', read_only=True, default=None)
 
@@ -835,6 +845,34 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
             project.save(update_fields=update_fields)
 
 
+class CalendarTaskSerializer(serializers.ModelSerializer):
+    # A lightweight, purpose-built projection -- the calendar shows a task's
+    # label/lead/phase and a colour category, nothing PhaseRequirementSerializer
+    # otherwise carries (form fields, attachments-adjacent metadata, etc.).
+    lead_id = serializers.IntegerField(source='project.lead_id', read_only=True)
+    lead_name = serializers.CharField(source='project.lead.name', read_only=True)
+    due_date = serializers.DateField(source='effective_due_date', read_only=True)
+    calendar_status = serializers.SerializerMethodField()
+
+    # A task due within this many days (and not already overdue) reads as
+    # "due soon" rather than plain "upcoming".
+    DUE_SOON_WINDOW_DAYS = 3
+
+    class Meta:
+        model = PhaseRequirement
+        fields = ['id', 'label', 'phase', 'lead_id', 'lead_name', 'due_date', 'calendar_status']
+
+    def get_calendar_status(self, obj):
+        if obj.is_confirmed_complete:
+            return 'COMPLETE'
+        if obj.is_overdue:
+            return 'OVERDUE'
+        effective = obj.effective_due_date
+        if effective is not None and effective <= timezone.localdate() + timedelta(days=self.DUE_SOON_WINDOW_DAYS):
+            return 'DUE_SOON'
+        return 'UPCOMING'
+
+
 class TaskAttachmentSerializer(serializers.ModelSerializer):
     uploaded_by_username = serializers.CharField(source='uploaded_by.username', read_only=True, default=None)
 
@@ -920,12 +958,55 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
 
 
 class RequirementTemplateSerializer(serializers.ModelSerializer):
+    # Writable nested list: whatever's submitted here becomes this template's
+    # complete set of form fields -- create() makes them all new, update()
+    # reconciles (see _sync_form_fields) rather than patching one at a time,
+    # since a manager authors a template's whole form as one coherent unit.
+    form_fields = TemplateFormFieldSerializer(many=True, required=False)
+
     class Meta:
         model = RequirementTemplate
         fields = [
             'id', 'phase', 'label', 'description', 'order',
             'confirmation_authority', 'client_facing', 'default_duration_days', 'is_active',
+            'form_fields',
         ]
+
+    def create(self, validated_data):
+        form_fields_data = validated_data.pop('form_fields', [])
+        template = super().create(validated_data)
+        for field_data in form_fields_data:
+            field_data.pop('id', None)  # ignore if somehow present -- there's nothing to match yet
+            TaskFormField.objects.create(template=template, **field_data)
+        return template
+
+    def update(self, instance, validated_data):
+        form_fields_data = validated_data.pop('form_fields', None)
+        template = super().update(instance, validated_data)
+        if form_fields_data is not None:
+            self._sync_form_fields(template, form_fields_data)
+        return template
+
+    @staticmethod
+    def _sync_form_fields(template, form_fields_data):
+        # The submitted list is the field set's new complete state: matched
+        # by id to update in place, id-less entries are new fields, and any
+        # existing field not present at all is a deletion (add/edit/reorder/
+        # delete, all through the same "resend the whole list" shape).
+        existing = {f.id: f for f in template.form_fields.all()}
+        seen_ids = set()
+        for field_data in form_fields_data:
+            field_id = field_data.pop('id', None)
+            if field_id is not None and field_id in existing:
+                field = existing[field_id]
+                for attr, value in field_data.items():
+                    setattr(field, attr, value)
+                field.save()
+                seen_ids.add(field_id)
+            else:
+                created = TaskFormField.objects.create(template=template, **field_data)
+                seen_ids.add(created.id)
+        TaskFormField.objects.filter(template=template).exclude(id__in=seen_ids).delete()
 
 
 class ApprovalRequestSerializer(serializers.ModelSerializer):

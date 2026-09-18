@@ -10,6 +10,8 @@ import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import { get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import FormFieldsEditor, { UpDownIcon } from '../components/FormFieldsEditor.jsx'
+import { formFieldsPayload } from '../formFields.js'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 const PHASE_NUMBERS = [1, 2, 3, 4]
@@ -18,15 +20,6 @@ const AUTHORITY_OPTIONS = [
   { value: 'REP', label: 'Rep' },
   { value: 'MANAGER', label: 'Manager' },
 ]
-
-function UpDownIcon({ direction, ...props }) {
-  const d = direction === 'up' ? 'M8 4 3.5 10.5h9z' : 'M8 12 3.5 5.5h9z'
-  return (
-    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor" aria-hidden="true" {...props}>
-      <path d={d} />
-    </svg>
-  )
-}
 
 function TemplateFormFields({ label, setLabel, description, setDescription }) {
   return (
@@ -53,12 +46,13 @@ function EditTemplateForm({ template, saving, error, onSave, onHide }) {
   // this with fresh initial state instead of needing an effect to resync it.
   const [label, setLabel] = useState(template.label)
   const [description, setDescription] = useState(template.description ?? '')
+  const [fields, setFields] = useState(() => (template.form_fields ?? []).map((f) => ({ ...f, key: f.id })))
 
   return (
     <Form
       onSubmit={(event) => {
         event.preventDefault()
-        onSave({ label, description })
+        onSave({ label, description, form_fields: formFieldsPayload(fields) })
       }}
     >
       <Modal.Header closeButton>
@@ -74,6 +68,8 @@ function EditTemplateForm({ template, saving, error, onSave, onHide }) {
           description={description}
           setDescription={setDescription}
         />
+        <hr />
+        <FormFieldsEditor fields={fields} setFields={setFields} />
       </Modal.Body>
       <Modal.Footer>
         <Button variant="secondary" onClick={onHide} disabled={saving}>
@@ -89,7 +85,7 @@ function EditTemplateForm({ template, saving, error, onSave, onHide }) {
 
 function EditTemplateModal({ template, saving, error, onSave, onHide }) {
   return (
-    <Modal show={Boolean(template)} onHide={onHide} centered>
+    <Modal show={Boolean(template)} onHide={onHide} centered size="lg" scrollable>
       {template && (
         <EditTemplateForm key={template.id} template={template} saving={saving} error={error} onSave={onSave} onHide={onHide} />
       )}
@@ -100,13 +96,14 @@ function EditTemplateModal({ template, saving, error, onSave, onHide }) {
 function AddTemplateModal({ phase, saving, error, onSave, onHide }) {
   const [label, setLabel] = useState('')
   const [description, setDescription] = useState('')
+  const [fields, setFields] = useState([])
 
   return (
-    <Modal show onHide={onHide} centered>
+    <Modal show onHide={onHide} centered size="lg" scrollable>
       <Form
         onSubmit={(event) => {
           event.preventDefault()
-          onSave({ label, description })
+          onSave({ label, description, form_fields: formFieldsPayload(fields) })
         }}
       >
         <Modal.Header closeButton>
@@ -122,6 +119,8 @@ function AddTemplateModal({ phase, saving, error, onSave, onHide }) {
             description={description}
             setDescription={setDescription}
           />
+          <hr />
+          <FormFieldsEditor fields={fields} setFields={setFields} />
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={onHide} disabled={saving}>

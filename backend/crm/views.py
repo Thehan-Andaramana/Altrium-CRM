@@ -43,6 +43,7 @@ from .permissions import (
 from .serializers import (
     ActivityEventSerializer,
     ApprovalRequestSerializer,
+    CalendarTaskSerializer,
     CompanySerializer,
     ContactSerializer,
     InteractionSerializer,
@@ -498,7 +499,7 @@ class RequirementTemplateViewSet(viewsets.ModelViewSet):
     filterset_fields = ['phase', 'is_active']
     ordering_fields = ['phase', 'order']
     ordering = ['phase', 'order']
-    queryset = RequirementTemplate.objects.all()
+    queryset = RequirementTemplate.objects.prefetch_related('form_fields')
 
 
 class ApprovalRequestViewSet(viewsets.ModelViewSet):
@@ -596,6 +597,57 @@ class DashboardView(APIView):
                 'results': PhaseRequirementSerializer(overdue_tasks, many=True, context=ctx).data,
             },
         })
+
+
+class CalendarView(APIView):
+    """
+    GET /api/calendar/?year=&month=  (both default to the current month).
+
+    Role-scoped the same way as the dashboard's overdue-tasks list, except a
+    PROJECT_MANAGER gets a real scope here (the dashboard never gave them
+    one, since it has no PM-specific branch): a rep sees tasks on leads
+    assigned to them, a PM sees tasks on projects they manage, and every
+    other role (management, admin) sees everything -- matching "reps see
+    their leads', PMs see their projects', managers see everything".
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        today = timezone.localdate()
+        try:
+            year = int(request.query_params.get('year', today.year))
+            month = int(request.query_params.get('month', today.month))
+        except ValueError:
+            return Response({'detail': 'year and month must be integers.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not 1 <= month <= 12:
+            return Response({'detail': 'month must be between 1 and 12.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Same broad pre-filter as the dashboard's overdue-tasks query --
+        # effective_due_date isn't a DB column (it's min(due_date,
+        # committed_date) in Python), so the month itself is also filtered
+        # in Python below, after this candidate set is scoped and fetched.
+        candidates = PhaseRequirement.objects.select_related(
+            'project__lead', 'project__project_manager', 'confirmed_by',
+        ).exclude(status=PhaseRequirement.Status.NOT_APPLICABLE).filter(
+            Q(due_date__isnull=False) | Q(committed_date__isnull=False),
+        )
+        if user.role == User.Role.SALES_REP:
+            candidates = candidates.filter(project__lead__assigned_to=user)
+        elif user.role == User.Role.PROJECT_MANAGER:
+            candidates = candidates.filter(project__project_manager=user)
+
+        tasks = sorted(
+            (
+                r for r in candidates
+                if r.effective_due_date is not None
+                and r.effective_due_date.year == year
+                and r.effective_due_date.month == month
+            ),
+            key=lambda r: r.effective_due_date,
+        )
+        return Response(CalendarTaskSerializer(tasks, many=True, context={'request': request}).data)
 
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):

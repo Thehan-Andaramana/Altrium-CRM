@@ -3,6 +3,7 @@ import './App.css'
 import { AuthProvider, useAuth } from './AuthContext.jsx'
 import Layout from './components/Layout.jsx'
 import Approvals from './pages/Approvals.jsx'
+import Calendar from './pages/Calendar.jsx'
 import Companies from './pages/Companies.jsx'
 import CompanyDetail from './pages/CompanyDetail.jsx'
 import Contacts from './pages/Contacts.jsx'
@@ -35,6 +36,7 @@ function AppRoutes() {
         <Route element={<Layout />}>
           <Route path="/" element={<Home />} />
           <Route path="/approvals" element={<Approvals />} />
+          <Route path="/calendar" element={<Calendar />} />
           <Route path="/companies" element={<Companies />} />
           <Route path="/companies/:id" element={<CompanyDetail />} />
           <Route path="/contacts" element={<Contacts />} />
