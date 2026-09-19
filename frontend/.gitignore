@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Playwright e2e -- saved sessions and per-run artifacts, not source
+e2e/.auth/
+test-results/
+playwright-report/
+
 # Editor directories and files
 .vscode/*
 !.vscode/tasks.json

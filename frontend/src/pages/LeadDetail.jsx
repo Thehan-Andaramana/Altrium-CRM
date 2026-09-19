@@ -552,6 +552,7 @@ function TaskAttachmentsSection({ requirementId }) {
           <Form.Control
             size="sm"
             type="file"
+            aria-label="Attachment file"
             onChange={(event) => setFile(event.target.files[0] ?? null)}
             required
           />
@@ -1151,7 +1152,10 @@ function PhaseCard({
   const hasOverdueTask = tasks.some((task) => task.is_overdue)
 
   return (
-    <Card className="mb-2">
+    // Labelled region so each phase's controls are distinguishable from the
+    // other three cards' identical ones -- to a screen reader and to an
+    // e2e test alike ("Request sign-off" reads the same on every card).
+    <Card className="mb-2" role="region" aria-label={`Phase ${phaseNum}`}>
       <Card.Header className="d-flex justify-content-between align-items-center py-2">
         <span className="fw-semibold">Phase {phaseNum}</span>
         <Badge bg={PHASE_STATUS_BADGE_VARIANT[status] ?? 'secondary'}>
@@ -1722,6 +1726,9 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
                 value={project.project_manager ?? ''}
                 disabled={pmSaving}
                 onChange={(event) => handleProjectManagerChange(event.target.value)}
+                // The adjacent "Project Manager" text is a span, not a label,
+                // so this control would otherwise have no accessible name.
+                aria-label="Project Manager"
               >
                 <option value="">Unassigned</option>
                 {projectManagers.map((pm) => (
@@ -2534,7 +2541,14 @@ export default function LeadDetail() {
                 </Badge>
               )}
               {canEdit && (
-                <Button variant="outline-secondary" size="sm" onClick={() => setShowEditModal(true)}>
+                // Named explicitly: the project panel below has its own
+                // "Edit" (for the budget), so a bare "Edit" is ambiguous.
+                <Button
+                  variant="outline-secondary"
+                  size="sm"
+                  aria-label="Edit lead"
+                  onClick={() => setShowEditModal(true)}
+                >
                   Edit
                 </Button>
               )}

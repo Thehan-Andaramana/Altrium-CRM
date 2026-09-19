@@ -235,6 +235,39 @@ GitHub Actions runs the full suite plus a frontend build on every push and pull
 request, against a PostgreSQL container built from empty — see the **Actions**
 tab.
 
+### End-to-end tests (Playwright)
+
+E2e tests drive a real browser against the running app, so **the full stack
+must already be up and the database seeded** — `docker compose up -d`, the
+Django dev server on port 9000, `npm run dev` on port 3000, and
+`python manage.py seed_demo` — before running any of these. They do not start
+the servers for you.
+
+```powershell
+cd frontend
+npx playwright install chromium   # once, after npm install
+npm run test:e2e                  # headless run
+npm run test:e2e:ui               # interactive runner
+npm run test:e2e:report           # reopen the last HTML report
+```
+
+The first project (`setup`) logs in as each demo role (`rep1`, `pm1`, `mgr1`,
+`ex1`) once via the UI and saves its session under `e2e/.auth/`; every other
+spec reuses one of those instead of logging in again. Chromium only, and one
+worker — the whole suite shares a single dev stack and database, and running
+it in parallel made Django's dev server refuse connections mid-run.
+
+| Spec | Covers |
+|---|---|
+| `phase-lifecycle` | The headline journey: manager creates a company and lead and assigns the PM, the rep clears Phase 1 and gets it signed off, the PM completes Phase 2 (the Budget Proposal form auto-fills the project panel's budget), Phase 3 goes through execution status to sign-off, the executive signs off Phase 4 and the project lands in maintenance |
+| `permissions` | Who may complete a task (rep for Phases 1/4, PM for 2/3, management never), that only an executive decides a Phase 4 sign-off, and that a rep cannot reassign company ownership |
+| `lead-temperature` | A RESPONDED interaction leaves a cold lead cold, a manager's direct status change needs a reason, and a rep's badge click raises an approval request instead |
+| `forms-and-attachments` | Required form fields block completion, answers persist, and files upload and preview in place |
+
+Each test creates its own company and lead, so they can run in any order and
+don't read each other's leftovers. Records accumulate in the dev database as
+you re-run; `python manage.py flush` then `seed_demo` clears them out.
+
 ---
 
 ## Common commands
