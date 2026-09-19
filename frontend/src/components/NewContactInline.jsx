@@ -2,7 +2,7 @@ import { useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Button from 'react-bootstrap/Button'
 import Form from 'react-bootstrap/Form'
-import { post } from '../api'
+import { errorMessage, post } from '../api'
 
 // A compact "+ New contact" toggle for use inside another modal's form --
 // creates a Contact against companyId and hands it back via onCreated,
@@ -24,8 +24,8 @@ export default function NewContactInline({ companyId, onCreated }) {
       onCreated(created)
       setName('')
       setShow(false)
-    } catch {
-      setError('Failed to create contact.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to create contact.'))
     } finally {
       setSaving(false)
     }

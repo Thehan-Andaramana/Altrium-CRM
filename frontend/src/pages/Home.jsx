@@ -9,7 +9,7 @@ import ListGroup from 'react-bootstrap/ListGroup'
 import Row from 'react-bootstrap/Row'
 import Spinner from 'react-bootstrap/Spinner'
 import { Link } from 'react-router-dom'
-import { get, patch } from '../api'
+import { errorMessage, get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
@@ -226,8 +226,8 @@ export default function Home() {
     try {
       await patch(`/api/approvals/${approval.id}/`, { status: decision })
       await refreshDashboard()
-    } catch {
-      setActionError(`Failed to ${decision === 'APPROVED' ? 'approve' : 'reject'} that request.`)
+    } catch (err) {
+      setActionError(errorMessage(err, `Failed to ${decision === 'APPROVED' ? 'approve' : 'reject'} that request.`))
     } finally {
       setActioningId(null)
     }

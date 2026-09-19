@@ -8,7 +8,7 @@ import Spinner from 'react-bootstrap/Spinner'
 import Tab from 'react-bootstrap/Tab'
 import Tabs from 'react-bootstrap/Tabs'
 import { Navigate } from 'react-router-dom'
-import { get, patch } from '../api'
+import { errorMessage, get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import RequirementTemplates from './RequirementTemplates.jsx'
 
@@ -62,8 +62,8 @@ export default function Settings() {
       const data = await patch('/api/settings/', { cold_lead_days: Number(coldLeadDays) })
       setColdLeadDays(String(data.cold_lead_days))
       setSaved(true)
-    } catch {
-      setSaveError('Failed to save settings.')
+    } catch (err) {
+      setSaveError(errorMessage(err, 'Failed to save settings.'))
     } finally {
       setSaving(false)
     }

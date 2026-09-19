@@ -12,7 +12,7 @@ import Modal from 'react-bootstrap/Modal'
 import Row from 'react-bootstrap/Row'
 import Spinner from 'react-bootstrap/Spinner'
 import { Link, useParams } from 'react-router-dom'
-import { get, patch, post } from '../api'
+import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
@@ -112,8 +112,8 @@ function EditCompanyModal({ show, company, canEditOwner, salesReps, onHide, onSa
       const updated = await patch(`/api/companies/${company.id}/`, payload)
       onSaved(updated)
       onHide()
-    } catch {
-      setError('Failed to save company.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to save company.'))
     } finally {
       setSaving(false)
     }
@@ -158,8 +158,8 @@ function NewLeadModal({ show, onHide, onCreated, companyId, contacts, canAssignR
       await post('/api/leads/', payload)
       onCreated()
       onHide()
-    } catch {
-      setError('Failed to create lead.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to create lead.'))
     } finally {
       setSaving(false)
     }
@@ -248,8 +248,8 @@ function NewContactModal({ show, onHide, onCreated, companyId }) {
       })
       onCreated(created)
       onHide()
-    } catch {
-      setError('Failed to create contact.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to create contact.'))
     } finally {
       setSaving(false)
     }

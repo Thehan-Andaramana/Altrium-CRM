@@ -262,7 +262,8 @@ it in parallel made Django's dev server refuse connections mid-run.
 | `phase-lifecycle` | The headline journey: manager creates a company and lead and assigns the PM, the rep clears Phase 1 and gets it signed off, the PM completes Phase 2 (the Budget Proposal form auto-fills the project panel's budget), Phase 3 goes through execution status to sign-off, the executive signs off Phase 4 and the project lands in maintenance |
 | `permissions` | Who may complete a task (rep for Phases 1/4, PM for 2/3, management never), that only an executive decides a Phase 4 sign-off, and that a rep cannot reassign company ownership |
 | `lead-temperature` | A RESPONDED interaction leaves a cold lead cold, a manager's direct status change needs a reason, and a rep's badge click raises an approval request instead |
-| `forms-and-attachments` | Required form fields block completion, answers persist, and files upload and preview in place |
+| `forms-and-attachments` | Required form fields block completion (naming the missing ones), answers persist, and files upload and preview in place |
+| `server-errors` | A second modal surfaces the server's own validation message, so the shared `errorMessage` helper isn't only wired up on tasks |
 
 Each test creates its own company and lead, so they can run in any order and
 don't read each other's leftovers. Records accumulate in the dev database as

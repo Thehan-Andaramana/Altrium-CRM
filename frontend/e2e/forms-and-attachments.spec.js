@@ -48,9 +48,15 @@ test.describe('task forms', () => {
       await dialog.getByLabel('Status').selectOption('COMPLETED')
       await dialog.getByRole('button', { name: 'Save' }).click()
 
-      // The server refuses while required answers are missing, so the modal
-      // stays open and the task is left alone.
-      await expect(dialog.getByText('Failed to save the task.')).toBeVisible()
+      // The server refuses while required answers are missing, and says
+      // which ones -- the modal shows that rather than a generic failure.
+      const alert = dialog.getByRole('alert')
+      await expect(alert).toContainText('Missing required fields')
+      for (const field of Object.keys(ANSWERS)) {
+        await expect(alert).toContainText(field)
+      }
+
+      // ...and the task itself is left alone.
       await dialog.getByRole('button', { name: 'Cancel' }).click()
 
       await page.reload()

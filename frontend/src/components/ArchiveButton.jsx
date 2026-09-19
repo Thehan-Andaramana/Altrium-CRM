@@ -3,7 +3,7 @@ import Alert from 'react-bootstrap/Alert'
 import Button from 'react-bootstrap/Button'
 import Form from 'react-bootstrap/Form'
 import Modal from 'react-bootstrap/Modal'
-import { post } from '../api'
+import { errorMessage, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 
 // Company/Lead/Project archive-or-create rights are narrower than the usual
@@ -28,8 +28,8 @@ function UnarchiveButton({ resource, record, onArchived, label, renderTrigger })
     try {
       await post(`/api/${RESOURCE_ENDPOINTS[resource]}/${record.id}/unarchive/`)
       onArchived()
-    } catch {
-      setError('Failed to unarchive.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to unarchive.'))
     } finally {
       setSaving(false)
     }
@@ -111,8 +111,8 @@ export default function ArchiveButton({ resource, record, onArchived, label, ren
       }
       setShow(false)
       onArchived()
-    } catch {
-      setError(isManagement ? 'Failed to archive.' : 'Failed to submit the archive request.')
+    } catch (err) {
+      setError(errorMessage(err, isManagement ? 'Failed to archive.' : 'Failed to submit the archive request.'))
     } finally {
       setSaving(false)
     }

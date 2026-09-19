@@ -6,7 +6,7 @@ import Form from 'react-bootstrap/Form'
 import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
-import { get, patch } from '../api'
+import { errorMessage, get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
@@ -141,8 +141,8 @@ export default function Approvals() {
       })
       setPendingDecision(null)
       setRefreshKey((k) => k + 1)
-    } catch {
-      setDecisionError(`Failed to ${pendingDecision.mode === 'REJECTED' ? 'reject' : 'approve'} that request.`)
+    } catch (err) {
+      setDecisionError(errorMessage(err, `Failed to ${pendingDecision.mode === 'REJECTED' ? 'reject' : 'approve'} that request.`))
     } finally {
       setDeciding(false)
     }

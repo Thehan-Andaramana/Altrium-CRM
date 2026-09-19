@@ -9,7 +9,7 @@ import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
 import { Link } from 'react-router-dom'
-import { get, patch, post } from '../api'
+import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import SearchIcon from '../components/SearchIcon.jsx'
 
@@ -45,8 +45,8 @@ function NewCompanyModal({ show, onHide, onCreated, salesReps }) {
       })
       onCreated()
       onHide()
-    } catch {
-      setError('Failed to create company.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to create company.'))
     } finally {
       setSaving(false)
     }
@@ -241,8 +241,8 @@ export default function Companies() {
         owner: ownerId ? Number(ownerId) : null,
       })
       setCompanies((prev) => prev.map((c) => (c.id === company.id ? updated : c)))
-    } catch {
-      setOwnerError(`Failed to update owner for ${company.name}.`)
+    } catch (err) {
+      setOwnerError(errorMessage(err, `Failed to update owner for ${company.name}.`))
     } finally {
       setSavingOwnerId(null)
     }

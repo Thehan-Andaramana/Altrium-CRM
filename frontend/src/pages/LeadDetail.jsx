@@ -16,7 +16,7 @@ import Spinner from 'react-bootstrap/Spinner'
 import Tab from 'react-bootstrap/Tab'
 import Tabs from 'react-bootstrap/Tabs'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { del, get, patch, post } from '../api'
+import { del, errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
 import FormFieldsEditor from '../components/FormFieldsEditor.jsx'
@@ -462,8 +462,8 @@ function TaskAttachmentsSection({ requirementId }) {
       setAttachments((prev) => [created, ...prev])
       setAddMode(null)
       setFile(null)
-    } catch {
-      setAddError('Failed to upload the file -- PDF, images and .docx only, up to 15 MB.')
+    } catch (err) {
+      setAddError(errorMessage(err, 'Failed to upload the file -- PDF, images and .docx only, up to 15 MB.'))
     } finally {
       setAddSaving(false)
     }
@@ -484,8 +484,8 @@ function TaskAttachmentsSection({ requirementId }) {
       setAddMode(null)
       setLinkUrl('')
       setLinkTitle('')
-    } catch {
-      setAddError('Failed to add the link.')
+    } catch (err) {
+      setAddError(errorMessage(err, 'Failed to add the link.'))
     } finally {
       setAddSaving(false)
     }
@@ -497,8 +497,8 @@ function TaskAttachmentsSection({ requirementId }) {
     try {
       await del(`/api/attachments/${attachment.id}/`)
       setAttachments((prev) => prev.filter((a) => a.id !== attachment.id))
-    } catch {
-      setDeleteError('Failed to delete the attachment.')
+    } catch (err) {
+      setDeleteError(errorMessage(err, 'Failed to delete the attachment.'))
     } finally {
       setDeletingId(null)
     }
@@ -734,8 +734,8 @@ function TaskFormModal({ task, show, onHide, onSaved }) {
       const updated = await post(`/api/requirements/${task.id}/answers/`, { responses })
       onSaved(updated)
       onHide()
-    } catch {
-      setError('Failed to save the form.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to save the form.'))
     } finally {
       setSaving(false)
     }
@@ -1276,8 +1276,8 @@ function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
       })
       setProject(updated)
       setEditingBudget(false)
-    } catch {
-      setBudgetError('Failed to save the budget.')
+    } catch (err) {
+      setBudgetError(errorMessage(err, 'Failed to save the budget.'))
     } finally {
       setBudgetSaving(false)
     }
@@ -1289,8 +1289,8 @@ function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
     try {
       const updated = await patch(`/api/projects/${project.id}/`, { notes: notesDraft })
       setProject(updated)
-    } catch {
-      setNotesError('Failed to save notes.')
+    } catch (err) {
+      setNotesError(errorMessage(err, 'Failed to save notes.'))
     } finally {
       setNotesSaving(false)
     }
@@ -1534,8 +1534,8 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
     try {
       await patch(`/api/projects/${project.id}/`, { project_manager: value ? Number(value) : null })
       await refreshProject()
-    } catch {
-      setPmError('Failed to update the project manager.')
+    } catch (err) {
+      setPmError(errorMessage(err, 'Failed to update the project manager.'))
     } finally {
       setPmSaving(false)
     }
@@ -1550,8 +1550,8 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
       // COMPLETE) -- nothing more to send here.
       await patch(`/api/projects/${project.id}/`, { phase_3_execution_status: newStatus })
       await refreshProject()
-    } catch {
-      setExecutionStatusError('Failed to update the execution status.')
+    } catch (err) {
+      setExecutionStatusError(errorMessage(err, 'Failed to update the execution status.'))
     } finally {
       setExecutionStatusSaving(false)
     }
@@ -1566,8 +1566,8 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
       setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
       await refreshProject()
       setActiveTask(null)
-    } catch {
-      setTaskError('Failed to save the task.')
+    } catch (err) {
+      setTaskError(errorMessage(err, 'Failed to save the task.'))
     } finally {
       setTaskSaving(false)
     }
@@ -1623,8 +1623,8 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
         project: project.id,
       })
       await refreshProject()
-    } catch {
-      setSignoffError(`Failed to request phase ${phaseNum} sign-off.`)
+    } catch (err) {
+      setSignoffError(errorMessage(err, `Failed to request phase ${phaseNum} sign-off.`))
     }
   }
 
@@ -1644,8 +1644,8 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
       setTasks((prev) => [...prev, created])
       await refreshProject()
       setAddTaskPhase(null)
-    } catch {
-      setAddTaskError('Failed to create the task.')
+    } catch (err) {
+      setAddTaskError(errorMessage(err, 'Failed to create the task.'))
     } finally {
       setAddTaskSaving(false)
     }
@@ -1956,8 +1956,8 @@ function EditLeadModal({
       const updated = await patch(`/api/leads/${lead.id}/`, payload)
       onSaved(updated)
       onHide()
-    } catch {
-      setError('Failed to save lead.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to save lead.'))
     } finally {
       setSaving(false)
     }
@@ -2452,8 +2452,8 @@ export default function LeadDetail() {
       })
       setShowStatusChangeModal(false)
       await Promise.all([refreshPendingStatusChangeRequest(), refreshTimeline()])
-    } catch {
-      setStatusChangeError('Failed to submit the status change request.')
+    } catch (err) {
+      setStatusChangeError(errorMessage(err, 'Failed to submit the status change request.'))
     } finally {
       setStatusChangeSaving(false)
     }
@@ -2467,8 +2467,8 @@ export default function LeadDetail() {
       await post('/api/interactions/', { lead: Number(id), type, notes, ...(type !== 'NOTE' && { outcome }) })
       setNotes('')
       await Promise.all([refreshLead(), refreshTimeline()])
-    } catch {
-      setSubmitError('Failed to log interaction.')
+    } catch (err) {
+      setSubmitError(errorMessage(err, 'Failed to log interaction.'))
     } finally {
       setSubmitting(false)
     }

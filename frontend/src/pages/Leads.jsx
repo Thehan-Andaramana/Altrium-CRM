@@ -9,7 +9,7 @@ import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
 import { Link } from 'react-router-dom'
-import { get, post } from '../api'
+import { errorMessage, get, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import SearchIcon from '../components/SearchIcon.jsx'
 
@@ -86,8 +86,8 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps, canAssign
       await post('/api/leads/', payload)
       onCreated()
       onHide()
-    } catch {
-      setError('Failed to create lead.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to create lead.'))
     } finally {
       setSaving(false)
     }

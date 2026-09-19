@@ -8,7 +8,7 @@ import InputGroup from 'react-bootstrap/InputGroup'
 import ListGroup from 'react-bootstrap/ListGroup'
 import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
-import { get, patch, post } from '../api'
+import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import FormFieldsEditor, { UpDownIcon } from '../components/FormFieldsEditor.jsx'
 import { formFieldsPayload } from '../formFields.js'
@@ -309,8 +309,8 @@ export default function RequirementTemplates() {
           return t
         }),
       )
-    } catch {
-      setRowError('Failed to reorder tasks.')
+    } catch (err) {
+      setRowError(errorMessage(err, 'Failed to reorder tasks.'))
     } finally {
       setBusyId(null)
     }
@@ -324,8 +324,8 @@ export default function RequirementTemplates() {
         is_active: !template.is_active,
       })
       setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
-    } catch {
-      setRowError('Failed to update the task.')
+    } catch (err) {
+      setRowError(errorMessage(err, 'Failed to update the task.'))
     } finally {
       setBusyId(null)
     }
@@ -339,8 +339,8 @@ export default function RequirementTemplates() {
         confirmation_authority: authority,
       })
       setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
-    } catch {
-      setRowError('Failed to update confirmation authority.')
+    } catch (err) {
+      setRowError(errorMessage(err, 'Failed to update confirmation authority.'))
     } finally {
       setBusyId(null)
     }
@@ -354,8 +354,8 @@ export default function RequirementTemplates() {
         client_facing: clientFacing,
       })
       setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
-    } catch {
-      setRowError('Failed to update the client-facing flag.')
+    } catch (err) {
+      setRowError(errorMessage(err, 'Failed to update the client-facing flag.'))
     } finally {
       setBusyId(null)
     }
@@ -369,8 +369,8 @@ export default function RequirementTemplates() {
         default_duration_days: days,
       })
       setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
-    } catch {
-      setRowError('Failed to update the default duration.')
+    } catch (err) {
+      setRowError(errorMessage(err, 'Failed to update the default duration.'))
     } finally {
       setBusyId(null)
     }
@@ -383,8 +383,8 @@ export default function RequirementTemplates() {
       const updated = await patch(`/api/requirement-templates/${editingTemplate.id}/`, payload)
       setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
       setEditingTemplate(null)
-    } catch {
-      setEditError('Failed to save the task.')
+    } catch (err) {
+      setEditError(errorMessage(err, 'Failed to save the task.'))
     } finally {
       setEditSaving(false)
     }
@@ -404,8 +404,8 @@ export default function RequirementTemplates() {
       })
       setTemplates((prev) => [...prev, created])
       setAddPhase(null)
-    } catch {
-      setAddError('Failed to create the task.')
+    } catch (err) {
+      setAddError(errorMessage(err, 'Failed to create the task.'))
     } finally {
       setAddSaving(false)
     }

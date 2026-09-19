@@ -7,7 +7,7 @@ import Form from 'react-bootstrap/Form'
 import ListGroup from 'react-bootstrap/ListGroup'
 import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
-import { get, patch, post } from '../api'
+import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
 
@@ -63,8 +63,8 @@ function NewContactModal({ show, onHide, onCreated, companies }) {
       })
       onCreated()
       onHide()
-    } catch {
-      setError('Failed to create contact.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to create contact.'))
     } finally {
       setSaving(false)
     }
@@ -176,8 +176,8 @@ function EditContactModal({ contact, onHide, onSaved }) {
       })
       onSaved(updated)
       onHide()
-    } catch {
-      setError('Failed to save contact.')
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to save contact.'))
     } finally {
       setSaving(false)
     }
