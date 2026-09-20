@@ -11,6 +11,7 @@ const ROLES = [
   { role: 'project-manager', username: 'pm1' },
   { role: 'sales-manager', username: 'mgr1' },
   { role: 'executive-manager', username: 'ex1' },
+  { role: 'system-admin', username: 'admin' },
 ]
 
 for (const { role, username } of ROLES) {

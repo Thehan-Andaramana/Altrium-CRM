@@ -39,10 +39,7 @@ test.describe('task forms', () => {
     const { leadUrl } = await seed(playwright, baseURL)
 
     await asRep(browser, async (page) => {
-      // The row advertises the outstanding form before anything is opened.
       await page.goto(leadUrl)
-      await expect(page.getByRole('button', { name: TASK }).getByText('Form')).toBeVisible()
-
       await openTask(page, TASK)
       const dialog = topDialog(page)
       await dialog.getByLabel('Status').selectOption('COMPLETED')
@@ -56,11 +53,17 @@ test.describe('task forms', () => {
         await expect(alert).toContainText(field)
       }
 
-      // ...and the task itself is left alone.
+      // ...and the task itself is left alone: still pending, with its
+      // required answers still missing.
       await dialog.getByRole('button', { name: 'Cancel' }).click()
 
       await page.reload()
-      await expect(page.getByRole('button', { name: TASK }).getByText('Form')).toBeVisible()
+      await openTask(page, TASK)
+      await expect(topDialog(page).getByLabel('Status')).toHaveValue('PENDING')
+      await topDialog(page).getByRole('button', { name: 'Fill form' }).click()
+      for (const label of Object.keys(ANSWERS)) {
+        await expect(topDialog(page).getByLabel(label)).toHaveValue('')
+      }
     })
   })
 
@@ -75,7 +78,6 @@ test.describe('task forms', () => {
       // Saved answers survive closing the task and coming back to it.
       await topDialog(page).getByRole('button', { name: 'Cancel' }).click()
       await page.reload()
-      await expect(page.getByRole('button', { name: TASK }).getByText('Form')).toHaveCount(0)
 
       await openTask(page, TASK)
       await topDialog(page).getByRole('button', { name: 'Fill form' }).click()

@@ -442,6 +442,10 @@ class PhaseRequirementViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = PhaseRequirement.objects.select_related(
             'project__company', 'updated_by', 'confirmed_by', 'template',
+            # responsible_user reads through to one of these two depending
+            # on the phase -- without them, serializing a phase's worth of
+            # tasks is a query per row.
+            'project__lead__assigned_to', 'project__project_manager',
         ).prefetch_related('template__form_fields', 'custom_form_fields', 'form_responses')
         user = self.request.user
         if user.role == User.Role.SALES_REP:

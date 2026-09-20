@@ -152,8 +152,15 @@ setup.ps1 / setup.sh One-command first-time setup
 ### Pages
 
 The app is a left sidebar plus a content column with its own header bar (page
-title, global search, notifications, account menu). The sidebar collapses to a
-72px icon rail, and that choice is remembered in Preferences.
+title, global search, theme toggle, notifications). The sidebar collapses to a
+72px icon rail, and that choice is remembered in Preferences. The user chip
+pinned at the bottom of the sidebar is the single identity control — who you
+are, and the account menu.
+
+Initial avatars are coloured by role (rep amber, PM teal, sales manager
+indigo, executive purple, admin slate; anyone else, and contacts and
+companies, stay neutral — colour means a role, so a non-user must not borrow
+one). Every pair was contrast-checked in both themes rather than eyeballed.
 
 | Route | What it is |
 |---|---|
@@ -186,7 +193,10 @@ SVG; there's no charting dependency.
 ## Data model
 
 **Company** → has many **Contacts** and **Leads**
-**Lead** → has a name of its own; auto-creates a **Project** on save; links to a **Deal**
+**Lead** → has a name of its own; auto-creates a **Project** on save; links to a **Deal**.
+Always assigned to a **Sales Rep** — never to a manager (enforced in
+`LeadSerializer`; migration 0028 moved any lead a manager was already holding
+to the company's owner, or to the least-loaded rep)
 **Project** → three phases, each with **PhaseRequirement** tasks generated from **RequirementTemplate**
 **ApprovalRequest** → phase sign-offs and archive requests
 **ActivityEvent** → audit trail feeding the combined lead timeline
@@ -242,8 +252,8 @@ the threshold.
 | **Sales Rep** | Create and edit leads on companies they're assigned. Read any company. Log interactions, update phase tasks, request sign-offs and archives. Cannot change lead status or reassign ownership. |
 | **Sales Manager** | Create, edit and archive companies, leads and projects. Reassign owners, confirm manager-authority tasks, approve requests, change lead status, edit templates and settings. |
 | **Executive Manager** | As Sales Manager. Also approves requests raised by a Sales Manager — nobody can approve their own. |
-| **Delivery Lead** | Read-only across all records. |
-| **System Admin** | Read-only on records. Can hard-delete already-archived records. Manages templates and settings. |
+| **Project Manager** | Owns Phase 2 and 3 on the projects they manage: completes and confirms those tasks, drives execution status, requests sign-off. Read-only elsewhere. |
+| **System Admin** | Reads everything — every rep's pipeline, every project, the board, the dashboards and the reports. Writes nothing on records: no creating, editing or completing. Can hard-delete already-archived records, and manages templates and settings. |
 
 Enforced in DRF permission classes and querysets — a direct API call cannot
 bypass them.
@@ -258,12 +268,13 @@ cd backend
 python manage.py test crm
 ```
 
-**307 tests** covering phase gates, the self-approval block, both task
+**327 tests** covering phase gates, the self-approval block, both task
 confirmation paths, NOT_APPLICABLE exclusion, due-date calculation, archive
 cascade and approval flow, dashboard role scoping, board ordering (including
 that a reorder can never move a card between phases), the reporting
-aggregations and their role restriction, and the permission rules on every
-model.
+aggregations and their role restriction, rep-only lead assignment and the
+migration that moved manager-held leads, System Admin's unrestricted read,
+and the permission rules on every model.
 
 GitHub Actions runs the full suite plus a frontend build on every push and pull
 request, against a PostgreSQL container built from empty — see the **Actions**
@@ -300,6 +311,7 @@ it in parallel made Django's dev server refuse connections mid-run.
 | `server-errors` | A second modal surfaces the server's own validation message, so the shared `errorMessage` helper isn't only wired up on tasks |
 | `board` | Cards land in their phase's column, a cross-column drag is refused with the reason, reordering within a column survives a reload, and the filters narrow the board |
 | `reports` | Reporting is management-only (a rep and a PM are both sent away), the range defaults to the last 30 days and refetches when changed, the per-rep table sorts, and the CSV exports |
+| `system-admin` | System Admin reads another rep's lead in the pipeline, on the board and on its own page, reaches every page including reporting, and still gets no create buttons |
 
 Each test creates its own company and lead, so they can run in any order and
 don't read each other's leftovers. Records accumulate in the dev database as

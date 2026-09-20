@@ -1,10 +1,29 @@
-// Initial avatar for a named person -- amber ground, ink initials (fixed
-// contrast in both themes, like .btn-accent).
+import { useUserRole } from './UserDirectory.jsx'
+
+// Initial avatar for a named person, coloured by their role.
 //
-// Deliberately aria-hidden: an avatar always sits next to the name it
-// stands for, so announcing the initials as well would just read the same
-// person twice. It also means adding one to a table cell or a button leaves
-// that element's accessible name exactly as it was.
+// Deliberately aria-hidden: an avatar almost always sits next to the name it
+// stands for, so announcing the initials as well would read the same person
+// twice. It also means adding one to a table cell or a button leaves that
+// element's accessible name exactly as it was. Where an avatar stands alone
+// (the task rows on a lead), the caller supplies its own visually-hidden
+// text -- see TaskRow.
+
+const ROLE_MODIFIERS = {
+  SALES_REP: 'sales-rep',
+  PROJECT_MANAGER: 'project-manager',
+  SALES_MANAGER: 'sales-manager',
+  EXECUTIVE_MANAGER: 'executive-manager',
+  SYSTEM_ADMIN: 'system-admin',
+}
+
+export const ROLE_LABELS = {
+  SALES_REP: 'Sales Rep',
+  SALES_MANAGER: 'Sales Manager',
+  EXECUTIVE_MANAGER: 'Executive Manager',
+  PROJECT_MANAGER: 'Project Manager',
+  SYSTEM_ADMIN: 'System Admin',
+}
 
 function initialsFor(name) {
   if (!name) {
@@ -19,10 +38,23 @@ function initialsFor(name) {
   return String(name).slice(0, 2).toUpperCase()
 }
 
-export default function Avatar({ name, size, className = '' }) {
+/**
+ * @param {string} name     who the avatar stands for
+ * @param {string} [role]   their role, when the caller already knows it;
+ *                          otherwise it's looked up by name (UserDirectory)
+ */
+export default function Avatar({ name, role, size, className = '', title }) {
+  const lookedUpRole = useUserRole(role ? null : name)
+  const modifier = ROLE_MODIFIERS[role ?? lookedUpRole]
   const sizeClass = size ? `avatar--${size}` : ''
+  const roleClass = modifier ? `avatar--role-${modifier}` : ''
+
   return (
-    <span className={`avatar ${sizeClass} ${className}`.trim()} aria-hidden="true" title={name || undefined}>
+    <span
+      className={`avatar ${sizeClass} ${roleClass} ${className}`.trim()}
+      aria-hidden="true"
+      title={title ?? name ?? undefined}
+    >
       {initialsFor(name)}
     </span>
   )
@@ -30,13 +62,13 @@ export default function Avatar({ name, size, className = '' }) {
 
 // A name with its avatar. `fallback` covers the "Unassigned" / "—" case,
 // which gets no avatar at all -- there is no person to stand for.
-export function PersonCell({ name, fallback = '—', size = 'sm', className = '' }) {
+export function PersonCell({ name, role, fallback = '—', size = 'sm', className = '' }) {
   if (!name) {
     return <span className="text-body-secondary">{fallback}</span>
   }
   return (
     <span className={`d-inline-flex align-items-center gap-2 ${className}`.trim()}>
-      <Avatar name={name} size={size} />
+      <Avatar name={name} role={role} size={size} />
       <span className="text-truncate">{name}</span>
     </span>
   )
@@ -50,9 +82,12 @@ export function AvatarStack({ people, size = 'sm' }) {
   }
   return (
     <span className="avatar-stack">
-      {named.map((name, index) => (
-        <Avatar key={`${name}-${index}`} name={name} size={size} />
-      ))}
+      {named.map((entry, index) => {
+        const name = typeof entry === 'string' ? entry : entry.name
+        const role = typeof entry === 'string' ? undefined : entry.role
+        const title = typeof entry === 'string' ? name : entry.title ?? name
+        return <Avatar key={`${name}-${index}`} name={name} role={role} size={size} title={title} />
+      })}
     </span>
   )
 }

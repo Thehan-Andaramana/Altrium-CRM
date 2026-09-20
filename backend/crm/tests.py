@@ -1,3 +1,4 @@
+import importlib
 from datetime import timedelta
 from decimal import Decimal
 
@@ -3816,3 +3817,254 @@ class ReportsApiTests(ProjectRequirementsTestMixin, APITestCase):
         )
         volume = {row['outcome']: row['count'] for row in self._get().data['interaction_volume']}
         self.assertEqual(volume[Interaction.Outcome.NO_ANSWER], 2)
+
+
+class LeadAssignmentRoleTests(ArchiveTestMixin, APITestCase):
+    """
+    A lead is carried by a sales rep, never by a manager -- enforced in
+    LeadSerializer so it holds for a direct API call, not just the pickers
+    (which only ever list ?role=SALES_REP).
+    """
+
+    def test_a_lead_cannot_be_assigned_to_a_manager(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            reverse('lead-list'),
+            {'name': 'Acme — Renewal', 'company': self.company.id, 'assigned_to': self.manager.id},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('sales rep', str(response.data['assigned_to']))
+
+    def test_a_lead_cannot_be_reassigned_to_a_manager(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.patch(
+            reverse('lead-detail', args=[self.lead.id]),
+            {'assigned_to': self.manager.id},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.assigned_to, self.rep)
+
+    def test_a_lead_cannot_be_assigned_to_a_project_manager_either(self):
+        pm = User.objects.create_user(username='pm-assign', password='pass', role=User.Role.PROJECT_MANAGER)
+        self.client.force_authenticate(self.manager)
+        response = self.client.patch(
+            reverse('lead-detail', args=[self.lead.id]), {'assigned_to': pm.id}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_manager_must_name_the_rep_when_creating_a_lead(self):
+        # This used to fall back to the creator, which can no longer be right.
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            reverse('lead-list'), {'name': 'Acme — Unassigned', 'company': self.company.id}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('assigned_to', response.data)
+
+    def test_a_lead_can_still_be_assigned_to_a_rep(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.patch(
+            reverse('lead-detail', args=[self.lead.id]), {'assigned_to': self.other_rep.id}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.assigned_to, self.other_rep)
+
+    def test_a_rep_creating_their_own_lead_is_still_self_assigned(self):
+        self.client.force_authenticate(self.rep)
+        response = self.client.post(
+            reverse('lead-list'), {'name': 'Acme — Rep raised', 'company': self.company.id}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['assigned_to'], self.rep.id)
+
+    def test_the_serializer_reports_the_assignees_role(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(reverse('lead-detail', args=[self.lead.id]))
+        self.assertEqual(response.data['assigned_to_role'], User.Role.SALES_REP)
+
+
+class SystemAdminReadAccessTests(ArchiveTestMixin, APITestCase):
+    """
+    SYSTEM_ADMIN reads everything -- every rep's pipeline, every project,
+    the dashboard, the board's project list, the calendar and the report --
+    while every existing write restriction stays exactly as it was.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # A second rep's lead, so "sees everything" means more than "sees
+        # the one lead this fixture happens to own".
+        self.other_company = Company.objects.create(name='Elsewhere', owner=self.other_rep)
+        self.other_lead = Lead.objects.create(company=self.other_company, assigned_to=self.other_rep)
+        self.client.force_authenticate(self.admin)
+
+    def test_admin_sees_every_rep_lead(self):
+        response = self.client.get(reverse('lead-list'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.lead.id, ids)
+        self.assertIn(self.other_lead.id, ids)
+
+    def test_admin_sees_every_company_contact_and_project(self):
+        for url, expected_id in (
+            (reverse('company-list'), self.other_company.id),
+            (reverse('contact-list'), self.contact.id),
+            (reverse('project-list'), self.other_lead.project.id),
+        ):
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, status.HTTP_200_OK, url)
+            self.assertIn(expected_id, {row['id'] for row in response.data}, url)
+
+    def test_admin_sees_every_task_and_interaction(self):
+        Interaction.objects.create(
+            lead=self.other_lead, type=Interaction.Type.CALL,
+            outcome=Interaction.Outcome.RESPONDED, created_by=self.other_rep,
+        )
+        requirements = self.client.get(reverse('phaserequirement-list'), {'project': self.other_lead.project.id})
+        self.assertEqual(requirements.status_code, status.HTTP_200_OK)
+        self.assertGreater(len(requirements.data), 0)
+
+        interactions = self.client.get(reverse('interaction-list'))
+        self.assertEqual(interactions.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(interactions.data), 1)
+
+    def test_admin_sees_every_approval_request(self):
+        raised = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            project=self.other_lead.project,
+            requested_by=self.other_rep,
+        )
+        response = self.client.get(reverse('approvalrequest-list'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(raised.id, {row['id'] for row in response.data})
+
+    def test_admin_dashboard_calendar_and_report_are_unscoped(self):
+        dashboard = self.client.get(reverse('dashboard'))
+        self.assertEqual(dashboard.status_code, status.HTTP_200_OK)
+        # Both reps' leads counted, not just one's.
+        self.assertEqual(dashboard.data['cold_leads']['count'], 2)
+        self.assertEqual(dashboard.data['active_projects']['count'], 2)
+
+        self.assertEqual(self.client.get(reverse('calendar')).status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get(reverse('reports')).status_code, status.HTTP_200_OK)
+
+    def test_admin_can_read_a_lead_detail_it_does_not_own(self):
+        response = self.client.get(reverse('lead-detail', args=[self.other_lead.id]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_admin_write_restrictions_are_unchanged(self):
+        # Still read-only on records: no creating, no editing, no completing.
+        create = self.client.post(
+            reverse('lead-list'),
+            {'name': 'Admin raised', 'company': self.company.id, 'assigned_to': self.rep.id},
+            format='json',
+        )
+        self.assertEqual(create.status_code, status.HTTP_403_FORBIDDEN)
+
+        update = self.client.patch(
+            reverse('lead-detail', args=[self.lead.id]), {'name': 'Renamed'}, format='json',
+        )
+        self.assertEqual(update.status_code, status.HTTP_403_FORBIDDEN)
+
+        task = self.project.requirements.filter(phase=1).first()
+        complete = self.client.patch(
+            reverse('phaserequirement-detail', args=[task.id]),
+            {'status': PhaseRequirement.Status.COMPLETED},
+            format='json',
+        )
+        self.assertEqual(complete.status_code, status.HTTP_400_BAD_REQUEST)
+        task.refresh_from_db()
+        self.assertEqual(task.status, PhaseRequirement.Status.PENDING)
+
+    def test_admin_can_still_hard_delete_an_archived_record(self):
+        self.company.is_archived = True
+        self.company.save(update_fields=['is_archived'])
+        response = self.client.delete(reverse('company-detail', args=[self.company.id]))
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class ManagerHeldLeadMigrationTests(TestCase):
+    """
+    Migration 0028 moves leads that a manager was holding onto a rep. The
+    rule is exercised here against the real models (the historical ones the
+    migration receives are the same shape), so the choice of rep -- company
+    owner first, otherwise the least-loaded rep -- is covered rather than
+    just "it ran".
+    """
+
+    def setUp(self):
+        self.migration = importlib.import_module('crm.migrations.0028_reassign_manager_held_leads')
+        self.manager = User.objects.create_user(username='mgr-mig', password='pass', role=User.Role.SALES_MANAGER)
+        self.owner_rep = User.objects.create_user(username='rep-owner', password='pass', role=User.Role.SALES_REP)
+        self.spare_rep = User.objects.create_user(username='rep-spare', password='pass', role=User.Role.SALES_REP)
+
+    def _run(self):
+        models = {'Lead': Lead, 'User': User}
+
+        class FakeApps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                return models[model_name]
+
+        self.migration.reassign_manager_held_leads(FakeApps, None)
+
+    def test_a_manager_held_lead_goes_to_the_company_owner_when_they_are_a_rep(self):
+        company = Company.objects.create(name='Owned', owner=self.owner_rep)
+        lead = Lead.objects.create(company=company, assigned_to=self.manager)
+
+        self._run()
+
+        lead.refresh_from_db()
+        self.assertEqual(lead.assigned_to, self.owner_rep)
+
+    def test_it_falls_back_to_the_least_loaded_rep_when_the_owner_is_not_one(self):
+        # owner_rep already carries two leads; spare_rep carries none, so the
+        # manager-held lead on a manager-owned company lands with spare_rep.
+        busy_company = Company.objects.create(name='Busy', owner=self.owner_rep)
+        Lead.objects.create(company=busy_company, assigned_to=self.owner_rep)
+        Lead.objects.create(company=busy_company, assigned_to=self.owner_rep)
+
+        manager_owned = Company.objects.create(name='Manager owned', owner=self.manager)
+        lead = Lead.objects.create(company=manager_owned, assigned_to=self.manager)
+
+        self._run()
+
+        lead.refresh_from_db()
+        self.assertEqual(lead.assigned_to, self.spare_rep)
+
+    def test_reps_leads_are_left_alone(self):
+        company = Company.objects.create(name='Untouched', owner=self.owner_rep)
+        lead = Lead.objects.create(company=company, assigned_to=self.spare_rep)
+
+        self._run()
+
+        lead.refresh_from_db()
+        self.assertEqual(lead.assigned_to, self.spare_rep)
+
+    def test_it_spreads_several_stranded_leads_rather_than_piling_them_up(self):
+        manager_owned = Company.objects.create(name='Manager owned', owner=self.manager)
+        leads = [Lead.objects.create(company=manager_owned, assigned_to=self.manager) for _ in range(4)]
+
+        self._run()
+
+        assignees = []
+        for lead in leads:
+            lead.refresh_from_db()
+            assignees.append(lead.assigned_to)
+        self.assertEqual({user.role for user in assignees}, {User.Role.SALES_REP})
+        self.assertEqual(assignees.count(self.owner_rep), 2)
+        self.assertEqual(assignees.count(self.spare_rep), 2)
+
+    def test_it_leaves_leads_alone_when_there_is_no_rep_to_move_them_to(self):
+        User.objects.filter(role=User.Role.SALES_REP).delete()
+        company = Company.objects.create(name='No reps', owner=self.manager)
+        lead = Lead.objects.create(company=company, assigned_to=self.manager)
+
+        self._run()
+
+        lead.refresh_from_db()
+        self.assertEqual(lead.assigned_to, self.manager)

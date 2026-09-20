@@ -14,7 +14,8 @@ import { Link, useParams } from 'react-router-dom'
 import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
-import { PersonCell } from '../components/Avatar.jsx'
+import Avatar, { PersonCell } from '../components/Avatar.jsx'
+import ContactDetails from '../components/ContactDetails.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import StatusPill, { LEAD_STATUS_TONE } from '../components/StatusPill.jsx'
@@ -561,14 +562,20 @@ export default function CompanyDetail() {
               ) : (
                 <ListGroup variant="flush">
                   {contacts.map((contact) => (
-                    <ListGroup.Item key={contact.id}>
-                      <div>
-                        {contact.name}
-                        {contact.job_title && <span className="text-body-secondary"> · {contact.job_title}</span>}
-                      </div>
-                      <div className="text-body-secondary small">
-                        {contact.email || '—'}
-                        {contact.phone && <> · {contact.phone}</>}
+                    <ListGroup.Item key={contact.id} className="d-flex align-items-start gap-2">
+                      <Avatar name={contact.name} />
+                      <div style={{ minWidth: 0 }}>
+                        <div>
+                          {contact.name}
+                          {contact.job_title && (
+                            <span className="text-body-secondary"> · {contact.job_title}</span>
+                          )}
+                        </div>
+                        {contact.email || contact.phone ? (
+                          <ContactDetails email={contact.email} phone={contact.phone} name={contact.name} />
+                        ) : (
+                          <div className="text-body-secondary small">No contact details.</div>
+                        )}
                       </div>
                     </ListGroup.Item>
                   ))}

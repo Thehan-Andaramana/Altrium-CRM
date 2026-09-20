@@ -39,8 +39,20 @@
 // Kebab-style overflow-menu toggles use an icon, not text, so Bootstrap's
 // default dropdown-toggle caret triangle is just visual noise -- this is a
 // pure structural rule (no colour), so it doesn't affect dark-mode theming.
-.dropdown-toggle-no-caret::after {
-  display: none;
+//
+// Bootstrap draws a *different* caret per drop direction, and those rules
+// are selector-qualified (.dropup .dropdown-toggle::after and friends), so
+// a bare .dropdown-toggle-no-caret::after is out-specified by every
+// direction except plain "down" -- which is why each one is matched here
+// rather than reaching for !important.
+.dropdown-toggle-no-caret {
+  &::after,
+  &::before,
+  .dropup &::after,
+  .dropend &::after,
+  .dropstart &::before {
+    display: none;
+  }
 }
 
 // Bootstrap's ProgressBar has no height utility/prop -- a pure dimension
@@ -74,4 +86,43 @@
   text-align: left;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+// Primary buttons in dark mode.
+//
+// $primary is ink (#111) -- the only value amber can't be, since amber
+// can't carry text on white. That works on a light page, but on the dark
+// theme's near-black ground an ink-filled button is a 1.02:1 shape: the
+// white label reads, the button doesn't. Dark mode therefore inverts
+// primary the way it inverts everything else -- a light fill with ink text
+// (15.9:1 against the page) -- rather than leaving a button you can only
+// find by its text.
+[data-bs-theme='dark'] {
+  .btn-primary {
+    --bs-btn-bg: #{$gray-200};
+    --bs-btn-border-color: #{$gray-200};
+    --bs-btn-color: #{$altrium-ink};
+    --bs-btn-hover-bg: #{$white};
+    --bs-btn-hover-border-color: #{$white};
+    --bs-btn-hover-color: #{$altrium-ink};
+    --bs-btn-active-bg: #{$gray-400};
+    --bs-btn-active-border-color: #{$gray-400};
+    --bs-btn-active-color: #{$altrium-ink};
+    --bs-btn-disabled-bg: #{$gray-200};
+    --bs-btn-disabled-border-color: #{$gray-200};
+    --bs-btn-disabled-color: #{$altrium-ink};
+  }
+
+  .btn-outline-primary {
+    --bs-btn-color: #{$gray-200};
+    --bs-btn-border-color: #{$gray-600};
+    --bs-btn-hover-bg: #{$gray-200};
+    --bs-btn-hover-border-color: #{$gray-200};
+    --bs-btn-hover-color: #{$altrium-ink};
+    --bs-btn-active-bg: #{$gray-400};
+    --bs-btn-active-border-color: #{$gray-400};
+    --bs-btn-active-color: #{$altrium-ink};
+    --bs-btn-disabled-color: #{$gray-600};
+    --bs-btn-disabled-border-color: #{$gray-700};
+  }
 }

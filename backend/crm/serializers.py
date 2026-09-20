@@ -89,6 +89,12 @@ class LeadSerializer(serializers.ModelSerializer):
     assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True, default=None)
     company_name = serializers.CharField(source='company.name', read_only=True, default=None)
     contact_name = serializers.CharField(source='contact.name', read_only=True, default=None)
+    # The lead header shows the contact's email and phone as first-class,
+    # actionable details (mailto:/tel:), so they travel with the lead rather
+    # than costing a second request per lead.
+    contact_email = serializers.CharField(source='contact.email', read_only=True, default=None)
+    contact_phone = serializers.CharField(source='contact.phone', read_only=True, default=None)
+    assigned_to_role = serializers.CharField(source='assigned_to.role', read_only=True, default=None)
     interaction_count = serializers.IntegerField(read_only=True, default=0)
     # Populated via a queryset annotation (see LeadViewSet.get_queryset) that
     # matches this lead's contact to a Deal, since neither model has a direct
@@ -104,9 +110,11 @@ class LeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lead
         fields = [
-            'id', 'name', 'company', 'company_name', 'contact', 'contact_name', 'status', 'status_change_reason',
+            'id', 'name', 'company', 'company_name', 'contact', 'contact_name',
+            'contact_email', 'contact_phone', 'status', 'status_change_reason',
             'created_at',
             'last_activity_at', 'last_internal_activity_at', 'assigned_to', 'assigned_to_username',
+            'assigned_to_role',
             'interaction_count', 'deal_stage', 'has_project',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
         ]
@@ -120,6 +128,15 @@ class LeadSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.role not in FULL_ACCESS_ROLES:
             self.fields['assigned_to'].read_only = True
+
+    def validate_assigned_to(self, value):
+        # A lead is carried by a rep, never by a manager. Managers assign,
+        # approve and oversee -- putting a lead in their name would make
+        # them their own rep for every rule keyed off assigned_to (task
+        # completion authority, pipeline scoping, the board's rep filter).
+        if value is not None and value.role != User.Role.SALES_REP:
+            raise serializers.ValidationError('A lead can only be assigned to a sales rep.')
+        return value
 
     def validate(self, attrs):
         request = self.context.get('request')
@@ -169,7 +186,12 @@ class LeadSerializer(serializers.ModelSerializer):
             if request.user.role == User.Role.SALES_REP:
                 validated_data['assigned_to'] = request.user
             elif 'assigned_to' not in validated_data:
-                validated_data['assigned_to'] = request.user
+                # A manager creating a lead has to name the rep who carries
+                # it. This used to fall back to the creator, which now can't
+                # be right -- the creator is, by definition, not a rep.
+                raise serializers.ValidationError({
+                    'assigned_to': 'Choose the sales rep this lead is assigned to.',
+                })
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
@@ -619,6 +641,13 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
     updated_by_username = serializers.CharField(source='updated_by.username', read_only=True, default=None)
     confirmed_by_username = serializers.CharField(source='confirmed_by.username', read_only=True, default=None)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, default=None)
+    # Whoever the task actually belongs to -- the assigned rep on phases 1
+    # and 4, the assigned PM on 2 and 3 (PhaseRequirement.responsible_user).
+    # The task row shows them as an avatar instead of spelling out a role.
+    responsible_username = serializers.CharField(
+        source='responsible_user.username', read_only=True, default=None,
+    )
+    responsible_role = serializers.CharField(source='responsible_user.role', read_only=True, default=None)
     effective_due_date = serializers.DateField(read_only=True)
     is_overdue = serializers.BooleanField(read_only=True)
     completed_late = serializers.BooleanField(read_only=True)
@@ -652,6 +681,7 @@ class PhaseRequirementSerializer(serializers.ModelSerializer):
             'id', 'project', 'phase', 'label', 'description', 'status', 'notes',
             'due_date', 'committed_date', 'effective_due_date', 'is_overdue', 'completed_late',
             'confirmation_authority', 'client_facing', 'is_custom', 'lead_id', 'company_name',
+            'responsible_username', 'responsible_role',
             'form_fields', 'form_responses', 'custom_fields',
             'updated_by', 'updated_by_username', 'updated_at',
             'confirmed_by', 'confirmed_by_username', 'confirmed_at',

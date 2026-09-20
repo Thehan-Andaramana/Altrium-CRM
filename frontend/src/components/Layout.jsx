@@ -6,6 +6,7 @@ import { useTheme } from '../ThemeContext.jsx'
 import AppHeader from './AppHeader.jsx'
 import { PageChromeProvider } from './PageChrome.jsx'
 import Sidebar from './Sidebar.jsx'
+import { UserDirectoryProvider } from './UserDirectory.jsx'
 
 // How often the sidebar's count badges are refreshed. The same cadence the
 // notification bell already polls at, so the chrome updates as one.
@@ -65,19 +66,22 @@ export default function Layout() {
   }
 
   return (
-    <PageChromeProvider>
-      <Sidebar
-        user={user}
-        counts={counts}
-        collapsed={sidebarCollapsed}
-        onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
-      <div className={`app-content ${sidebarCollapsed ? 'app-content--collapsed' : ''}`.trim()}>
-        <AppHeader user={user} theme={theme} onToggleTheme={toggleTheme} onLogout={handleLogout} />
-        <main className="app-main">
-          <Outlet />
-        </main>
-      </div>
-    </PageChromeProvider>
+    <UserDirectoryProvider>
+      <PageChromeProvider>
+        <Sidebar
+          user={user}
+          counts={counts}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onLogout={handleLogout}
+        />
+        <div className={`app-content ${sidebarCollapsed ? 'app-content--collapsed' : ''}`.trim()}>
+          <AppHeader user={user} theme={theme} onToggleTheme={toggleTheme} />
+          <main className="app-main">
+            <Outlet />
+          </main>
+        </div>
+      </PageChromeProvider>
+    </UserDirectoryProvider>
   )
 }

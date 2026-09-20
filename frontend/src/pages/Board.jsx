@@ -136,7 +136,20 @@ function BoardCard({ project, onOpen, dragHandleProps, isDragging }) {
           <span>
             Phase {project.current_phase} · {progress}%
           </span>
-          <AvatarStack people={[project.assigned_to_username, project.project_manager_username]} />
+          {/* Rep then PM, each coloured by role and named on hover -- two
+              amber discs would say nothing about which is which. */}
+          <AvatarStack
+            people={[
+              project.assigned_to_username && {
+                name: project.assigned_to_username,
+                title: `${project.assigned_to_username} · Assigned rep`,
+              },
+              project.project_manager_username && {
+                name: project.project_manager_username,
+                title: `${project.project_manager_username} · Project manager`,
+              },
+            ]}
+          />
         </div>
       </div>
 

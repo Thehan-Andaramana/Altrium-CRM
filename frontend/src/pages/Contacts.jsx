@@ -12,6 +12,7 @@ import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
 import Avatar from '../components/Avatar.jsx'
+import ContactDetails from '../components/ContactDetails.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
 
 // Contact create/update may be attempted by management (always allowed) or a
@@ -308,7 +309,7 @@ export default function Contacts() {
                     key={contact.id}
                     className="d-flex justify-content-between align-items-center gap-2"
                   >
-                    <div className="d-flex align-items-center gap-2" style={{ minWidth: 0 }}>
+                    <div className="d-flex align-items-start gap-2" style={{ minWidth: 0 }}>
                       <Avatar name={contact.name} />
                       <div>
                         <div>
@@ -319,11 +320,8 @@ export default function Contacts() {
                             </Badge>
                           )}
                         </div>
-                        <div className="text-body-secondary small">
-                          {contact.job_title || '—'}
-                          {contact.email && <> · {contact.email}</>}
-                          {contact.phone && <> · {contact.phone}</>}
-                        </div>
+                        <div className="text-body-secondary small">{contact.job_title || '—'}</div>
+                        <ContactDetails email={contact.email} phone={contact.phone} name={contact.name} />
                       </div>
                     </div>
                     <div className="d-flex align-items-center gap-2 flex-shrink-0">

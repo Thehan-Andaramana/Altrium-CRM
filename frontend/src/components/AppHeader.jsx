@@ -1,5 +1,5 @@
 import { formatDistanceToNow } from 'date-fns'
-import { Bell, ChevronDown, LogOut, Moon, Search, Settings, SlidersHorizontal, Sun } from 'lucide-react'
+import { Bell, Moon, Search, Sun } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import Button from 'react-bootstrap/Button'
 import Dropdown from 'react-bootstrap/Dropdown'
@@ -9,7 +9,6 @@ import ListGroup from 'react-bootstrap/ListGroup'
 import Spinner from 'react-bootstrap/Spinner'
 import { Link, matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { get, patch, post } from '../api'
-import Avatar from './Avatar.jsx'
 import StatusPill from './StatusPill.jsx'
 import { usePageChrome } from './PageChrome.jsx'
 
@@ -298,49 +297,7 @@ function NotificationBell({ user }) {
   )
 }
 
-const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
-
-function UserMenu({ user, onLogout }) {
-  const canSeeSettings = Boolean(user) && MANAGEMENT_ROLES.has(user.role)
-  return (
-    <Dropdown align="end">
-      <Dropdown.Toggle
-        as="button"
-        type="button"
-        className="btn btn-link text-body text-decoration-none d-inline-flex align-items-center gap-2 p-1 dropdown-toggle-no-caret"
-        id="user-menu"
-        aria-label={`Account menu for ${user?.username ?? ''}`}
-      >
-        <Avatar name={user?.username} size="sm" />
-        <ChevronDown size={16} aria-hidden="true" />
-      </Dropdown.Toggle>
-      <Dropdown.Menu>
-        <Dropdown.Header className="lh-sm">
-          <div className="fw-semibold text-body">{user?.username}</div>
-          <div className="small">{user?.role}</div>
-        </Dropdown.Header>
-        <Dropdown.Divider />
-        <Dropdown.Item as={Link} to="/preferences">
-          <Settings size={16} className="me-2" aria-hidden="true" />
-          Preferences
-        </Dropdown.Item>
-        {canSeeSettings && (
-          <Dropdown.Item as={Link} to="/settings">
-            <SlidersHorizontal size={16} className="me-2" aria-hidden="true" />
-            System Settings
-          </Dropdown.Item>
-        )}
-        <Dropdown.Divider />
-        <Dropdown.Item as="button" type="button" onClick={onLogout} className="text-danger">
-          <LogOut size={16} className="me-2" aria-hidden="true" />
-          Logout
-        </Dropdown.Item>
-      </Dropdown.Menu>
-    </Dropdown>
-  )
-}
-
-export default function AppHeader({ user, theme, onToggleTheme, onLogout }) {
+export default function AppHeader({ user, theme, onToggleTheme }) {
   const { meta } = usePageChrome()
   const location = useLocation()
   const title = meta?.title || routeTitle(location.pathname)
@@ -383,8 +340,6 @@ export default function AppHeader({ user, theme, onToggleTheme, onLogout }) {
       </button>
 
       <NotificationBell user={user} />
-
-      <UserMenu user={user} onLogout={onLogout} />
     </header>
   )
 }

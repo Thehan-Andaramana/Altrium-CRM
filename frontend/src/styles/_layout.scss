@@ -17,6 +17,10 @@
   --altrium-page-padding: 1.5rem;
   --altrium-sidebar-width: 260px;
   --altrium-sidebar-rail-width: 72px;
+  // Avatar fallback: used for anyone whose role isn't known, and for
+  // contacts and companies, which aren't users at all.
+  --avatar-neutral-bg: #{$gray-300};
+  --avatar-neutral-fg: #{$gray-700};
 }
 
 [data-bs-theme='dark'] {
@@ -472,6 +476,15 @@ button.status-pill {
 
 // -- Initial avatars ------------------------------------------------------
 
+// Role is the colour: a glance at a row says whether the person on it is a
+// rep, the PM, or management, without spelling the role out in text.
+//
+// Every pair below was checked rather than eyeballed -- initials against
+// their own disc clear 4.5:1 in both themes, and each disc clears 3:1
+// against its surface with one exception: brand amber on a white card is
+// 1.76:1, so the disc edge (not its meaning -- the initials are 10.7:1)
+// leans on the hairline ring below. Dark mode uses lighter fills with dark
+// initials, since the saturated light-mode fills all but vanish on #171717.
 .avatar {
   display: inline-flex;
   flex-shrink: 0;
@@ -480,12 +493,74 @@ button.status-pill {
   width: var(--avatar-size, 2rem);
   height: var(--avatar-size, 2rem);
   border-radius: 50%;
-  // Fixed contrast, like .btn-accent: ink on amber, never white on amber.
-  background-color: $altrium-amber;
-  color: $altrium-ink;
+  // Fixed contrast, like .btn-accent: the fill and its ink are set together
+  // and don't depend on the page around them. The default is neutral, not
+  // amber -- colour here *means* a role, so a contact or a company (neither
+  // of which is a user) must not borrow the sales rep's.
+  // The neutral is reached through a *fallback*, not a declaration on
+  // .avatar -- declaring it per theme would out-specify the role classes
+  // below and repaint every role avatar grey in dark mode.
+  background-color: var(--avatar-bg, var(--avatar-neutral-bg));
+  color: var(--avatar-fg, var(--avatar-neutral-fg));
   font-size: var(--avatar-font-size, 0.75rem);
   font-weight: 600;
   line-height: 1;
+  // Gives a pale fill a defined edge against a surface of similar lightness.
+  box-shadow: inset 0 0 0 1px rgba($black, 0.1);
+}
+
+.avatar--role-sales-rep {
+  --avatar-bg: #{$altrium-amber};
+  --avatar-fg: #{$altrium-ink};
+}
+
+.avatar--role-project-manager {
+  --avatar-bg: #0F766E;
+  --avatar-fg: #{$white};
+}
+
+.avatar--role-sales-manager {
+  --avatar-bg: #4338CA;
+  --avatar-fg: #{$white};
+}
+
+.avatar--role-executive-manager {
+  --avatar-bg: #6D28D9;
+  --avatar-fg: #{$white};
+}
+
+.avatar--role-system-admin {
+  --avatar-bg: #475569;
+  --avatar-fg: #{$white};
+}
+
+[data-bs-theme='dark'] {
+  --avatar-neutral-bg: #{$gray-700};
+  --avatar-neutral-fg: #{$gray-300};
+
+  .avatar {
+    box-shadow: inset 0 0 0 1px rgba($white, 0.12);
+  }
+
+  .avatar--role-project-manager {
+    --avatar-bg: #2DD4BF;
+    --avatar-fg: #0B2F2B;
+  }
+
+  .avatar--role-sales-manager {
+    --avatar-bg: #A5B4FC;
+    --avatar-fg: #1B1B4D;
+  }
+
+  .avatar--role-executive-manager {
+    --avatar-bg: #C4B5FD;
+    --avatar-fg: #2E1065;
+  }
+
+  .avatar--role-system-admin {
+    --avatar-bg: #CBD5E1;
+    --avatar-fg: #1E293B;
+  }
 }
 
 .avatar--sm {
@@ -853,4 +928,56 @@ button.status-pill {
 
 .chart-track {
   fill: var(--bs-secondary-bg);
+}
+
+// A phase 2 or 3 task whose project has no PM yet: the same disc shape, in
+// the muted surface colours, so the row still reads as "somebody's job"
+// with the person missing.
+.avatar--vacant {
+  --avatar-bg: var(--bs-secondary-bg);
+  --avatar-fg: var(--bs-secondary-color);
+}
+
+// -- Contact details ------------------------------------------------------
+//
+// Email and phone are the actionable part of a contact, so they sit on
+// their own line at body size rather than being folded into a muted
+// metadata string.
+
+.contact-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+
+.contact-detail {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9375rem;
+}
+
+.contact-detail__icon {
+  flex-shrink: 0;
+  color: var(--bs-secondary-color);
+}
+
+.contact-detail__value {
+  color: var(--bs-body-color);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--bs-body-color);
+    text-decoration: underline;
+  }
+}
+
+// The copy button sits inside a line of text, so it is smaller than a
+// standalone row action.
+.icon-button--sm {
+  width: 1.625rem;
+  height: 1.625rem;
 }

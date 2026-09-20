@@ -5,16 +5,19 @@ import {
   CheckSquare,
   ChevronsLeft,
   ChevronsRight,
+  ChevronUp,
   FileText,
   GitBranch,
   Kanban,
   LayoutDashboard,
+  LogOut,
   Settings,
   SlidersHorizontal,
   Users,
 } from 'lucide-react'
+import Dropdown from 'react-bootstrap/Dropdown'
 import { Link, NavLink, useLocation } from 'react-router-dom'
-import Avatar from './Avatar.jsx'
+import Avatar, { ROLE_LABELS } from './Avatar.jsx'
 import BrandMark from './BrandMark.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
@@ -88,14 +91,6 @@ function canSeeCompanies(user) {
   return isManagement(user) || user?.role === 'SALES_REP'
 }
 
-const ROLE_LABELS = {
-  SALES_REP: 'Sales Rep',
-  SALES_MANAGER: 'Sales Manager',
-  EXECUTIVE_MANAGER: 'Executive Manager',
-  PROJECT_MANAGER: 'Project Manager',
-  SYSTEM_ADMIN: 'System Admin',
-}
-
 function NavItem({ item, collapsed, count }) {
   const location = useLocation()
   const { to, end, label, Icon, badge, badgeAction } = item
@@ -125,7 +120,7 @@ function NavItem({ item, collapsed, count }) {
   )
 }
 
-export default function Sidebar({ user, counts, collapsed, onToggleCollapsed }) {
+export default function Sidebar({ user, counts, collapsed, onToggleCollapsed, onLogout }) {
   return (
     <nav
       className={`app-sidebar ${collapsed ? 'app-sidebar--collapsed' : ''}`.trim()}
@@ -180,21 +175,48 @@ export default function Sidebar({ user, counts, collapsed, onToggleCollapsed }) 
         })}
       </div>
 
-      {/* Identity, pinned to the bottom. The account *menu* (preferences,
-          logout) lives in the header bar -- one of each, rather than two
-          Logout buttons competing for the same accessible name. */}
+      {/* The app's single identity control: who you are, and the account
+          menu. It used to be duplicated in the header bar. */}
       <div className="app-sidebar__footer">
-        <div className="app-sidebar__user">
-          <Avatar name={user?.username} />
-          {!collapsed && (
-            <span className="d-flex flex-column lh-sm overflow-hidden">
-              <span className="text-truncate">{user?.username}</span>
-              <span className="app-sidebar__user-role text-truncate">
-                {ROLE_LABELS[user?.role] ?? user?.role}
-              </span>
-            </span>
-          )}
-        </div>
+        <Dropdown align="start" drop="up">
+          <Dropdown.Toggle
+            as="button"
+            type="button"
+            className="app-sidebar__user dropdown-toggle-no-caret"
+            id="sidebar-user-menu"
+            aria-label={`Account: ${user?.username ?? ''}`}
+          >
+            <Avatar name={user?.username} role={user?.role} />
+            {!collapsed && (
+              <>
+                <span className="d-flex flex-column lh-sm overflow-hidden">
+                  <span className="text-truncate">{user?.username}</span>
+                  <span className="app-sidebar__user-role text-truncate">
+                    {ROLE_LABELS[user?.role] ?? user?.role}
+                  </span>
+                </span>
+                <ChevronUp size={16} aria-hidden="true" className="ms-auto flex-shrink-0" />
+              </>
+            )}
+          </Dropdown.Toggle>
+          <Dropdown.Menu>
+            <Dropdown.Item as={Link} to="/preferences">
+              <Settings size={16} className="me-2" aria-hidden="true" />
+              Preferences
+            </Dropdown.Item>
+            {isManagement(user) && (
+              <Dropdown.Item as={Link} to="/settings">
+                <SlidersHorizontal size={16} className="me-2" aria-hidden="true" />
+                System Settings
+              </Dropdown.Item>
+            )}
+            <Dropdown.Divider />
+            <Dropdown.Item as="button" type="button" onClick={onLogout} className="text-danger">
+              <LogOut size={16} className="me-2" aria-hidden="true" />
+              Logout
+            </Dropdown.Item>
+          </Dropdown.Menu>
+        </Dropdown>
       </div>
     </nav>
   )

@@ -20,7 +20,8 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { del, errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
-import Avatar, { PersonCell } from '../components/Avatar.jsx'
+import Avatar, { PersonCell, ROLE_LABELS } from '../components/Avatar.jsx'
+import ContactDetails from '../components/ContactDetails.jsx'
 import FormFieldsEditor from '../components/FormFieldsEditor.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
@@ -292,34 +293,34 @@ function ActivityEventRow({ entry }) {
   )
 }
 
-const AUTHORITY_BADGE_VARIANT = {
-  REP: 'secondary',
-  PROJECT_MANAGER: 'info',
-  MANAGER: 'info',
-}
-
-const AUTHORITY_LABEL = {
-  REP: 'Rep',
-  PROJECT_MANAGER: 'PM',
-  MANAGER: 'Manager',
-}
-
 function TaskRow({ task, onOpen }) {
   const state = getTaskState(task)
+  // Who the task belongs to: the assigned rep on phases 1 and 4, the
+  // assigned PM on 2 and 3 (PhaseRequirement.responsible_user). A phase 2
+  // or 3 task on a project with no PM yet has nobody, which the placeholder
+  // says rather than leaving a gap in the row.
+  const responsible = task.responsible_username
+  const responsibleLabel = responsible
+    ? `${responsible}${ROLE_LABELS[task.responsible_role] ? ` · ${ROLE_LABELS[task.responsible_role]}` : ''}`
+    : 'Nobody assigned yet'
+
   return (
     <ListGroup.Item action onClick={() => onOpen(task)} className="d-flex align-items-center gap-2">
       <TaskStatusIcon state={state} />
       <span className={`flex-grow-1 ${state === 'not_applicable' ? 'text-decoration-line-through text-body-secondary' : ''}`}>
         {task.label}
       </span>
-      {hasOutstandingRequiredFields(task) && (
-        <Badge bg="warning" text="dark" title="Required form fields outstanding">
-          Form
-        </Badge>
+      {responsible ? (
+        <Avatar name={responsible} role={task.responsible_role} size="sm" title={responsibleLabel} />
+      ) : (
+        <span className="avatar avatar--sm avatar--vacant" aria-hidden="true" title={responsibleLabel}>
+          ?
+        </span>
       )}
-      <Badge bg={AUTHORITY_BADGE_VARIANT[task.confirmation_authority] ?? 'secondary'}>
-        {AUTHORITY_LABEL[task.confirmation_authority] ?? task.confirmation_authority}
-      </Badge>
+      {/* The avatar itself is aria-hidden (it has no name beside it here),
+          so the row carries the same information as text for a screen
+          reader -- it just isn't drawn. */}
+      <span className="visually-hidden">{responsibleLabel}</span>
     </ListGroup.Item>
   )
 }
@@ -2511,10 +2512,24 @@ export default function LeadDetail() {
         <Alert variant="danger">{leadError}</Alert>
       ) : (
         <>
-          <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-            <p className="text-body-secondary mb-0">
-              {lead.contact_name ? `Contact: ${lead.contact_name}` : 'No contact'}
-            </p>
+          <div className="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+            <div>
+              {lead.contact_name ? (
+                <>
+                  <div className="d-flex align-items-center gap-2">
+                    <Avatar name={lead.contact_name} size="sm" />
+                    <span>{lead.contact_name}</span>
+                  </div>
+                  <ContactDetails
+                    email={lead.contact_email}
+                    phone={lead.contact_phone}
+                    name={lead.contact_name}
+                  />
+                </>
+              ) : (
+                <p className="text-body-secondary mb-0">No contact</p>
+              )}
+            </div>
             <div className="d-flex align-items-center gap-2">
               {/* The pill's text content is the status word and nothing
                   else (its dot is an empty aria-hidden span), so as a
