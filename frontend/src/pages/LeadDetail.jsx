@@ -1,11 +1,23 @@
 import { formatDistanceToNow } from 'date-fns'
 import {
+  Activity,
+  CheckCircle2,
   ClipboardCheck,
   ClipboardList,
+  Clock,
   FilePlus2,
   Flame,
+  GitBranch,
+  Mail,
+  MessageSquare,
   Paperclip,
   Pencil,
+  Phone,
+  Settings2,
+  StickyNote,
+  Trash2,
+  Users,
+  XCircle,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
@@ -13,7 +25,6 @@ import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
 import Card from 'react-bootstrap/Card'
 import Col from 'react-bootstrap/Col'
-import Container from 'react-bootstrap/Container'
 import Dropdown from 'react-bootstrap/Dropdown'
 import Form from 'react-bootstrap/Form'
 import ListGroup from 'react-bootstrap/ListGroup'
@@ -34,6 +45,8 @@ import FormField, { FieldRow } from '../components/FormField.jsx'
 import FormFieldsEditor from '../components/FormFieldsEditor.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
+import PhaseStepper from '../components/PhaseStepper.jsx'
+import TimelineEntry, { Timeline } from '../components/TimelineEntry.jsx'
 import StatusPill, { LEAD_STATUS_TONE, PHASE_STATUS_TONE } from '../components/StatusPill.jsx'
 import { formFieldsPayload } from '../formFields.js'
 
@@ -51,14 +64,6 @@ const OUTCOME_OPTIONS = [
   { value: 'LEFT_MESSAGE', label: 'Left Message' },
   { value: 'BOUNCED', label: 'Bounced' },
 ]
-
-const OUTCOME_BADGE_VARIANT = {
-  RESPONDED: 'success',
-  NO_ANSWER: 'secondary',
-  MISSED_CALL: 'secondary',
-  LEFT_MESSAGE: 'info',
-  BOUNCED: 'danger',
-}
 
 const PHASE_NUMBERS = [1, 2, 3, 4]
 
@@ -136,32 +141,47 @@ const REQUEST_TYPE_LABELS = {
   PHASE_4_SIGNOFF: 'Phase 4 Signoff',
 }
 
-const APPROVAL_STATUS_BORDER = {
-  PENDING: 'border-warning',
-  APPROVED: 'border-success',
-  REJECTED: 'border-danger',
-}
-
-const APPROVAL_STATUS_BADGE_VARIANT = {
-  PENDING: 'warning',
-  APPROVED: 'success',
-  REJECTED: 'danger',
-}
-
 const ACTIVITY_CATEGORY_LABELS = {
   DESTRUCTIVE: 'Destructive',
   ADMINISTRATIVE: 'Administrative',
   PHASE: 'Phase',
 }
 
-// $primary is overridden to near-black ink in this theme (see _brand.scss),
-// so "blue" for administrative events has to come from `info` instead --
-// `primary` would render indistinguishably from the `secondary` grey used
-// for phase events.
-const ACTIVITY_CATEGORY_BADGE_VARIANT = {
-  DESTRUCTIVE: 'danger',
-  ADMINISTRATIVE: 'info',
-  PHASE: 'secondary',
+// The timeline's own icon and tone per entry kind. The icon is a second,
+// faster read of what the header already says in words -- never the only
+// thing carrying the category.
+const INTERACTION_TYPE_LABELS = Object.fromEntries(TYPE_OPTIONS.map((o) => [o.value, o.label]))
+const OUTCOME_LABELS = Object.fromEntries(OUTCOME_OPTIONS.map((o) => [o.value, o.label]))
+
+const INTERACTION_TYPE_ICON = {
+  CALL: Phone,
+  EMAIL: Mail,
+  MEETING: Users,
+  NOTE: StickyNote,
+}
+
+const ACTIVITY_CATEGORY_ICON = {
+  DESTRUCTIVE: Trash2,
+  ADMINISTRATIVE: Settings2,
+  PHASE: GitBranch,
+}
+
+const ACTIVITY_CATEGORY_TONE = {
+  DESTRUCTIVE: 'red',
+  ADMINISTRATIVE: 'blue',
+  PHASE: 'purple',
+}
+
+const APPROVAL_STATUS_ICON = {
+  PENDING: Clock,
+  APPROVED: CheckCircle2,
+  REJECTED: XCircle,
+}
+
+const APPROVAL_STATUS_TONE = {
+  PENDING: 'amber',
+  APPROVED: 'green',
+  REJECTED: 'red',
 }
 
 // Colour precedence for a phase's progress bar: green only once the phase is
@@ -276,29 +296,6 @@ function TaskStatusIcon({ state }) {
     <span className="text-body-secondary" title="Pending">
       <CircleIcon />
     </span>
-  )
-}
-
-function CategoryBadge({ variant, children }) {
-  return <span className={`badge border border-${variant} text-${variant} bg-transparent fw-normal`}>{children}</span>
-}
-
-function ActivityEventRow({ entry }) {
-  const variant = ACTIVITY_CATEGORY_BADGE_VARIANT[entry.event_category] ?? 'secondary'
-
-  return (
-    <ListGroup.Item className={`py-2 border-start border-3 border-${variant}`}>
-      <div className="d-flex justify-content-between align-items-center mb-1">
-        <CategoryBadge variant={variant}>
-          {ACTIVITY_CATEGORY_LABELS[entry.event_category] ?? entry.event_category}
-        </CategoryBadge>
-        <span className="text-body-secondary small">
-          {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
-        </span>
-      </div>
-      <p className="mb-1">{entry.description}</p>
-      <div className="text-body-secondary small">By {entry.actor_username ?? 'System'}</div>
-    </ListGroup.Item>
   )
 }
 
@@ -1237,20 +1234,14 @@ function PhaseCard({
   )
 }
 
-function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
-  const { user } = useAuth()
+// The lead's project, fetched once for the page rather than by each part
+// that needs it. PhaseTracker still owns its own copy, because it also
+// mutates it (phases, PM, execution status) and refetches after each change
+// -- this one is the read-only view the stepper and the rail share, and
+// `refreshToken` is what PhaseTracker's onProjectChange bumps to resync it.
+function useLeadProject(leadId, refreshToken) {
   const [project, setProject] = useState(null)
   const [loading, setLoading] = useState(true)
-
-  const [editingBudget, setEditingBudget] = useState(false)
-  const [budgetDraft, setBudgetDraft] = useState('')
-  const [currencyDraft, setCurrencyDraft] = useState('')
-  const [budgetSaving, setBudgetSaving] = useState(false)
-  const [budgetError, setBudgetError] = useState(null)
-
-  const [notesDraft, setNotesDraft] = useState('')
-  const [notesSaving, setNotesSaving] = useState(false)
-  const [notesError, setNotesError] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -1259,12 +1250,7 @@ function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
       setLoading(true)
       try {
         const data = await get(`/api/projects/?lead=${leadId}&include_archived=true`)
-        const found = data[0] ?? null
-        if (cancelled) return
-        setProject(found)
-        setBudgetDraft(found?.proposed_budget ?? '')
-        setCurrencyDraft(found?.currency ?? '')
-        setNotesDraft(found?.notes ?? '')
+        if (!cancelled) setProject(data[0] ?? null)
       } catch {
         if (!cancelled) setProject(null)
       } finally {
@@ -1278,14 +1264,141 @@ function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
     }
   }, [leadId, refreshToken])
 
-  if (loading || !project) {
-    return null
+  return { project, setProject, loading }
+}
+
+function LeadField({ label, children }) {
+  return (
+    <div className="lead-field">
+      <div className="lead-field__label">{label}</div>
+      <div className="lead-field__value">{children}</div>
+    </div>
+  )
+}
+
+// Left column: who the lead is for, and how to reach them.
+function LeadContactPanel({ lead }) {
+  return (
+    <>
+      <div className="lead-panel">
+        <div className="d-flex align-items-center gap-2 mb-1">
+          <Avatar name={lead.contact_name ?? lead.company_name} size="lg" />
+          <div style={{ minWidth: 0 }}>
+            <div className="fw-semibold text-truncate">{lead.contact_name ?? 'No contact'}</div>
+            <div className="text-body-secondary small text-truncate">{lead.company_name ?? '—'}</div>
+          </div>
+        </div>
+        {lead.contact_name ? (
+          <ContactDetails email={lead.contact_email} phone={lead.contact_phone} name={lead.contact_name} />
+        ) : (
+          <p className="text-body-secondary small mb-0 mt-2">
+            No contact on this lead yet — add one from the company.
+          </p>
+        )}
+      </div>
+
+      <div className="lead-panel">
+        <h2 className="lead-panel__title">Company</h2>
+        <LeadField label="Name">
+          {lead.company ? (
+            <Link to={`/companies/${lead.company}`}>{lead.company_name ?? '—'}</Link>
+          ) : (
+            lead.company_name ?? '—'
+          )}
+        </LeadField>
+        <LeadField label="Last client contact">
+          {lead.last_activity_at
+            ? formatDistanceToNow(new Date(lead.last_activity_at), { addSuffix: true })
+            : '—'}
+        </LeadField>
+        <LeadField label="Last internal activity">
+          {lead.last_internal_activity_at
+            ? formatDistanceToNow(new Date(lead.last_internal_activity_at), { addSuffix: true })
+            : '—'}
+        </LeadField>
+        <LeadField label="Interactions">{lead.interaction_count ?? 0}</LeadField>
+      </div>
+    </>
+  )
+}
+
+// The next few pieces of work with a date on them, soonest first. Fetched
+// here rather than shared with PhaseTracker because the rail is visible on
+// both tabs and PhaseTracker's copy is tied to the Phases tab's own state.
+function UpcomingTasks({ projectId, leadId }) {
+  const [tasks, setTasks] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchTasks() {
+      setLoading(true)
+      try {
+        const data = await get(`/api/requirements/?project=${projectId}`)
+        if (!cancelled) setTasks(data)
+      } catch {
+        if (!cancelled) setTasks([])
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    fetchTasks()
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  if (loading) {
+    return <Spinner animation="border" size="sm" />
   }
+
+  const upcoming = tasks
+    .filter((task) => task.status !== 'COMPLETED' && task.status !== 'NOT_APPLICABLE' && task.effective_due_date)
+    .sort((a, b) => a.effective_due_date.localeCompare(b.effective_due_date))
+    .slice(0, 5)
+
+  if (upcoming.length === 0) {
+    return <p className="text-body-secondary small mb-0">Nothing scheduled.</p>
+  }
+
+  return (
+    <ul className="list-unstyled mb-0 d-flex flex-column gap-2">
+      {upcoming.map((task) => (
+        <li key={task.id} className="d-flex justify-content-between align-items-start gap-2">
+          <Link to={`/leads/${leadId}?tab=phases&task=${task.id}`} className="small">
+            {task.label}
+          </Link>
+          <span className={`small flex-shrink-0 ${task.is_overdue ? 'text-danger' : 'text-body-secondary'}`}>
+            {new Date(task.effective_due_date).toLocaleDateString()}
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+// Right column: where the work stands, who owns it, and what is due next.
+// Rendered only once the project has loaded, and keyed on it by the caller,
+// so the drafts below seed straight from props on mount -- no effect
+// syncing state that a render can just initialise.
+function LeadSummaryRail({ lead, project, setProject, statusPill }) {
+  const { user } = useAuth()
+
+  const [editingBudget, setEditingBudget] = useState(false)
+  const [budgetDraft, setBudgetDraft] = useState(project.proposed_budget ?? '')
+  const [currencyDraft, setCurrencyDraft] = useState(project.currency ?? '')
+  const [budgetSaving, setBudgetSaving] = useState(false)
+  const [budgetError, setBudgetError] = useState(null)
+
+  const [notesDraft, setNotesDraft] = useState(project.notes ?? '')
+  const [notesSaving, setNotesSaving] = useState(false)
+  const [notesError, setNotesError] = useState(null)
 
   const isAssignedPM = user?.role === 'PROJECT_MANAGER' && project.project_manager === user.id
   const canEditBudget = MANAGER_ROLES.has(user?.role) || isAssignedPM
-  const canEditNotes =
-    canEditBudget || (user?.role === 'SALES_REP' && leadAssignedTo === user?.id)
+  const canEditNotes = canEditBudget || (user?.role === 'SALES_REP' && lead.assigned_to === user?.id)
   const notesChanged = notesDraft !== (project.notes ?? '')
 
   async function handleSaveBudget() {
@@ -1319,114 +1432,125 @@ function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
   }
 
   return (
-    <Card className="mb-4">
-      <Card.Body>
-        <Row className="gy-3">
-          <Col sm={6} md={3}>
-            <div className="text-body-secondary small">Proposed budget</div>
-            {editingBudget ? (
-              <div className="d-flex gap-1">
-                <Form.Control
-                  size="sm"
-                  type="number"
-                  step="0.01"
-                  style={{ maxWidth: '7rem' }}
-                  value={budgetDraft}
-                  onChange={(event) => setBudgetDraft(event.target.value)}
-                  disabled={budgetSaving}
-                />
-                <Form.Control
-                  size="sm"
-                  type="text"
-                  placeholder="USD"
-                  maxLength={8}
-                  style={{ maxWidth: '5rem' }}
-                  value={currencyDraft}
-                  onChange={(event) => setCurrencyDraft(event.target.value)}
-                  disabled={budgetSaving}
-                />
-              </div>
-            ) : (
-              <div>
-                {project.proposed_budget
-                  ? `${project.currency ? `${project.currency} ` : ''}${project.proposed_budget}`
-                  : '—'}
-              </div>
-            )}
-            {canEditBudget && (
-              <div className="mt-1">
-                {editingBudget ? (
-                  <>
-                    <Button size="sm" variant="link" className="p-0 me-2" disabled={budgetSaving} onClick={handleSaveBudget}>
-                      {budgetSaving ? 'Saving…' : 'Save'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="link"
-                      className="p-0 text-body-secondary"
-                      disabled={budgetSaving}
-                      onClick={() => {
-                        setEditingBudget(false)
-                        setBudgetDraft(project.proposed_budget ?? '')
-                        setCurrencyDraft(project.currency ?? '')
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </>
-                ) : (
-                  <Button size="sm" variant="link" className="p-0" onClick={() => setEditingBudget(true)}>
-                    Edit
-                  </Button>
-                )}
-              </div>
-            )}
-            {budgetError && <div className="text-danger small mt-1">{budgetError}</div>}
-          </Col>
-          <Col sm={6} md={3}>
-            <div className="text-body-secondary small">Current phase</div>
-            <div>Phase {getCurrentPhaseNumber(project)}</div>
-          </Col>
-          <Col sm={6} md={3}>
-            <div className="text-body-secondary small">Phase 3 execution status</div>
+    <>
+      <div className="lead-panel">
+        <h2 className="lead-panel__title">Summary</h2>
+        <LeadField label="Current phase">
+          {project.maintenance ? 'Maintenance' : `Phase ${getCurrentPhaseNumber(project)}`}
+        </LeadField>
+        <LeadField label="Status">{statusPill}</LeadField>
+        <LeadField label="Proposed budget">
+          {editingBudget ? (
+            <div className="d-flex gap-1">
+              <Form.Control
+                size="sm"
+                type="number"
+                step="0.01"
+                aria-label="Proposed budget"
+                value={budgetDraft}
+                onChange={(event) => setBudgetDraft(event.target.value)}
+                disabled={budgetSaving}
+              />
+              <Form.Control
+                size="sm"
+                type="text"
+                placeholder="USD"
+                maxLength={8}
+                aria-label="Currency"
+                style={{ maxWidth: '5rem' }}
+                value={currencyDraft}
+                onChange={(event) => setCurrencyDraft(event.target.value)}
+                disabled={budgetSaving}
+              />
+            </div>
+          ) : (
             <div>
-              {project.phase_3_execution_status
-                ? EXECUTION_STATUS_LABELS[project.phase_3_execution_status] ?? project.phase_3_execution_status
+              {project.proposed_budget
+                ? `${project.currency ? `${project.currency} ` : ''}${project.proposed_budget}`
                 : '—'}
             </div>
-          </Col>
-          <Col sm={6} md={3}>
-            <div className="text-body-secondary small">Project Manager</div>
-            <div>
-              <PersonCell name={project.project_manager_username} fallback="Unassigned" />
-            </div>
-          </Col>
-        </Row>
-        <div className="mt-3 pt-3 border-top">
-          <div className="text-body-secondary small mb-1">Notes</div>
-          <Form.Control
-            as="textarea"
-            rows={2}
-            value={notesDraft}
-            disabled={!canEditNotes || notesSaving}
-            onChange={(event) => setNotesDraft(event.target.value)}
-          />
-          {canEditNotes && (
+          )}
+          {canEditBudget && (
             <div className="mt-1">
-              <Button
-                size="sm"
-                variant="outline-secondary"
-                disabled={notesSaving || !notesChanged}
-                onClick={handleSaveNotes}
-              >
-                {notesSaving ? 'Saving…' : 'Save notes'}
-              </Button>
+              {editingBudget ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="link"
+                    className="p-0 me-2"
+                    disabled={budgetSaving}
+                    onClick={handleSaveBudget}
+                  >
+                    {budgetSaving ? 'Saving…' : 'Save'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="link"
+                    className="p-0 text-body-secondary"
+                    disabled={budgetSaving}
+                    onClick={() => {
+                      setEditingBudget(false)
+                      setBudgetDraft(project.proposed_budget ?? '')
+                      setCurrencyDraft(project.currency ?? '')
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button size="sm" variant="link" className="p-0" onClick={() => setEditingBudget(true)}>
+                  Edit
+                </Button>
+              )}
             </div>
           )}
-          {notesError && <div className="text-danger small mt-1">{notesError}</div>}
-        </div>
-      </Card.Body>
-    </Card>
+          {budgetError && <div className="text-danger small mt-1">{budgetError}</div>}
+        </LeadField>
+        <LeadField label="Assigned rep">
+          <PersonCell name={lead.assigned_to_username} role={lead.assigned_to_role} fallback="Unassigned" />
+        </LeadField>
+        {/* Read-only here on purpose: assigning the PM is PhaseTracker's
+            job, and two controls with the same name would be ambiguous. */}
+        <LeadField label="Project Manager">
+          <PersonCell name={project.project_manager_username} fallback="Unassigned" />
+        </LeadField>
+        <LeadField label="Phase 3 execution status">
+          {project.phase_3_execution_status
+            ? EXECUTION_STATUS_LABELS[project.phase_3_execution_status] ?? project.phase_3_execution_status
+            : '—'}
+        </LeadField>
+      </div>
+
+      <div className="lead-panel">
+        <h2 className="lead-panel__title">Due next</h2>
+        <UpcomingTasks projectId={project.id} leadId={lead.id} />
+      </div>
+
+      <div className="lead-panel">
+        <h2 className="lead-panel__title">Notes</h2>
+        <Form.Control
+          as="textarea"
+          rows={3}
+          aria-label="Project notes"
+          value={notesDraft}
+          disabled={!canEditNotes || notesSaving}
+          onChange={(event) => setNotesDraft(event.target.value)}
+        />
+        {canEditNotes && (
+          <div className="mt-2">
+            <Button
+              size="sm"
+              variant="outline-secondary"
+              disabled={notesSaving || !notesChanged}
+              onClick={handleSaveNotes}
+            >
+              {notesSaving ? 'Saving…' : 'Save notes'}
+            </Button>
+          </div>
+        )}
+        {notesError && <div className="text-danger small mt-1">{notesError}</div>}
+      </div>
+    </>
   )
 }
 
@@ -2331,6 +2455,11 @@ export default function LeadDetail() {
   const [projectRefreshToken, setProjectRefreshToken] = useState(0)
   const bumpProjectRefresh = () => setProjectRefreshToken((token) => token + 1)
 
+  // One read of the project for the whole page -- the stepper at the top and
+  // the summary rail both draw from it. PhaseTracker keeps its own copy
+  // because it also writes to it, and bumps the token above when it does.
+  const { project, setProject } = useLeadProject(id, projectRefreshToken)
+
   usePageMeta({
     // Falls back to the layout's route title until the lead arrives.
     title: lead?.name ?? 'Lead',
@@ -2521,8 +2650,27 @@ export default function LeadDetail() {
     return !(entry.description.startsWith('Archive requested') || entry.description.startsWith('Lead archived'))
   })
 
+  // The lead's temperature, shown in the summary rail. A rep whose own lead
+  // this is can click it to raise a change request; for everyone else it is
+  // just the pill. Built here rather than in the rail so the rail doesn't
+  // need to know the permission rules.
+  const statusPill = lead
+    && (canRequestStatusChange && !pendingStatusChangeRequest ? (
+      <StatusPill
+        as="button"
+        type="button"
+        tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}
+        onClick={() => setShowStatusChangeModal(true)}
+        title="Click to request a status change"
+      >
+        {lead.status}
+      </StatusPill>
+    ) : (
+      <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
+    ))
+
   return (
-    <Container style={{ maxWidth: '56rem' }}>
+    <div>
       {loadingLead ? (
         <div className="d-flex justify-content-center py-5">
           <Spinner animation="border" role="status">
@@ -2533,97 +2681,31 @@ export default function LeadDetail() {
         <Alert variant="danger">{leadError}</Alert>
       ) : (
         <>
-          <div className="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
-            <div>
-              {lead.contact_name ? (
-                <>
-                  <div className="d-flex align-items-center gap-2">
-                    <Avatar name={lead.contact_name} size="sm" />
-                    <span>{lead.contact_name}</span>
-                  </div>
-                  <ContactDetails
-                    email={lead.contact_email}
-                    phone={lead.contact_phone}
-                    name={lead.contact_name}
-                  />
-                </>
-              ) : (
-                <p className="text-body-secondary mb-0">No contact</p>
-              )}
-            </div>
-            <div className="d-flex align-items-center gap-2">
-              {/* The pill's text content is the status word and nothing
-                  else (its dot is an empty aria-hidden span), so as a
-                  button it still announces as "HOT"/"COLD". */}
-              {canRequestStatusChange && !pendingStatusChangeRequest ? (
-                <StatusPill
-                  as="button"
-                  type="button"
-                  tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}
-                  onClick={() => setShowStatusChangeModal(true)}
-                  title="Click to request a status change"
-                >
-                  {lead.status}
-                </StatusPill>
-              ) : (
-                <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
-              )}
-              {pendingStatusChangeRequest && (
-                <Badge bg="warning" pill title={pendingStatusChangeRequest.reason}>
-                  Change to {pendingStatusChangeRequest.target_status} pending
-                </Badge>
-              )}
-              {canEdit && (
-                // Named explicitly: the project panel below has its own
-                // "Edit" (for the budget), so a bare "Edit" is ambiguous.
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Edit lead"
-                  title="Edit lead"
-                  onClick={() => setShowEditModal(true)}
-                >
-                  <Pencil size={15} aria-hidden="true" />
-                </button>
-              )}
-              <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} label="Archive lead" />
-            </div>
+          {/* Record actions sit above the stepper: they act on the lead as
+              a whole, not on any one column below. */}
+          <div className="d-flex flex-wrap justify-content-end align-items-center gap-2 mb-3">
+            {pendingStatusChangeRequest && (
+              <Badge bg="warning" pill title={pendingStatusChangeRequest.reason}>
+                Change to {pendingStatusChangeRequest.target_status} pending
+              </Badge>
+            )}
+            {canEdit && (
+              // Named explicitly: the summary rail has its own "Edit" (for
+              // the budget), so a bare "Edit" is ambiguous.
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Edit lead"
+                title="Edit lead"
+                onClick={() => setShowEditModal(true)}
+              >
+                <Pencil size={15} aria-hidden="true" />
+              </button>
+            )}
+            <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} label="Archive lead" />
           </div>
 
-          <ProjectSummaryPanel
-            leadId={lead.id}
-            leadAssignedTo={lead.assigned_to}
-            refreshToken={projectRefreshToken}
-          />
-
-          <Row className="mb-4 gy-2">
-            <Col sm={6} md={3}>
-              <div className="text-body-secondary small">Assigned to</div>
-              <div>
-                <PersonCell name={lead.assigned_to_username} fallback="Unassigned" />
-              </div>
-            </Col>
-            <Col sm={6} md={3}>
-              <div className="text-body-secondary small">Last client contact</div>
-              <div>
-                {lead.last_activity_at
-                  ? formatDistanceToNow(new Date(lead.last_activity_at), { addSuffix: true })
-                  : '—'}
-              </div>
-            </Col>
-            <Col sm={6} md={3}>
-              <div className="text-body-secondary small">Last internal activity</div>
-              <div>
-                {lead.last_internal_activity_at
-                  ? formatDistanceToNow(new Date(lead.last_internal_activity_at), { addSuffix: true })
-                  : '—'}
-              </div>
-            </Col>
-            <Col sm={6} md={3}>
-              <div className="text-body-secondary small">Interactions</div>
-              <div>{lead.interaction_count ?? 0}</div>
-            </Col>
-          </Row>
+          <PhaseStepper project={project} />
 
           {canEdit && showEditModal && (
             <EditLeadModal
@@ -2650,7 +2732,13 @@ export default function LeadDetail() {
             />
           )}
 
-          <Tabs defaultActiveKey={initialTab} id="lead-detail-tabs" className="mb-4">
+          <div className="lead-layout">
+            <div className="lead-layout__contact">
+              <LeadContactPanel lead={lead} />
+            </div>
+
+            <div className="lead-layout__main">
+              <Tabs defaultActiveKey={initialTab} id="lead-detail-tabs" className="mb-3">
             <Tab eventKey="phases" title="Phases">
               <PhaseTracker
                 leadId={lead.id}
@@ -2744,68 +2832,77 @@ export default function LeadDetail() {
               ) : visibleTimelineEntries.length === 0 ? (
                 <p className="text-body-secondary">Nothing logged yet.</p>
               ) : (
-                <ListGroup>
+                <Timeline>
                   {visibleTimelineEntries.map((entry) =>
                     entry.entry_type === 'ACTIVITY_EVENT' ? (
-                      <ActivityEventRow key={`activity-${entry.id}`} entry={entry} />
-                    ) : entry.entry_type === 'APPROVAL_REQUEST' ? (
-                      <ListGroup.Item
-                        key={`approval-${entry.id}`}
-                        className={`py-2 border-start border-3 ${APPROVAL_STATUS_BORDER[entry.status] ?? ''}`}
+                      <TimelineEntry
+                        key={`activity-${entry.id}`}
+                        icon={ACTIVITY_CATEGORY_ICON[entry.event_category] ?? Activity}
+                        tone={ACTIVITY_CATEGORY_TONE[entry.event_category] ?? 'grey'}
+                        title={ACTIVITY_CATEGORY_LABELS[entry.event_category] ?? entry.event_category}
+                        meta={`By ${entry.actor_username ?? 'System'}`}
+                        timestamp={formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
                       >
-                        <div className="d-flex justify-content-between align-items-center mb-1">
-                          <div className="d-flex gap-2 align-items-center">
-                            <span className="fw-semibold">
-                              {REQUEST_TYPE_LABELS[entry.request_type] ?? entry.request_type}
-                            </span>
-                            <CategoryBadge variant={APPROVAL_STATUS_BADGE_VARIANT[entry.status] ?? 'secondary'}>
-                              {entry.status}
-                            </CategoryBadge>
-                          </div>
-                          <span className="text-body-secondary small">
-                            {formatDistanceToNow(new Date(entry.created_at), { addSuffix: true })}
-                          </span>
-                        </div>
+                        {entry.description}
+                      </TimelineEntry>
+                    ) : entry.entry_type === 'APPROVAL_REQUEST' ? (
+                      <TimelineEntry
+                        key={`approval-${entry.id}`}
+                        icon={APPROVAL_STATUS_ICON[entry.status] ?? Clock}
+                        tone={APPROVAL_STATUS_TONE[entry.status] ?? 'grey'}
+                        title={REQUEST_TYPE_LABELS[entry.request_type] ?? entry.request_type}
+                        meta={`${entry.status} · requested by ${entry.requested_by_username ?? 'Unknown'}`}
+                        timestamp={formatDistanceToNow(new Date(entry.created_at), { addSuffix: true })}
+                      >
                         {entry.reason && <p className="mb-1">{entry.reason}</p>}
                         {entry.status === 'REJECTED' && entry.decision_note && (
-                          <p className="mb-1 fst-italic">{entry.decision_note}</p>
+                          <p className="mb-0 fst-italic">{entry.decision_note}</p>
                         )}
-                        <div className="text-body-secondary small">
-                          Requested by {entry.requested_by_username ?? 'Unknown'}
-                        </div>
-                      </ListGroup.Item>
+                      </TimelineEntry>
                     ) : (
-                      <ListGroup.Item key={`interaction-${entry.id}`} className="py-2 border-start border-3 border-secondary-subtle">
-                        <div className="d-flex justify-content-between align-items-center mb-1">
-                          <div className="d-flex gap-2">
-                            <Badge bg="info">{entry.type}</Badge>
-                            {entry.outcome && (
-                              <Badge bg={OUTCOME_BADGE_VARIANT[entry.outcome] ?? 'secondary'}>{entry.outcome}</Badge>
-                            )}
-                          </div>
-                          <span className="text-body-secondary small">
-                            {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
+                      <TimelineEntry
+                        key={`interaction-${entry.id}`}
+                        icon={INTERACTION_TYPE_ICON[entry.type] ?? MessageSquare}
+                        tone={entry.outcome && entry.outcome !== 'RESPONDED' ? 'amber' : 'green'}
+                        title={INTERACTION_TYPE_LABELS[entry.type] ?? entry.type}
+                        meta={
+                          <span className="d-inline-flex align-items-center gap-1">
+                            <Avatar name={entry.created_by_username} size="sm" />
+                            Logged by {entry.created_by_username ?? 'Unknown'}
+                            {entry.outcome && <> · {OUTCOME_LABELS[entry.outcome] ?? entry.outcome}</>}
                           </span>
-                        </div>
+                        }
+                        timestamp={formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
+                      >
                         <NotesWithMentions
                           notes={entry.notes}
                           mentionedUsernames={entry.mentioned_usernames}
                           referencedTasks={entry.referenced_tasks}
                           leadId={id}
                         />
-                        <div className="text-body-secondary small">
-                          <Avatar name={entry.created_by_username} size="sm" className="me-1" />
-                          Logged by {entry.created_by_username ?? 'Unknown'}
-                        </div>
-                      </ListGroup.Item>
+                      </TimelineEntry>
                     ),
                   )}
-                </ListGroup>
+                </Timeline>
               )}
             </Tab>
-          </Tabs>
+              </Tabs>
+            </div>
+
+            <div className="lead-layout__rail">
+              {project && (
+                <LeadSummaryRail
+                  key={project.id}
+                  lead={lead}
+                  project={project}
+                  setProject={setProject}
+                  statusPill={statusPill}
+                />
+              )}
+            </div>
+          </div>
         </>
       )}
-    </Container>
+    </div>
   )
 }

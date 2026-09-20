@@ -1,6 +1,6 @@
 import { formatDistanceToNow } from 'date-fns'
 import { GitBranch } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
@@ -8,11 +8,12 @@ import Form from 'react-bootstrap/Form'
 import InputGroup from 'react-bootstrap/InputGroup'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { errorMessage, get, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import AppModal from '../components/AppModal.jsx'
 import { PersonCell } from '../components/Avatar.jsx'
+import FilterPanel, { FilterGroup, FilterOptions, SortChips } from '../components/FilterPanel.jsx'
 import FormField, { FieldRow } from '../components/FormField.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
 import SearchIcon from '../components/SearchIcon.jsx'
@@ -31,15 +32,61 @@ const SORT_ACCESSORS = {
   company: (lead) => lead.company_name,
   contact: (lead) => lead.contact_name,
   status: (lead) => lead.status,
+  phase: (lead) => (lead.maintenance ? 5 : lead.current_phase ?? null),
   last_activity: (lead) => (lead.last_activity_at ? new Date(lead.last_activity_at).getTime() : null),
   assigned_to: (lead) => lead.assigned_to_username,
 }
 
-const STATUS_OPTIONS = [
-  { value: '', label: 'All statuses' },
+const STATUS_FILTERS = [
   { value: 'HOT', label: 'Hot' },
   { value: 'COLD', label: 'Cold' },
 ]
+
+// Phase is a filter over where each lead's project has got to; "maintenance"
+// is the terminal state past Phase 4, the same split the board's columns use.
+const PHASE_FILTERS = [
+  { value: '1', label: 'Phase 1 Requirements' },
+  { value: '2', label: 'Phase 2 Analysis' },
+  { value: '3', label: 'Phase 3 Execution' },
+  { value: '4', label: 'Phase 4 Sign-Off' },
+  { value: 'maintenance', label: 'Maintenance' },
+]
+
+const PHASE_LABELS = Object.fromEntries(PHASE_FILTERS.map((option) => [option.value, option.label]))
+
+const SORT_CHIPS = [
+  { value: 'recent', label: 'Recently active', sort: { key: 'last_activity', direction: 'descending' } },
+  { value: 'oldest', label: 'Least recently active', sort: { key: 'last_activity', direction: 'ascending' } },
+  { value: 'name', label: 'Name A–Z', sort: { key: 'name', direction: 'ascending' } },
+  { value: 'phase', label: 'Furthest along', sort: { key: 'phase', direction: 'descending' } },
+]
+
+function phaseKey(lead) {
+  if (lead.maintenance) {
+    return 'maintenance'
+  }
+  return lead.current_phase ? String(lead.current_phase) : null
+}
+
+function phaseLabel(lead) {
+  const key = phaseKey(lead)
+  return key ? PHASE_LABELS[key] ?? key : '—'
+}
+
+// Distinct, sorted values of one field across the leads on screen, each with
+// how many leads carry it.
+function optionsFrom(leads, pick) {
+  const counts = new Map()
+  for (const lead of leads) {
+    const value = pick(lead)
+    if (value) {
+      counts.set(value, (counts.get(value) ?? 0) + 1)
+    }
+  }
+  return [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([value, count]) => ({ value, label: value, count }))
+}
 
 function NewLeadModal({ show, onHide, onCreated, companies, salesReps, canAssignRep }) {
   const [name, setName] = useState('')
@@ -191,9 +238,14 @@ export default function Leads() {
   // below is filtered to match via ?mine=true.
   const canCreate = canAssignRep || user?.role === 'SALES_REP'
 
+  // The dashboard's stat cards link in as /leads?status=HOT, which seeds the
+  // rail's status filter -- read once, since it is a starting point rather
+  // than something the rail then writes back to the URL.
+  const [searchParams] = useSearchParams()
+  const initialStatus = searchParams.get('status')
+
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [status, setStatus] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [leads, setLeads] = useState([])
@@ -204,9 +256,59 @@ export default function Leads() {
   const [salesReps, setSalesReps] = useState([])
   const [showNewModal, setShowNewModal] = useState(false)
 
-  const { rows: sortedLeads, sort, toggle: toggleSort } = useSortedRows(leads, SORT_ACCESSORS)
+  // Status, phase, rep and PM are all applied to the list the server already
+  // returned, rather than four more query parameters. The API filters leads
+  // by status but not by phase, and the pipeline is an unpaginated list, so
+  // filtering one way for one field and another way for three would be a
+  // seam with nothing behind it. Search and "show archived" stay
+  // server-side, where they change *which* records come back at all.
+  const [statusFilter, setStatusFilter] = useState(() => (initialStatus ? [initialStatus] : []))
+  const [phaseFilter, setPhaseFilter] = useState([])
+  const [repFilter, setRepFilter] = useState([])
+  const [pmFilter, setPmFilter] = useState([])
+
+  const { rows: sortedLeads, sort, setSort, toggle: toggleSort } = useSortedRows(leads, SORT_ACCESSORS)
 
   usePageMeta({ title: 'Leads' })
+
+  // Rep and PM options come from the leads on screen, so the rail only ever
+  // offers a filter that would actually narrow anything.
+  const repOptions = useMemo(() => optionsFrom(leads, (lead) => lead.assigned_to_username), [leads])
+  const pmOptions = useMemo(() => optionsFrom(leads, (lead) => lead.project_manager_username), [leads])
+
+  const visibleLeads = useMemo(
+    () =>
+      sortedLeads.filter(
+        (lead) =>
+          (statusFilter.length === 0 || statusFilter.includes(lead.status))
+          && (phaseFilter.length === 0 || phaseFilter.includes(phaseKey(lead)))
+          && (repFilter.length === 0 || repFilter.includes(lead.assigned_to_username))
+          && (pmFilter.length === 0 || pmFilter.includes(lead.project_manager_username)),
+      ),
+    [sortedLeads, statusFilter, phaseFilter, repFilter, pmFilter],
+  )
+
+  const hasFilters =
+    statusFilter.length > 0 || phaseFilter.length > 0 || repFilter.length > 0 || pmFilter.length > 0 || Boolean(sort)
+
+  function resetFilters() {
+    setStatusFilter([])
+    setPhaseFilter([])
+    setRepFilter([])
+    setPmFilter([])
+    setSort(null)
+  }
+
+  // The chips and the column headers drive one sort state between them, so
+  // a chip lights up when its column is sorted that way and vice versa.
+  const activeChip = sort
+    ? SORT_CHIPS.find((chip) => chip.sort.key === sort.key && chip.sort.direction === sort.direction)?.value ?? null
+    : null
+
+  function handleChipChange(value) {
+    const chip = SORT_CHIPS.find((option) => option.value === value)
+    setSort(chip ? chip.sort : null)
+  }
 
   useEffect(() => {
     const timeoutId = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS)
@@ -223,9 +325,6 @@ export default function Leads() {
       const params = new URLSearchParams()
       if (debouncedSearch) {
         params.set('search', debouncedSearch)
-      }
-      if (status) {
-        params.set('status', status)
       }
       if (includeArchived) {
         params.set('include_archived', 'true')
@@ -246,7 +345,7 @@ export default function Leads() {
     return () => {
       cancelled = true
     }
-  }, [debouncedSearch, status, includeArchived, refreshKey])
+  }, [debouncedSearch, includeArchived, refreshKey])
 
   useEffect(() => {
     if (!canCreate) {
@@ -295,28 +394,16 @@ export default function Leads() {
             aria-label="Search leads"
           />
         </InputGroup>
-        <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2">
-          <Form.Select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-            style={{ maxWidth: '12rem' }}
-            aria-label="Filter by status"
-          >
-            {STATUS_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </Form.Select>
-          <Form.Switch
-            id="leads-include-archived"
-            label="Show archived"
+        <Form.Switch
+          id="leads-include-archived"
+          label="Show archived"
           className="text-nowrap"
-            className="text-nowrap"
-            checked={includeArchived}
-            onChange={(event) => setIncludeArchived(event.target.checked)}
-          />
-        </div>
+          checked={includeArchived}
+          onChange={(event) => setIncludeArchived(event.target.checked)}
+        />
+        <span className="text-body-secondary small">
+          {visibleLeads.length} of {leads.length}
+        </span>
         {canCreate && (
           <Button variant="primary" className="ms-sm-auto" onClick={() => setShowNewModal(true)}>
             New Lead
@@ -337,57 +424,115 @@ export default function Leads() {
         />
       )}
 
-      {loading ? (
-        <div className="d-flex justify-content-center py-5">
-          <Spinner animation="border" role="status">
-            <span className="visually-hidden">Loading…</span>
-          </Spinner>
+      <div className="pipeline-layout">
+        <FilterPanel canReset={hasFilters} onReset={resetFilters}>
+          <SortChips options={SORT_CHIPS} value={activeChip} onChange={handleChipChange} />
+
+          <FilterGroup title="Status">
+            <FilterOptions
+              name="filter-status"
+              options={STATUS_FILTERS}
+              selected={statusFilter}
+              onChange={setStatusFilter}
+            />
+          </FilterGroup>
+
+          <FilterGroup title="Phase">
+            <FilterOptions
+              name="filter-phase"
+              options={PHASE_FILTERS}
+              selected={phaseFilter}
+              onChange={setPhaseFilter}
+            />
+          </FilterGroup>
+
+          <FilterGroup title="Assigned rep" defaultOpen={false}>
+            <FilterOptions
+              name="filter-rep"
+              options={repOptions}
+              selected={repFilter}
+              onChange={setRepFilter}
+              emptyMessage="No reps on these leads."
+            />
+          </FilterGroup>
+
+          <FilterGroup title="Project manager" defaultOpen={false}>
+            <FilterOptions
+              name="filter-pm"
+              options={pmOptions}
+              selected={pmFilter}
+              onChange={setPmFilter}
+              emptyMessage="No project managers assigned yet."
+            />
+          </FilterGroup>
+        </FilterPanel>
+
+        <div>
+          {loading ? (
+            <div className="d-flex justify-content-center py-5">
+              <Spinner animation="border" role="status">
+                <span className="visually-hidden">Loading…</span>
+              </Spinner>
+            </div>
+          ) : visibleLeads.length === 0 ? (
+            <p className="text-body-secondary">No leads found.</p>
+          ) : (
+            <Table hover responsive className="table-cards">
+              <thead>
+                <tr>
+                  <SortableTh columnKey="name" label="Project" sort={sort} onToggle={toggleSort} />
+                  <SortableTh columnKey="company" label="Company" sort={sort} onToggle={toggleSort} />
+                  <SortableTh columnKey="phase" label="Phase" sort={sort} onToggle={toggleSort} />
+                  <SortableTh columnKey="status" label="Status" sort={sort} onToggle={toggleSort} />
+                  <SortableTh
+                    columnKey="last_activity"
+                    label="Last activity"
+                    sort={sort}
+                    onToggle={toggleSort}
+                  />
+                  <SortableTh columnKey="assigned_to" label="Assigned to" sort={sort} onToggle={toggleSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {visibleLeads.map((lead) => (
+                  <tr key={lead.id}>
+                    <td>
+                      <Link to={`/leads/${lead.id}`} className="text-decoration-none table-link-hover">
+                        {lead.name}
+                      </Link>
+                      {lead.is_archived && (
+                        <Badge bg="secondary" className="ms-2">
+                          Archived
+                        </Badge>
+                      )}
+                      {lead.contact_name && (
+                        <div className="text-body-secondary small">{lead.contact_name}</div>
+                      )}
+                    </td>
+                    <td>{lead.company_name ?? '—'}</td>
+                    <td>{phaseLabel(lead)}</td>
+                    <td>
+                      <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
+                    </td>
+                    <td>
+                      {lead.last_activity_at
+                        ? formatDistanceToNow(new Date(lead.last_activity_at), { addSuffix: true })
+                        : '—'}
+                    </td>
+                    <td>
+                      <PersonCell
+                        name={lead.assigned_to_username}
+                        role={lead.assigned_to_role}
+                        fallback="Unassigned"
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
         </div>
-      ) : leads.length === 0 ? (
-        <p className="text-body-secondary">No leads found.</p>
-      ) : (
-        <Table hover responsive className="table-cards">
-          <thead>
-            <tr>
-              <SortableTh columnKey="name" label="Project" sort={sort} onToggle={toggleSort} />
-              <SortableTh columnKey="company" label="Company" sort={sort} onToggle={toggleSort} />
-              <SortableTh columnKey="contact" label="Contact" sort={sort} onToggle={toggleSort} />
-              <SortableTh columnKey="status" label="Status" sort={sort} onToggle={toggleSort} />
-              <SortableTh columnKey="last_activity" label="Last activity" sort={sort} onToggle={toggleSort} />
-              <SortableTh columnKey="assigned_to" label="Assigned to" sort={sort} onToggle={toggleSort} />
-            </tr>
-          </thead>
-          <tbody>
-            {sortedLeads.map((lead) => (
-              <tr key={lead.id}>
-                <td>
-                  <Link to={`/leads/${lead.id}`} className="text-decoration-none table-link-hover">
-                    {lead.name}
-                  </Link>
-                  {lead.is_archived && (
-                    <Badge bg="secondary" className="ms-2">
-                      Archived
-                    </Badge>
-                  )}
-                </td>
-                <td>{lead.company_name ?? '—'}</td>
-                <td>{lead.contact_name ?? '—'}</td>
-                <td>
-                  <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
-                </td>
-                <td>
-                  {lead.last_activity_at
-                    ? formatDistanceToNow(new Date(lead.last_activity_at), { addSuffix: true })
-                    : '—'}
-                </td>
-                <td>
-                  <PersonCell name={lead.assigned_to_username} fallback="Unassigned" />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </Table>
-      )}
+      </div>
     </>
   )
 }

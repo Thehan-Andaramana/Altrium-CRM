@@ -61,7 +61,9 @@ export function useSortedRows(rows, accessors) {
     })
   }
 
-  return { rows: sorted, sort, toggle }
+  // setSort is for controls that name a direction outright (the pipeline's
+  // sort chips); toggle is for a column header, which cycles.
+  return { rows: sorted, sort, setSort, toggle }
 }
 
 const SORT_ICON = {

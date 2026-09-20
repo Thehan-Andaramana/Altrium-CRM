@@ -185,7 +185,8 @@ one). Every pair was contrast-checked in both themes rather than eyeballed.
 | `/login` | Split screen: a white brand half and a near-black half, cut by a diagonal, carrying the sign-in card. Both halves are fixed colours in either theme, like the sidebar — it's chrome. Sign-in is by **username**, not email (`rep1`, `mgr1`, …), and "Remember me" chooses between a persistent session cookie and one that dies with the browser |
 | `/` | Dashboard — stat cards over hot/cold/approaching-cold lead lists and pending approvals |
 | `/board` | Kanban board, one column per phase. Cards reorder *within* a column only (`POST /api/projects/reorder/` writes `board_order`); a phase is changed by an approved sign-off and nothing else, so a cross-column drag is refused and says why |
-| `/leads`, `/leads/:id` | Pipeline list and the lead detail page (phases, tasks, timeline, project panel) |
+| `/leads` | Pipeline list, with a filter rail beside it: sort chips plus collapsible groups for status, phase, assigned rep and project manager. Search and "show archived" are query parameters (they change which records come back); the four rail filters narrow the list already on screen, since the API filters leads by status but not by phase and the list is unpaginated. The dashboard's `?status=HOT` link seeds the status filter |
+| `/leads/:id` | Lead detail in three columns — contact panel, the work itself in tabs (phases, activity timeline), and a summary rail (current phase, status, budget, rep, PM, what's due next, notes) — under a phase stepper showing how far the project has got |
 | `/companies`, `/companies/:id`, `/contacts` | Records |
 | `/calendar` | Tasks by due date, scoped by role |
 | `/approvals` | The approval queue |
@@ -330,6 +331,7 @@ it in parallel made Django's dev server refuse connections mid-run.
 | `server-errors` | A second modal surfaces the server's own validation message, so the shared `errorMessage` helper isn't only wired up on tasks |
 | `board` | Cards land in their phase's column, a cross-column drag is refused with the reason, reordering within a column survives a reload, and the filters narrow the board |
 | `reports` | Reporting is management-only (a rep and a PM are both sent away), the range defaults to the last 30 days and refetches when changed, the per-rep table sorts, and the CSV exports |
+| `lead-layout` | The lead's stepper, contact panel and summary rail; timeline entries rendering as cards; and the pipeline's sort chips, collapsible filter groups and status deep link |
 | `login` | Signing in through the labelled fields, the split-screen brand half, and Remember me actually changing the session cookie (persistent when checked, browser-session when not) |
 | `system-admin` | System Admin reads another rep's lead in the pipeline, on the board and on its own page, reaches every page including reporting, and still gets no create buttons |
 

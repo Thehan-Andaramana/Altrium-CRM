@@ -95,6 +95,13 @@ class LeadSerializer(serializers.ModelSerializer):
     contact_email = serializers.CharField(source='contact.email', read_only=True, default=None)
     contact_phone = serializers.CharField(source='contact.phone', read_only=True, default=None)
     assigned_to_role = serializers.CharField(source='assigned_to.role', read_only=True, default=None)
+    # The pipeline filters by phase and by project manager, both of which
+    # live on the lead's project -- carried here so the list doesn't need a
+    # second request per lead to filter on them.
+    current_phase = serializers.IntegerField(source='project.current_phase', read_only=True, default=None)
+    project_manager_username = serializers.CharField(
+        source='project.project_manager.username', read_only=True, default=None,
+    )
     interaction_count = serializers.IntegerField(read_only=True, default=0)
     # Populated via a queryset annotation (see LeadViewSet.get_queryset) that
     # matches this lead's contact to a Deal, since neither model has a direct
@@ -116,6 +123,7 @@ class LeadSerializer(serializers.ModelSerializer):
             'last_activity_at', 'last_internal_activity_at', 'assigned_to', 'assigned_to_username',
             'assigned_to_role',
             'interaction_count', 'deal_stage', 'has_project',
+            'current_phase', 'project_manager_username',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
         ]
         read_only_fields = [

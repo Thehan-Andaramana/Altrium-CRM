@@ -28,11 +28,15 @@ test.describe('lead temperature', () => {
       await expect(page.getByRole('button', { name: 'COLD' })).toBeVisible()
 
       await page.getByRole('tab', { name: 'Activity' }).click()
-      await page.getByLabel('Type').selectOption('CALL')
-      await page.getByLabel('Outcome').selectOption('RESPONDED')
-      await page.getByLabel('Notes').fill('Spoke to the sponsor about scope.')
-      // "Save notes" in the project panel would also match a loose "Save".
-      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      // Scoped to the tab's own panel: the summary rail beside it has a
+      // "Project notes" field, which a page-wide getByLabel('Notes') would
+      // also match (Playwright matches labels by substring).
+      const activity = page.getByRole('tabpanel')
+      await activity.getByLabel('Type').selectOption('CALL')
+      await activity.getByLabel('Outcome').selectOption('RESPONDED')
+      await activity.getByLabel('Notes').fill('Spoke to the sponsor about scope.')
+      // "Save notes" in the summary rail would also match a loose "Save".
+      await activity.getByRole('button', { name: 'Save', exact: true }).click()
 
       await expect(page.getByText('Spoke to the sponsor about scope.')).toBeVisible()
 

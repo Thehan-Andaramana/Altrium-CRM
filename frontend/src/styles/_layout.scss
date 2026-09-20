@@ -1239,3 +1239,373 @@ button.status-pill {
   color: var(--bs-secondary-color);
   font-size: 0.8125rem;
 }
+
+// -- Lead detail: three columns ------------------------------------------
+//
+// Contact panel, the work itself, and a summary rail. The rails hold their
+// width and the middle takes what is left, because the middle is the part
+// whose content actually varies in length.
+
+.lead-layout {
+  display: grid;
+  grid-template-columns: 17.5rem minmax(0, 1fr) 19rem;
+  gap: 1rem;
+  align-items: start;
+}
+
+@include media-breakpoint-down(xl) {
+  .lead-layout {
+    // Two columns first: the rail drops under the contact panel before the
+    // middle column gets squeezed.
+    grid-template-columns: 17.5rem minmax(0, 1fr);
+  }
+
+  .lead-layout__rail {
+    grid-column: 1 / -1;
+  }
+}
+
+@include media-breakpoint-down(lg) {
+  .lead-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lead-layout__rail {
+    grid-column: auto;
+  }
+}
+
+.lead-panel {
+  padding: 1.25rem;
+  border-radius: var(--altrium-card-radius);
+  background-color: var(--altrium-surface);
+  box-shadow: var(--altrium-card-shadow);
+}
+
+.lead-panel + .lead-panel {
+  margin-top: 1rem;
+}
+
+.lead-panel__title {
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bs-secondary-color);
+}
+
+// A label/value pair in the summary rail or contact panel.
+.lead-field + .lead-field {
+  margin-top: 0.875rem;
+}
+
+.lead-field__label {
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+}
+
+.lead-field__value {
+  font-size: 0.9375rem;
+}
+
+// -- Phase stepper --------------------------------------------------------
+
+.stepper {
+  display: flex;
+  padding: 1rem 1.25rem;
+  margin: 0 0 1rem;
+  border-radius: var(--altrium-card-radius);
+  background-color: var(--altrium-surface);
+  box-shadow: var(--altrium-card-shadow);
+  list-style: none;
+  overflow-x: auto;
+}
+
+.stepper__step {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 6rem;
+  padding: 0 0.25rem;
+  text-align: center;
+}
+
+// The connector runs from the previous dot to this one, behind both.
+.stepper__line {
+  position: absolute;
+  top: 0.4375rem;
+  right: 50%;
+  left: -50%;
+  height: 2px;
+  background-color: var(--stepper-line, var(--bs-border-color));
+}
+
+.stepper__dot {
+  position: relative;
+  z-index: 1;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  border: 2px solid var(--stepper-dot-border, var(--bs-border-color));
+  border-radius: 50%;
+  background-color: var(--stepper-dot, var(--altrium-surface));
+}
+
+.stepper__label {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.stepper__phase {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.stepper__name {
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+}
+
+.stepper__step--complete {
+  --stepper-dot: #{$green};
+  --stepper-dot-border: #{$green};
+  --stepper-line: #{$green};
+}
+
+.stepper__step--current {
+  --stepper-dot: #{$altrium-amber};
+  --stepper-dot-border: #{$altrium-amber};
+  // The line *into* the current step is the run already completed, so it
+  // stays green; only the steps after it are grey.
+  --stepper-line: #{$green};
+}
+
+.stepper__step--current .stepper__phase {
+  color: shade-color($altrium-amber, 35%);
+}
+
+[data-bs-theme='dark'] .stepper__step--current .stepper__phase {
+  color: tint-color($altrium-amber, 25%);
+}
+
+// -- Activity timeline ----------------------------------------------------
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.timeline__entry {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.timeline__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  margin-top: 0.125rem;
+  border-radius: 50%;
+  background-color: var(--timeline-icon-bg, var(--bs-tertiary-bg));
+  color: var(--timeline-icon-fg, var(--bs-secondary-color));
+}
+
+@each $name, $tone in ("amber": $altrium-amber, "green": $green, "red": $red, "blue": $blue, "purple": $purple) {
+  .timeline__icon--#{$name} {
+    --timeline-icon-bg: #{rgba($tone, 0.14)};
+    --timeline-icon-fg: #{shade-color($tone, 25%)};
+  }
+
+  [data-bs-theme="dark"] .timeline__icon--#{$name} {
+    --timeline-icon-bg: #{rgba($tone, 0.22)};
+    --timeline-icon-fg: #{tint-color($tone, 35%)};
+  }
+}
+
+.timeline__card {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--altrium-card-radius);
+  background-color: var(--altrium-surface);
+}
+
+.timeline__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.timeline__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.timeline__time {
+  flex-shrink: 0;
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+}
+
+.timeline__meta {
+  margin-top: 0.125rem;
+  color: var(--bs-secondary-color);
+  font-size: 0.8125rem;
+}
+
+.timeline__body {
+  margin-top: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+// -- Pipeline filter rail -------------------------------------------------
+
+.filter-panel {
+  padding: 1rem;
+  border-radius: var(--altrium-card-radius);
+  background-color: var(--altrium-surface);
+  box-shadow: var(--altrium-card-shadow);
+}
+
+.filter-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.filter-panel__title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.filter-panel__reset {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--bs-secondary-color);
+  font-size: 0.8125rem;
+}
+
+.filter-panel__reset:hover {
+  color: var(--bs-body-color);
+  text-decoration: underline;
+}
+
+.filter-panel__sort {
+  margin-top: 0.875rem;
+}
+
+.filter-panel__sort-label {
+  margin-bottom: 0.375rem;
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+}
+
+.filter-panel__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.filter-chip {
+  padding: 0.3125rem 0.75rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 999px;
+  background-color: transparent;
+  color: var(--bs-body-color);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.filter-chip:hover {
+  border-color: var(--bs-secondary-color);
+}
+
+.filter-chip--active {
+  border-color: $altrium-amber;
+  background-color: rgba($altrium-amber, 0.16);
+  color: shade-color($altrium-amber, 40%);
+  font-weight: 500;
+}
+
+[data-bs-theme="dark"] .filter-chip--active {
+  color: tint-color($altrium-amber, 30%);
+}
+
+.filter-group {
+  border-top: 1px solid var(--bs-border-color);
+  margin-top: 0.875rem;
+  padding-top: 0.875rem;
+}
+
+.filter-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--bs-body-color);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.filter-group__chevron {
+  color: var(--bs-secondary-color);
+  transition: transform 0.15s ease-in-out;
+}
+
+.filter-group__chevron--open {
+  transform: rotate(180deg);
+}
+
+.filter-group__body {
+  margin-top: 0.625rem;
+}
+
+.filter-group__options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 12rem;
+  overflow-y: auto;
+  font-size: 0.875rem;
+}
+
+.filter-group__count {
+  margin-left: 0.375rem;
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+}
+
+// The pipeline page itself: the rail beside the table.
+.pipeline-layout {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+@include media-breakpoint-down(lg) {
+  .pipeline-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

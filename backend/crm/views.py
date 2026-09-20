@@ -215,7 +215,13 @@ class LeadViewSet(viewsets.ModelViewSet):
         # bridge -- though that also means it's ~always true going forward.
         matching_deals = Deal.objects.filter(contact_id=OuterRef('contact_id')).order_by('-id')
         queryset = (
-            Lead.objects.select_related('assigned_to', 'company', 'contact')
+            Lead.objects.select_related(
+                'assigned_to', 'company', 'contact',
+                # current_phase / project_manager_username on the serializer
+                # read through to the project -- without these, listing the
+                # pipeline is two extra queries per lead.
+                'project', 'project__project_manager',
+            )
             .annotate(
                 interaction_count=Count('interactions', distinct=True),
                 deal_stage=Subquery(matching_deals.values('stage')[:1]),
