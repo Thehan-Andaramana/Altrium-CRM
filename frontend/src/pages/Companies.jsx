@@ -1,3 +1,4 @@
+import { Building2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
@@ -5,13 +6,14 @@ import Button from 'react-bootstrap/Button'
 import ButtonGroup from 'react-bootstrap/ButtonGroup'
 import Form from 'react-bootstrap/Form'
 import InputGroup from 'react-bootstrap/InputGroup'
-import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
 import { Link } from 'react-router-dom'
 import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import AppModal from '../components/AppModal.jsx'
 import { PersonCell } from '../components/Avatar.jsx'
+import FormField, { FieldRow } from '../components/FormField.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
 import SearchIcon from '../components/SearchIcon.jsx'
 import { SortableTh, useSortedRows } from '../components/SortableTable.jsx'
@@ -61,49 +63,50 @@ function NewCompanyModal({ show, onHide, onCreated, salesReps }) {
   }
 
   return (
-    <Modal show={show} onHide={onHide} centered>
-      <Form onSubmit={handleSubmit}>
-        <Modal.Header closeButton>
-          <Modal.Title as="h2" className="h5 mb-0">
-            New Company
-          </Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          {error && <Alert variant="danger">{error}</Alert>}
-          <Form.Group className="mb-3" controlId="new-company-name">
-            <Form.Label>Name</Form.Label>
-            <Form.Control value={name} onChange={(event) => setName(event.target.value)} required />
-          </Form.Group>
-          <Form.Group className="mb-3" controlId="new-company-industry">
-            <Form.Label>Industry</Form.Label>
-            <Form.Control value={industry} onChange={(event) => setIndustry(event.target.value)} />
-          </Form.Group>
-          <Form.Group className="mb-3" controlId="new-company-website">
-            <Form.Label>Website</Form.Label>
-            <Form.Control type="url" value={website} onChange={(event) => setWebsite(event.target.value)} />
-          </Form.Group>
-          <Form.Group controlId="new-company-owner">
-            <Form.Label>Owner</Form.Label>
-            <Form.Select value={owner} onChange={(event) => setOwner(event.target.value)}>
-              <option value="">Unassigned</option>
-              {salesReps.map((rep) => (
-                <option key={rep.id} value={rep.id}>
-                  {rep.username}
-                </option>
-              ))}
-            </Form.Select>
-          </Form.Group>
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={onHide} disabled={saving}>
+    <AppModal
+      show={show}
+      onHide={onHide}
+      size="lg"
+      icon={Building2}
+      title="New Company"
+      subtitle="Add an organisation to the CRM and give it an owner."
+      onSubmit={handleSubmit}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" disabled={saving}>
             {saving ? 'Creating…' : 'Create'}
           </Button>
-        </Modal.Footer>
-      </Form>
-    </Modal>
+        </>
+      }
+    >
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FieldRow>
+        <FormField label="Name" controlId="new-company-name" required key="name">
+          <Form.Control value={name} onChange={(event) => setName(event.target.value)} required />
+        </FormField>
+        <FormField label="Industry" controlId="new-company-industry" key="industry">
+          <Form.Control value={industry} onChange={(event) => setIndustry(event.target.value)} />
+        </FormField>
+      </FieldRow>
+      <FieldRow>
+        <FormField label="Website" controlId="new-company-website" key="website">
+          <Form.Control type="url" value={website} onChange={(event) => setWebsite(event.target.value)} />
+        </FormField>
+        <FormField label="Owner" controlId="new-company-owner" key="owner">
+          <Form.Select value={owner} onChange={(event) => setOwner(event.target.value)}>
+            <option value="">Unassigned</option>
+            {salesReps.map((rep) => (
+              <option key={rep.id} value={rep.id}>
+                {rep.username}
+              </option>
+            ))}
+          </Form.Select>
+        </FormField>
+      </FieldRow>
+    </AppModal>
   )
 }
 

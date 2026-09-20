@@ -1,5 +1,12 @@
 import { formatDistanceToNow } from 'date-fns'
-import { Pencil } from 'lucide-react'
+import {
+  ClipboardCheck,
+  ClipboardList,
+  FilePlus2,
+  Flame,
+  Paperclip,
+  Pencil,
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
@@ -10,7 +17,6 @@ import Container from 'react-bootstrap/Container'
 import Dropdown from 'react-bootstrap/Dropdown'
 import Form from 'react-bootstrap/Form'
 import ListGroup from 'react-bootstrap/ListGroup'
-import Modal from 'react-bootstrap/Modal'
 import ProgressBar from 'react-bootstrap/ProgressBar'
 import Row from 'react-bootstrap/Row'
 import Spinner from 'react-bootstrap/Spinner'
@@ -19,9 +25,12 @@ import Tabs from 'react-bootstrap/Tabs'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { del, errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import AppModal from '../components/AppModal.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
 import Avatar, { PersonCell, ROLE_LABELS } from '../components/Avatar.jsx'
 import ContactDetails from '../components/ContactDetails.jsx'
+import FileDropZone from '../components/FileDropZone.jsx'
+import FormField, { FieldRow } from '../components/FormField.jsx'
 import FormFieldsEditor from '../components/FormFieldsEditor.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
@@ -327,14 +336,16 @@ function TaskRow({ task, onOpen }) {
 
 function TaskDueDateGroup({ task, showHelpText }) {
   return (
-    <Form.Group className="mb-3" controlId="task-due-date">
-      <Form.Label>Due date</Form.Label>
+    <FormField
+      label="Due date"
+      controlId="task-due-date"
+      hint={showHelpText ? 'Calculated automatically from the phase start date.' : undefined}
+    >
       <div className={task.is_overdue ? 'text-danger' : undefined}>
         {task.due_date ? new Date(task.due_date).toLocaleDateString() : 'Not scheduled yet'}
         {task.is_overdue && ' (overdue)'}
       </div>
-      {showHelpText && <Form.Text muted>Calculated automatically from the phase start date.</Form.Text>}
-    </Form.Group>
+    </FormField>
   )
 }
 
@@ -392,14 +403,15 @@ function AttachmentPreviewModal({ attachment, onHide }) {
   }
 
   return (
-    <Modal show onHide={onHide} centered size="lg">
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          {attachment.title}
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>{body}</Modal.Body>
-    </Modal>
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      icon={Paperclip}
+      title={attachment.title}
+      subtitle="Previewed here rather than downloaded, so you stay on the lead."
+    >
+      {body}
+    </AppModal>
   )
 }
 
@@ -544,15 +556,19 @@ function TaskAttachmentsSection({ requirementId }) {
       )}
 
       {addMode === 'file' && (
-        <Form onSubmit={handleUploadFile} className="d-flex gap-2 align-items-center mb-2">
-          <Form.Control
-            size="sm"
-            type="file"
-            aria-label="Attachment file"
-            onChange={(event) => setFile(event.target.files[0] ?? null)}
+        <Form onSubmit={handleUploadFile} className="d-flex flex-column gap-2 mb-2">
+          {/* The <input> is still in here and still labelled -- the drop
+              zone is chrome around it, so browsing and dropping both end
+              up in the same place. */}
+          <FileDropZone
+            id="attachment-file"
+            label="Attachment file"
+            file={file}
+            onFileChange={setFile}
+            disabled={addSaving}
             required
           />
-          <Button size="sm" type="submit" disabled={addSaving || !file}>
+          <Button size="sm" type="submit" disabled={addSaving || !file} className="align-self-start">
             {addSaving ? 'Uploading…' : 'Upload'}
           </Button>
         </Form>
@@ -738,25 +754,27 @@ function TaskFormModal({ task, show, onHide, onSaved }) {
   }
 
   return (
-    <Modal show={show} onHide={onHide} fullscreen>
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          {task.label} — Form
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <TaskFormFieldsEditor fields={fields} answers={answers} onChange={updateAnswer} />
-      </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button variant="primary" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
-      </Modal.Footer>
-    </Modal>
+    <AppModal
+      show={show}
+      onHide={onHide}
+      fullscreen
+      icon={ClipboardList}
+      title={`${task.label} — Form`}
+      subtitle="Answers are saved with the task and shown on the project panel."
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSave} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert variant="danger">{error}</Alert>}
+      <TaskFormFieldsEditor fields={fields} answers={answers} onChange={updateAnswer} />
+    </AppModal>
   )
 }
 
@@ -804,74 +822,77 @@ function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEd
     && !task.confirmed_by
 
   return (
-    <>
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          {task.label}
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {task.description && <p className="text-body-secondary">{task.description}</p>}
-        <div className="mb-3">
-          <div className="text-body-secondary small">Status</div>
-          <StatusPill tone={TASK_STATUS_TONE[task.status] ?? 'grey'}>
-            {TASK_STATUS_LABELS[task.status] ?? task.status}
-          </StatusPill>
-        </div>
-        <TaskDueDateGroup task={task} />
-        {task.committed_date && (
-          <div className="mb-3">
-            <div className="text-body-secondary small">Committed date</div>
-            <div>{new Date(task.committed_date).toLocaleDateString()}</div>
-          </div>
-        )}
-        {canEdit ? (
-          <TaskFormSection task={task} onFormSaved={onFormSaved} />
-        ) : (
-          <TaskFormFieldsReadOnly task={task} />
-        )}
-        <div className="mb-3">
-          <div className="text-body-secondary small">Notes</div>
-          <div>{task.notes || '—'}</div>
-        </div>
-        <div className="text-body-secondary small">
-          {task.updated_by_username ? (
-            <>
-              Last updated by {task.updated_by_username}
-              {task.updated_at && (
-                <> · {formatDistanceToNow(new Date(task.updated_at), { addSuffix: true })}</>
-              )}
-            </>
-          ) : (
-            'Not yet updated.'
-          )}
-        </div>
-        {task.confirmed_by_username && (
-          <div className="text-body-secondary small">
-            Confirmed by {task.confirmed_by_username}
-            {task.confirmed_at && (
-              <> · {formatDistanceToNow(new Date(task.confirmed_at), { addSuffix: true })}</>
-            )}
-          </div>
-        )}
-        <TaskAttachmentsSection requirementId={task.id} />
-      </Modal.Body>
-      <Modal.Footer>
-        {canConfirm && awaitingConfirmation && (
-          <Button variant="outline-success" className="me-auto" disabled={saving} onClick={onConfirm}>
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      icon={ClipboardCheck}
+      title={task.label}
+      subtitle={`Phase ${task.phase} · ${task.responsible_username ?? 'nobody'} is responsible`}
+      leadingActions={
+        canConfirm && awaitingConfirmation ? (
+          <Button variant="outline-success" disabled={saving} onClick={onConfirm}>
             Confirm
           </Button>
-        )}
-        {canEdit && (
-          <Button variant="outline-secondary" onClick={onEdit}>
-            Edit
+        ) : null
+      }
+      actions={
+        <>
+          {canEdit && (
+            <Button variant="outline-secondary" onClick={onEdit}>
+              Edit
+            </Button>
+          )}
+          <Button variant="primary" onClick={onHide}>
+            Close
           </Button>
+        </>
+      }
+    >
+      {task.description && <p className="text-body-secondary">{task.description}</p>}
+      <div className="app-field">
+        <div className="app-field__label">Status</div>
+        <StatusPill tone={TASK_STATUS_TONE[task.status] ?? 'grey'}>
+          {TASK_STATUS_LABELS[task.status] ?? task.status}
+        </StatusPill>
+      </div>
+      <TaskDueDateGroup task={task} />
+      {task.committed_date && (
+        <div className="app-field">
+          <div className="app-field__label">Committed date</div>
+          <div>{new Date(task.committed_date).toLocaleDateString()}</div>
+        </div>
+      )}
+      {canEdit ? (
+        <TaskFormSection task={task} onFormSaved={onFormSaved} />
+      ) : (
+        <TaskFormFieldsReadOnly task={task} />
+      )}
+      <div className="app-field">
+        <div className="app-field__label">Notes</div>
+        <div>{task.notes || '—'}</div>
+      </div>
+      <div className="text-body-secondary small">
+        {task.updated_by_username ? (
+          <>
+            Last updated by {task.updated_by_username}
+            {task.updated_at && (
+              <> · {formatDistanceToNow(new Date(task.updated_at), { addSuffix: true })}</>
+            )}
+          </>
+        ) : (
+          'Not yet updated.'
         )}
-        <Button variant="secondary" onClick={onHide}>
-          Close
-        </Button>
-      </Modal.Footer>
-    </>
+      </div>
+      {task.confirmed_by_username && (
+        <div className="text-body-secondary small">
+          Confirmed by {task.confirmed_by_username}
+          {task.confirmed_at && (
+            <> · {formatDistanceToNow(new Date(task.confirmed_at), { addSuffix: true })}</>
+          )}
+        </div>
+      )}
+      <TaskAttachmentsSection requirementId={task.id} />
+    </AppModal>
   )
 }
 
@@ -898,85 +919,86 @@ function TaskDetailEditForm({ task, canConfirm, canComplete, saving, error, onSa
   }
 
   return (
-    <>
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          {task.label}
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {task.description && <p className="text-body-secondary">{task.description}</p>}
-        {error && <Alert variant="danger">{error}</Alert>}
-        {canComplete ? (
-          <Form.Group className="mb-3" controlId="task-status">
-            <Form.Label>Status</Form.Label>
-            <Form.Select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
-              {TASK_STATUS_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </Form.Select>
-          </Form.Group>
-        ) : (
-          <div className="mb-3">
-            <div className="text-body-secondary small">Status</div>
-            <StatusPill tone={TASK_STATUS_TONE[task.status] ?? 'grey'}>
-              {TASK_STATUS_LABELS[task.status] ?? task.status}
-            </StatusPill>
-            <div className="text-body-secondary small mt-1">{completionResponsibilityMessage(task)}</div>
-          </div>
-        )}
-        <TaskDueDateGroup task={task} showHelpText />
-        <Form.Group className="mb-3" controlId="task-committed-date">
-          <Form.Label>Committed date</Form.Label>
-          <Form.Control
-            type="date"
-            value={draftCommittedDate}
-            onChange={(event) => setDraftCommittedDate(event.target.value)}
-          />
-          <Form.Text muted>
-            Set this when a client agrees a date on a call -- the earlier of this and the due date above is used.
-          </Form.Text>
-        </Form.Group>
-        <TaskFormSection task={task} onFormSaved={onFormSaved} />
-        <Form.Group className="mb-3" controlId="task-notes">
-          <Form.Label>Notes</Form.Label>
-          <Form.Control
-            as="textarea"
-            rows={3}
-            value={draftNotes}
-            onChange={(event) => setDraftNotes(event.target.value)}
-          />
-        </Form.Group>
-        <div className="text-body-secondary small">
-          {task.updated_by_username ? (
-            <>
-              Last updated by {task.updated_by_username}
-              {task.updated_at && (
-                <> · {formatDistanceToNow(new Date(task.updated_at), { addSuffix: true })}</>
-              )}
-            </>
-          ) : (
-            'Not yet updated.'
-          )}
-        </div>
-        <TaskAttachmentsSection requirementId={task.id} />
-      </Modal.Body>
-      <Modal.Footer>
-        {canConfirm && awaitingConfirmation && (
-          <Button variant="outline-success" className="me-auto" disabled={saving} onClick={onConfirm}>
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      icon={ClipboardCheck}
+      title={task.label}
+      subtitle={`Phase ${task.phase} · ${task.responsible_username ?? 'nobody'} is responsible`}
+      leadingActions={
+        canConfirm && awaitingConfirmation ? (
+          <Button variant="outline-success" disabled={saving} onClick={onConfirm}>
             Confirm
           </Button>
+        ) : null
+      }
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={saving} onClick={handleSaveClick}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      {task.description && <p className="text-body-secondary">{task.description}</p>}
+      {error && <Alert variant="danger">{error}</Alert>}
+      {canComplete ? (
+        <FormField label="Status" controlId="task-status">
+          <Form.Select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
+            {TASK_STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Form.Select>
+        </FormField>
+      ) : (
+        <div className="app-field">
+          <div className="app-field__label">Status</div>
+          <StatusPill tone={TASK_STATUS_TONE[task.status] ?? 'grey'}>
+            {TASK_STATUS_LABELS[task.status] ?? task.status}
+          </StatusPill>
+          <div className="app-field__hint">{completionResponsibilityMessage(task)}</div>
+        </div>
+      )}
+      <TaskDueDateGroup task={task} showHelpText />
+      <FormField
+        label="Committed date"
+        controlId="task-committed-date"
+        hint="Set this when a client agrees a date on a call — the earlier of this and the due date above is used."
+      >
+        <Form.Control
+          type="date"
+          value={draftCommittedDate}
+          onChange={(event) => setDraftCommittedDate(event.target.value)}
+        />
+      </FormField>
+      <TaskFormSection task={task} onFormSaved={onFormSaved} />
+      <FormField label="Notes" controlId="task-notes">
+        <Form.Control
+          as="textarea"
+          rows={3}
+          value={draftNotes}
+          onChange={(event) => setDraftNotes(event.target.value)}
+        />
+      </FormField>
+      <div className="text-body-secondary small mt-3">
+        {task.updated_by_username ? (
+          <>
+            Last updated by {task.updated_by_username}
+            {task.updated_at && (
+              <> · {formatDistanceToNow(new Date(task.updated_at), { addSuffix: true })}</>
+            )}
+          </>
+        ) : (
+          'Not yet updated.'
         )}
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button variant="primary" disabled={saving} onClick={handleSaveClick}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
-      </Modal.Footer>
-    </>
+      </div>
+      <TaskAttachmentsSection requirementId={task.id} />
+    </AppModal>
   )
 }
 
@@ -1017,24 +1039,25 @@ function TaskDetailForm({ task, canConfirm, canEdit, canComplete, saving, error,
 }
 
 function TaskDetailModal({ task, canConfirm, canEdit, canComplete, saving, error, onSave, onConfirm, onHide, onFormSaved }) {
+  // The form owns the dialog, so the key gives a different task fresh
+  // state rather than carrying the previous one's over.
+  if (!task) {
+    return null
+  }
   return (
-    <Modal show={Boolean(task)} onHide={onHide} centered>
-      {task && (
-        <TaskDetailForm
-          key={task.id}
-          task={task}
-          canConfirm={canConfirm}
-          canEdit={canEdit}
-          canComplete={canComplete}
-          saving={saving}
-          error={error}
-          onSave={onSave}
-          onConfirm={onConfirm}
-          onHide={onHide}
-          onFormSaved={onFormSaved}
-        />
-      )}
-    </Modal>
+    <TaskDetailForm
+      key={task.id}
+      task={task}
+      canConfirm={canConfirm}
+      canEdit={canEdit}
+      canComplete={canComplete}
+      saving={saving}
+      error={error}
+      onSave={onSave}
+      onConfirm={onConfirm}
+      onHide={onHide}
+      onFormSaved={onFormSaved}
+    />
   )
 }
 
@@ -1052,34 +1075,42 @@ function AddTaskForm({ phaseNum, saving, error, onSave, onHide }) {
   const [fields, setFields] = useState([])
 
   return (
-    <Form
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      scrollable
+      icon={FilePlus2}
+      title={`Add Task to Phase ${phaseNum}`}
+      subtitle="A one-off task on this project only — templates cover every project."
       onSubmit={(event) => {
         event.preventDefault()
         onSave({ label, description, confirmationAuthority, dueDate, customFields: formFieldsPayload(fields) })
       }}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? 'Creating…' : 'Create'}
+          </Button>
+        </>
+      }
     >
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          Add Task to Phase {phaseNum}
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <Form.Group className="mb-3" controlId="add-task-label">
-          <Form.Label>Label</Form.Label>
-          <Form.Control value={label} onChange={(event) => setLabel(event.target.value)} required />
-        </Form.Group>
-        <Form.Group className="mb-3" controlId="add-task-description">
-          <Form.Label>Description</Form.Label>
-          <Form.Control
-            as="textarea"
-            rows={2}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </Form.Group>
-        <Form.Group className="mb-3" controlId="add-task-authority">
-          <Form.Label>Confirmation authority</Form.Label>
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FormField label="Label" controlId="add-task-label" required>
+        <Form.Control value={label} onChange={(event) => setLabel(event.target.value)} required />
+      </FormField>
+      <FormField label="Description" controlId="add-task-description">
+        <Form.Control
+          as="textarea"
+          rows={2}
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+        />
+      </FormField>
+      <FieldRow>
+        <FormField label="Confirmation authority" controlId="add-task-authority" key="authority">
           <Form.Select
             value={confirmationAuthority}
             onChange={(event) => setConfirmationAuthority(event.target.value)}
@@ -1090,34 +1121,29 @@ function AddTaskForm({ phaseNum, saving, error, onSave, onHide }) {
               </option>
             ))}
           </Form.Select>
-        </Form.Group>
-        <Form.Group className="mb-3" controlId="add-task-due-date">
-          <Form.Label>Due date</Form.Label>
+        </FormField>
+        <FormField
+          label="Due date"
+          controlId="add-task-due-date"
+          hint="Optional — leave blank for no deadline."
+          key="due-date"
+        >
           <Form.Control type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
-          <Form.Text muted>Optional -- leave blank for no deadline.</Form.Text>
-        </Form.Group>
-        <hr />
-        <FormFieldsEditor fields={fields} setFields={setFields} />
-      </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" disabled={saving}>
-          {saving ? 'Creating…' : 'Create'}
-        </Button>
-      </Modal.Footer>
-    </Form>
+        </FormField>
+      </FieldRow>
+      <hr className="my-4" />
+      <FormFieldsEditor fields={fields} setFields={setFields} />
+    </AppModal>
   )
 }
 
 function AddTaskModal({ phaseNum, saving, error, onSave, onHide }) {
+  // The form owns the dialog, so the key resets its fields per phase.
+  if (phaseNum === null) {
+    return null
+  }
   return (
-    <Modal show={phaseNum !== null} onHide={onHide} centered>
-      {phaseNum !== null && (
-        <AddTaskForm key={phaseNum} phaseNum={phaseNum} saving={saving} error={error} onSave={onSave} onHide={onHide} />
-      )}
-    </Modal>
+    <AddTaskForm key={phaseNum} phaseNum={phaseNum} saving={saving} error={error} onSave={onSave} onHide={onHide} />
   )
 }
 
@@ -1823,52 +1849,43 @@ function EditLeadForm({
   }
 
   return (
-    <Form
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      icon={Pencil}
+      title="Edit Lead"
+      subtitle="Rename the work, move it to another contact, or hand it to a different rep."
       onSubmit={(event) => {
         event.preventDefault()
         onSave({ name, status, statusChangeReason, contactId, assignedTo })
       }}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
     >
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          Edit Lead
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <Form.Group className="mb-3" controlId="edit-lead-name">
-          <Form.Label>Name</Form.Label>
-          <Form.Control
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
-            required
-          />
-        </Form.Group>
-        <Form.Group className="mb-3" controlId="edit-lead-status">
-          <Form.Label>Status</Form.Label>
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FormField label="Name" controlId="edit-lead-name" required>
+        <Form.Control
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
+          required
+        />
+      </FormField>
+      <FieldRow>
+        <FormField label="Status" controlId="edit-lead-status" key="status">
           {canEditStatus ? (
-            <>
-              <Form.Select value={status} onChange={(event) => setStatus(event.target.value)}>
-                <option value="HOT">Hot</option>
-                <option value="COLD">Cold</option>
-              </Form.Select>
-              {status !== lead.status && (
-                <div className="mt-2">
-                  <Form.Label className="small mb-1" htmlFor="edit-lead-status-reason">
-                    Reason for status change
-                  </Form.Label>
-                  <Form.Control
-                    id="edit-lead-status-reason"
-                    as="textarea"
-                    rows={2}
-                    value={statusChangeReason}
-                    onChange={(event) => setStatusChangeReason(event.target.value)}
-                    required
-                  />
-                </div>
-              )}
-            </>
+            <Form.Select value={status} onChange={(event) => setStatus(event.target.value)}>
+              <option value="HOT">Hot</option>
+              <option value="COLD">Cold</option>
+            </Form.Select>
           ) : (
             <div>
               <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
@@ -1877,21 +1894,8 @@ function EditLeadForm({
               </Form.Text>
             </div>
           )}
-        </Form.Group>
-        <Form.Group className="mb-3" controlId="edit-lead-contact">
-          <Form.Label>Contact</Form.Label>
-          <Form.Select value={contactId} onChange={(event) => setContactId(event.target.value)}>
-            <option value="">No contact</option>
-            {contacts.map((contact) => (
-              <option key={contact.id} value={contact.id}>
-                {contact.name}
-              </option>
-            ))}
-          </Form.Select>
-          <NewContactInline companyId={lead.company} onCreated={handleContactCreated} />
-        </Form.Group>
-        <Form.Group controlId="edit-lead-assigned">
-          <Form.Label>Assigned rep</Form.Label>
+        </FormField>
+        <FormField label="Assigned rep" controlId="edit-lead-assigned" key="assigned">
           {canEditAssignedTo ? (
             <Form.Select value={assignedTo} onChange={(event) => setAssignedTo(event.target.value)}>
               {salesReps.map((rep) => (
@@ -1903,17 +1907,33 @@ function EditLeadForm({
           ) : (
             <div>{lead.assigned_to_username ?? 'Unassigned'}</div>
           )}
-        </Form.Group>
-      </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
-      </Modal.Footer>
-    </Form>
+        </FormField>
+      </FieldRow>
+      {/* Only asked for when the status is actually changing -- the backend
+          only requires it alongside a real change. */}
+      {canEditStatus && status !== lead.status && (
+        <FormField label="Reason for status change" controlId="edit-lead-status-reason" required>
+          <Form.Control
+            as="textarea"
+            rows={2}
+            value={statusChangeReason}
+            onChange={(event) => setStatusChangeReason(event.target.value)}
+            required
+          />
+        </FormField>
+      )}
+      <FormField label="Contact" controlId="edit-lead-contact">
+        <Form.Select value={contactId} onChange={(event) => setContactId(event.target.value)}>
+          <option value="">No contact</option>
+          {contacts.map((contact) => (
+            <option key={contact.id} value={contact.id}>
+              {contact.name}
+            </option>
+          ))}
+        </Form.Select>
+        <NewContactInline companyId={lead.company} onCreated={handleContactCreated} />
+      </FormField>
+    </AppModal>
   )
 }
 
@@ -1961,22 +1981,24 @@ function EditLeadModal({
     }
   }
 
+  // The form owns the dialog; the key resets its fields per lead.
+  if (!show) {
+    return null
+  }
   return (
-    <Modal show={show} onHide={onHide} centered>
-      <EditLeadForm
-        key={lead.id}
-        lead={lead}
-        contacts={contacts}
-        salesReps={salesReps}
-        canEditAssignedTo={canEditAssignedTo}
-        canEditStatus={canEditStatus}
-        saving={saving}
-        error={error}
-        onSave={handleSave}
-        onHide={onHide}
-        onContactCreated={onContactCreated}
-      />
-    </Modal>
+    <EditLeadForm
+      key={lead.id}
+      lead={lead}
+      contacts={contacts}
+      salesReps={salesReps}
+      canEditAssignedTo={canEditAssignedTo}
+      canEditStatus={canEditStatus}
+      saving={saving}
+      error={error}
+      onSave={handleSave}
+      onHide={onHide}
+      onContactCreated={onContactCreated}
+    />
   )
 }
 
@@ -1986,61 +2008,60 @@ function StatusChangeRequestForm({ currentStatus, saving, error, onSave, onHide 
   const [reason, setReason] = useState('')
 
   return (
-    <Form
+    <AppModal
+      onHide={onHide}
+      icon={Flame}
+      title="Request Status Change"
+      subtitle="A manager decides hot/cold — say what changed and they'll review it."
       onSubmit={(event) => {
         event.preventDefault()
         onSave(targetStatus, reason)
       }}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? 'Submitting…' : 'Submit request'}
+          </Button>
+        </>
+      }
     >
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          Request Status Change
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <Form.Group className="mb-3" controlId="status-change-target">
-          <Form.Label>New status</Form.Label>
-          <Form.Select value={targetStatus} onChange={(event) => setTargetStatus(event.target.value)}>
-            <option value="HOT">Hot</option>
-            <option value="COLD">Cold</option>
-          </Form.Select>
-        </Form.Group>
-        <Form.Group controlId="status-change-reason">
-          <Form.Label>Reason</Form.Label>
-          <Form.Control
-            as="textarea"
-            rows={3}
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            required
-          />
-        </Form.Group>
-      </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" disabled={saving}>
-          {saving ? 'Submitting…' : 'Submit request'}
-        </Button>
-      </Modal.Footer>
-    </Form>
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FormField label="New status" controlId="status-change-target" required>
+        <Form.Select value={targetStatus} onChange={(event) => setTargetStatus(event.target.value)}>
+          <option value="HOT">Hot</option>
+          <option value="COLD">Cold</option>
+        </Form.Select>
+      </FormField>
+      <FormField label="Reason" controlId="status-change-reason" required>
+        <Form.Control
+          as="textarea"
+          rows={3}
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          required
+        />
+      </FormField>
+    </AppModal>
   )
 }
 
 function StatusChangeRequestModal({ show, currentStatus, saving, error, onSave, onHide }) {
+  // The form owns the dialog; the key resets the reason each time it opens.
+  if (!show) {
+    return null
+  }
   return (
-    <Modal show={show} onHide={onHide} centered>
-      <StatusChangeRequestForm
-        key={show}
-        currentStatus={currentStatus}
-        saving={saving}
-        error={error}
-        onSave={onSave}
-        onHide={onHide}
-      />
-    </Modal>
+    <StatusChangeRequestForm
+      key={show}
+      currentStatus={currentStatus}
+      saving={saving}
+      error={error}
+      onSave={onSave}
+      onHide={onHide}
+    />
   )
 }
 

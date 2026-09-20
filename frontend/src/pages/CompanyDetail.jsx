@@ -1,4 +1,5 @@
 import { format } from 'date-fns'
+import { Building2, GitBranch, UserPlus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Button from 'react-bootstrap/Button'
@@ -7,15 +8,16 @@ import Col from 'react-bootstrap/Col'
 import Container from 'react-bootstrap/Container'
 import Form from 'react-bootstrap/Form'
 import ListGroup from 'react-bootstrap/ListGroup'
-import Modal from 'react-bootstrap/Modal'
 import Row from 'react-bootstrap/Row'
 import Spinner from 'react-bootstrap/Spinner'
 import { Link, useParams } from 'react-router-dom'
 import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
+import AppModal from '../components/AppModal.jsx'
 import Avatar, { PersonCell } from '../components/Avatar.jsx'
 import ContactDetails from '../components/ContactDetails.jsx'
+import FormField, { FieldRow } from '../components/FormField.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import StatusPill, { LEAD_STATUS_TONE } from '../components/StatusPill.jsx'
@@ -37,33 +39,41 @@ function EditCompanyForm({ company, canEditOwner, salesReps, saving, error, onSa
   const [owner, setOwner] = useState(company.owner ?? '')
 
   return (
-    <Form
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      icon={Building2}
+      title="Edit Company"
+      subtitle="Change the organisation's details, its owner and its contacts."
       onSubmit={(event) => {
         event.preventDefault()
         onSave({ name, industry, website, owner })
       }}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
     >
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          Edit Company
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <Form.Group className="mb-3" controlId="edit-company-name">
-          <Form.Label>Name</Form.Label>
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FieldRow>
+        <FormField label="Name" controlId="edit-company-name" required key="name">
           <Form.Control value={name} onChange={(event) => setName(event.target.value)} required />
-        </Form.Group>
-        <Form.Group className="mb-3" controlId="edit-company-industry">
-          <Form.Label>Industry</Form.Label>
+        </FormField>
+        <FormField label="Industry" controlId="edit-company-industry" key="industry">
           <Form.Control value={industry} onChange={(event) => setIndustry(event.target.value)} />
-        </Form.Group>
-        <Form.Group className="mb-3" controlId="edit-company-website">
-          <Form.Label>Website</Form.Label>
+        </FormField>
+      </FieldRow>
+      <FieldRow>
+        <FormField label="Website" controlId="edit-company-website" key="website">
           <Form.Control type="url" value={website} onChange={(event) => setWebsite(event.target.value)} />
-        </Form.Group>
-        <Form.Group className="mb-3" controlId="edit-company-owner">
-          <Form.Label>Owner</Form.Label>
+        </FormField>
+        <FormField label="Owner" controlId="edit-company-owner" key="owner">
           {canEditOwner ? (
             <Form.Select value={owner} onChange={(event) => setOwner(event.target.value)}>
               <option value="">Unassigned</option>
@@ -78,21 +88,12 @@ function EditCompanyForm({ company, canEditOwner, salesReps, saving, error, onSa
               <PersonCell name={company.owner_username} fallback="Unassigned" />
             </div>
           )}
-        </Form.Group>
-        <div>
-          <Form.Label className="d-block">Contacts</Form.Label>
-          <NewContactInline companyId={company.id} onCreated={onContactCreated} />
-        </div>
-      </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
-      </Modal.Footer>
-    </Form>
+        </FormField>
+      </FieldRow>
+      <FormField label="Contacts" controlId="edit-company-contacts">
+        <NewContactInline companyId={company.id} onCreated={onContactCreated} />
+      </FormField>
+    </AppModal>
   )
 }
 
@@ -118,20 +119,23 @@ function EditCompanyModal({ show, company, canEditOwner, salesReps, onHide, onSa
     }
   }
 
+  // The form owns the dialog, so the key below gives a different company
+  // fresh fields rather than the previous one's.
+  if (!show) {
+    return null
+  }
   return (
-    <Modal show={show} onHide={onHide} centered>
-      <EditCompanyForm
-        key={company.id}
-        company={company}
-        canEditOwner={canEditOwner}
-        salesReps={salesReps}
-        saving={saving}
-        error={error}
-        onSave={handleSave}
-        onHide={onHide}
-        onContactCreated={onContactCreated}
-      />
-    </Modal>
+    <EditCompanyForm
+      key={company.id}
+      company={company}
+      canEditOwner={canEditOwner}
+      salesReps={salesReps}
+      saving={saving}
+      error={error}
+      onSave={handleSave}
+      onHide={onHide}
+      onContactCreated={onContactCreated}
+    />
   )
 }
 
@@ -165,51 +169,17 @@ function NewLeadModal({ show, onHide, onCreated, companyId, contacts, canAssignR
   }
 
   return (
-    <Modal show={show} onHide={onHide} centered>
-      <Form onSubmit={handleSubmit}>
-        <Modal.Header closeButton>
-          <Modal.Title as="h2" className="h5 mb-0">
-            New Lead
-          </Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          {error && <Alert variant="danger">{error}</Alert>}
-          <Form.Group className="mb-3" controlId="new-lead-name">
-            <Form.Label>Name</Form.Label>
-            <Form.Control
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
-              required
-            />
-          </Form.Group>
-          <Form.Group className="mb-3" controlId="new-lead-contact">
-            <Form.Label>Contact</Form.Label>
-            <Form.Select value={contactId} onChange={(event) => setContactId(event.target.value)}>
-              <option value="">No contact</option>
-              {contacts.map((contact) => (
-                <option key={contact.id} value={contact.id}>
-                  {contact.name}
-                </option>
-              ))}
-            </Form.Select>
-          </Form.Group>
-          {canAssignRep && (
-            <Form.Group controlId="new-lead-assigned">
-              <Form.Label>Assigned rep</Form.Label>
-              <Form.Select value={assignedTo} onChange={(event) => setAssignedTo(event.target.value)} required>
-                <option value="">Select a rep…</option>
-                {salesReps.map((rep) => (
-                  <option key={rep.id} value={rep.id}>
-                    {rep.username}
-                  </option>
-                ))}
-              </Form.Select>
-            </Form.Group>
-          )}
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={onHide} disabled={saving}>
+    <AppModal
+      show={show}
+      onHide={onHide}
+      size="lg"
+      icon={GitBranch}
+      title="New Lead"
+      subtitle="Start a piece of work for this company and hand it to a rep."
+      onSubmit={handleSubmit}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
           <Button
@@ -219,9 +189,49 @@ function NewLeadModal({ show, onHide, onCreated, companyId, contacts, canAssignR
           >
             {saving ? 'Creating…' : 'Create'}
           </Button>
-        </Modal.Footer>
-      </Form>
-    </Modal>
+        </>
+      }
+    >
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FormField label="Name" controlId="new-lead-name" required>
+        <Form.Control
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
+          required
+        />
+      </FormField>
+      <FieldRow>
+        <FormField label="Contact" controlId="new-lead-contact" key="contact">
+          <Form.Select value={contactId} onChange={(event) => setContactId(event.target.value)}>
+            <option value="">No contact</option>
+            {contacts.map((contact) => (
+              <option key={contact.id} value={contact.id}>
+                {contact.name}
+              </option>
+            ))}
+          </Form.Select>
+        </FormField>
+        {canAssignRep ? (
+          <FormField
+            label="Assigned rep"
+            controlId="new-lead-assigned"
+            required
+            hint="A lead is always carried by a sales rep."
+            key="assigned"
+          >
+            <Form.Select value={assignedTo} onChange={(event) => setAssignedTo(event.target.value)} required>
+              <option value="">Select a rep…</option>
+              {salesReps.map((rep) => (
+                <option key={rep.id} value={rep.id}>
+                  {rep.username}
+                </option>
+              ))}
+            </Form.Select>
+          </FormField>
+        ) : null}
+      </FieldRow>
+    </AppModal>
   )
 }
 
@@ -255,42 +265,43 @@ function NewContactModal({ show, onHide, onCreated, companyId }) {
   }
 
   return (
-    <Modal show={show} onHide={onHide} centered>
-      <Form onSubmit={handleSubmit}>
-        <Modal.Header closeButton>
-          <Modal.Title as="h2" className="h5 mb-0">
-            New Contact
-          </Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          {error && <Alert variant="danger">{error}</Alert>}
-          <Form.Group className="mb-3" controlId="new-contact-name">
-            <Form.Label>Name</Form.Label>
-            <Form.Control value={name} onChange={(event) => setName(event.target.value)} required />
-          </Form.Group>
-          <Form.Group className="mb-3" controlId="new-contact-job-title">
-            <Form.Label>Job title</Form.Label>
-            <Form.Control value={jobTitle} onChange={(event) => setJobTitle(event.target.value)} />
-          </Form.Group>
-          <Form.Group className="mb-3" controlId="new-contact-email">
-            <Form.Label>Email</Form.Label>
-            <Form.Control type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
-          </Form.Group>
-          <Form.Group controlId="new-contact-phone">
-            <Form.Label>Phone</Form.Label>
-            <Form.Control value={phone} onChange={(event) => setPhone(event.target.value)} />
-          </Form.Group>
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={onHide} disabled={saving}>
+    <AppModal
+      show={show}
+      onHide={onHide}
+      size="lg"
+      icon={UserPlus}
+      title="New Contact"
+      subtitle="Add someone at this company you can reach out to."
+      onSubmit={handleSubmit}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" disabled={saving}>
             {saving ? 'Creating…' : 'Create'}
           </Button>
-        </Modal.Footer>
-      </Form>
-    </Modal>
+        </>
+      }
+    >
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FieldRow>
+        <FormField label="Name" controlId="new-contact-name" required key="name">
+          <Form.Control value={name} onChange={(event) => setName(event.target.value)} required />
+        </FormField>
+        <FormField label="Job title" controlId="new-contact-job-title" key="job-title">
+          <Form.Control value={jobTitle} onChange={(event) => setJobTitle(event.target.value)} />
+        </FormField>
+      </FieldRow>
+      <FieldRow>
+        <FormField label="Email" controlId="new-contact-email" key="email">
+          <Form.Control type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+        </FormField>
+        <FormField label="Phone" controlId="new-contact-phone" key="phone">
+          <Form.Control value={phone} onChange={(event) => setPhone(event.target.value)} />
+        </FormField>
+      </FieldRow>
+    </AppModal>
   )
 }
 

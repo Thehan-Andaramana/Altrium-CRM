@@ -3,12 +3,13 @@ import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Button from 'react-bootstrap/Button'
 import Form from 'react-bootstrap/Form'
-import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
 import { errorMessage, get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import AppModal from '../components/AppModal.jsx'
 import { PersonCell } from '../components/Avatar.jsx'
+import FormField from '../components/FormField.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
 import { PlainTh, SortableTh, useSortedRows } from '../components/SortableTable.jsx'
 import StatusPill, { APPROVAL_STATUS_TONE } from '../components/StatusPill.jsx'
@@ -45,53 +46,67 @@ function DecisionForm({ mode, saving, error, onSubmit, onHide }) {
   const isReject = mode === 'REJECTED'
 
   return (
-    <Form
+    <AppModal
+      onHide={onHide}
+      icon={isReject ? X : Check}
+      title={isReject ? 'Reject Request' : 'Approve Request'}
+      subtitle={
+        isReject
+          ? 'Say what needs to change — the requester sees this note.'
+          : 'Approving releases the next step of the phase.'
+      }
       onSubmit={(event) => {
         event.preventDefault()
         onSubmit(decisionNote)
       }}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant={isReject ? 'danger' : 'primary'}
+            disabled={saving || (isReject && !decisionNote.trim())}
+          >
+            {saving ? 'Saving…' : isReject ? 'Reject' : 'Approve'}
+          </Button>
+        </>
+      }
     >
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          {isReject ? 'Reject Request' : 'Approve Request'}
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <Form.Group controlId="decision-note">
-          <Form.Label>Decision note{!isReject && ' (optional)'}</Form.Label>
-          <Form.Control
-            as="textarea"
-            rows={3}
-            value={decisionNote}
-            onChange={(event) => setDecisionNote(event.target.value)}
-            required={isReject}
-          />
-        </Form.Group>
-      </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          variant={isReject ? 'danger' : 'success'}
-          disabled={saving || (isReject && !decisionNote.trim())}
-        >
-          {saving ? 'Saving…' : isReject ? 'Reject' : 'Approve'}
-        </Button>
-      </Modal.Footer>
-    </Form>
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FormField
+        label={`Decision note${isReject ? '' : ' (optional)'}`}
+        controlId="decision-note"
+        required={isReject}
+      >
+        <Form.Control
+          as="textarea"
+          rows={3}
+          value={decisionNote}
+          onChange={(event) => setDecisionNote(event.target.value)}
+          required={isReject}
+        />
+      </FormField>
+    </AppModal>
   )
 }
 
 function DecisionModal({ pending, saving, error, onSubmit, onHide }) {
+  // The form owns the dialog so the key below remounts it -- a fresh note
+  // per decision, rather than the previous one lingering.
+  if (!pending) {
+    return null
+  }
   return (
-    <Modal show={Boolean(pending)} onHide={onHide} centered>
-      {pending && (
-        <DecisionForm key={`${pending.approval.id}-${pending.mode}`} mode={pending.mode} saving={saving} error={error} onSubmit={onSubmit} onHide={onHide} />
-      )}
-    </Modal>
+    <DecisionForm
+      key={`${pending.approval.id}-${pending.mode}`}
+      mode={pending.mode}
+      saving={saving}
+      error={error}
+      onSubmit={onSubmit}
+      onHide={onHide}
+    />
   )
 }
 

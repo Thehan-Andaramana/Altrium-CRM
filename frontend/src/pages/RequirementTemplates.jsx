@@ -1,3 +1,4 @@
+import { FilePlus2, FileText } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
@@ -6,10 +7,11 @@ import Card from 'react-bootstrap/Card'
 import Form from 'react-bootstrap/Form'
 import InputGroup from 'react-bootstrap/InputGroup'
 import ListGroup from 'react-bootstrap/ListGroup'
-import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import AppModal from '../components/AppModal.jsx'
+import FormField from '../components/FormField.jsx'
 import FormFieldsEditor, { UpDownIcon } from '../components/FormFieldsEditor.jsx'
 import { formFieldsPayload } from '../formFields.js'
 
@@ -24,19 +26,17 @@ const AUTHORITY_OPTIONS = [
 function TemplateFormFields({ label, setLabel, description, setDescription }) {
   return (
     <>
-      <Form.Group className="mb-3" controlId="template-label">
-        <Form.Label>Label</Form.Label>
+      <FormField label="Label" controlId="template-label" required>
         <Form.Control value={label} onChange={(event) => setLabel(event.target.value)} required />
-      </Form.Group>
-      <Form.Group controlId="template-description">
-        <Form.Label>Description</Form.Label>
+      </FormField>
+      <FormField label="Description" controlId="template-description">
         <Form.Control
           as="textarea"
           rows={3}
           value={description}
           onChange={(event) => setDescription(event.target.value)}
         />
-      </Form.Group>
+      </FormField>
     </>
   )
 }
@@ -49,47 +49,56 @@ function EditTemplateForm({ template, saving, error, onSave, onHide }) {
   const [fields, setFields] = useState(() => (template.form_fields ?? []).map((f) => ({ ...f, key: f.id })))
 
   return (
-    <Form
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      scrollable
+      icon={FileText}
+      title="Edit Task"
+      subtitle="Every new project gets this task, with the form fields below."
       onSubmit={(event) => {
         event.preventDefault()
         onSave({ label, description, form_fields: formFieldsPayload(fields) })
       }}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
     >
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          Edit Task
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <TemplateFormFields
-          label={label}
-          setLabel={setLabel}
-          description={description}
-          setDescription={setDescription}
-        />
-        <hr />
-        <FormFieldsEditor fields={fields} setFields={setFields} />
-      </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
-      </Modal.Footer>
-    </Form>
+      {error && <Alert variant="danger">{error}</Alert>}
+      <TemplateFormFields
+        label={label}
+        setLabel={setLabel}
+        description={description}
+        setDescription={setDescription}
+      />
+      <hr className="my-4" />
+      <FormFieldsEditor fields={fields} setFields={setFields} />
+    </AppModal>
   )
 }
 
 function EditTemplateModal({ template, saving, error, onSave, onHide }) {
+  // The form owns the dialog, so the key gives a different template fresh
+  // fields rather than the previous one's.
+  if (!template) {
+    return null
+  }
   return (
-    <Modal show={Boolean(template)} onHide={onHide} centered size="lg" scrollable>
-      {template && (
-        <EditTemplateForm key={template.id} template={template} saving={saving} error={error} onSave={onSave} onHide={onHide} />
-      )}
-    </Modal>
+    <EditTemplateForm
+      key={template.id}
+      template={template}
+      saving={saving}
+      error={error}
+      onSave={onSave}
+      onHide={onHide}
+    />
   )
 }
 
@@ -99,39 +108,38 @@ function AddTemplateModal({ phase, saving, error, onSave, onHide }) {
   const [fields, setFields] = useState([])
 
   return (
-    <Modal show onHide={onHide} centered size="lg" scrollable>
-      <Form
-        onSubmit={(event) => {
-          event.preventDefault()
-          onSave({ label, description, form_fields: formFieldsPayload(fields) })
-        }}
-      >
-        <Modal.Header closeButton>
-          <Modal.Title as="h2" className="h5 mb-0">
-            Add Task to Phase {phase}
-          </Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          {error && <Alert variant="danger">{error}</Alert>}
-          <TemplateFormFields
-            label={label}
-            setLabel={setLabel}
-            description={description}
-            setDescription={setDescription}
-          />
-          <hr />
-          <FormFieldsEditor fields={fields} setFields={setFields} />
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={onHide} disabled={saving}>
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      scrollable
+      icon={FilePlus2}
+      title={`Add Task to Phase ${phase}`}
+      subtitle="Every new project will get this task from now on."
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSave({ label, description, form_fields: formFieldsPayload(fields) })
+      }}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" disabled={saving}>
             {saving ? 'Creating…' : 'Create'}
           </Button>
-        </Modal.Footer>
-      </Form>
-    </Modal>
+        </>
+      }
+    >
+      {error && <Alert variant="danger">{error}</Alert>}
+      <TemplateFormFields
+        label={label}
+        setLabel={setLabel}
+        description={description}
+        setDescription={setDescription}
+      />
+      <hr className="my-4" />
+      <FormFieldsEditor fields={fields} setFields={setFields} />
+    </AppModal>
   )
 }
 

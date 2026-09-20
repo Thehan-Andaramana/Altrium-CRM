@@ -1,10 +1,12 @@
+import { Archive } from 'lucide-react'
 import { useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Button from 'react-bootstrap/Button'
 import Form from 'react-bootstrap/Form'
-import Modal from 'react-bootstrap/Modal'
 import { errorMessage, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import AppModal from './AppModal.jsx'
+import FormField from './FormField.jsx'
 
 // Company/Lead/Project archive-or-create rights are narrower than the usual
 // "management roles" set -- SYSTEM_ADMIN is excluded (read-only + hard-delete
@@ -129,36 +131,41 @@ export default function ArchiveButton({ resource, record, onArchived, label, ren
           {triggerLabel}
         </Button>
       )}
-      <Modal show={show} onHide={() => setShow(false)} centered>
-        <Form onSubmit={handleSubmit}>
-          <Modal.Header closeButton>
-            <Modal.Title as="h2" className="h5 mb-0">
-              {triggerLabel}
-            </Modal.Title>
-          </Modal.Header>
-          <Modal.Body>
-            {error && <Alert variant="danger">{error}</Alert>}
-            <Form.Group controlId="archive-reason">
-              <Form.Label>Reason</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={3}
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                required
-              />
-            </Form.Group>
-          </Modal.Body>
-          <Modal.Footer>
-            <Button variant="secondary" onClick={() => setShow(false)} disabled={saving}>
+      <AppModal
+        show={show}
+        onHide={() => setShow(false)}
+        icon={Archive}
+        title={triggerLabel}
+        subtitle={
+          isManagement
+            ? 'Archived records stay readable, and the reason travels with them.'
+            : 'A manager decides archive requests — say why this should be archived.'
+        }
+        onSubmit={handleSubmit}
+        actions={
+          <>
+            <Button variant="outline-secondary" onClick={() => setShow(false)} disabled={saving}>
               Cancel
             </Button>
+            {/* Destructive, so this one keeps the danger variant rather
+                than the usual near-black primary. */}
             <Button type="submit" variant="danger" disabled={saving}>
               {saving ? 'Saving…' : isManagement ? 'Archive' : 'Submit request'}
             </Button>
-          </Modal.Footer>
-        </Form>
-      </Modal>
+          </>
+        }
+      >
+        {error && <Alert variant="danger">{error}</Alert>}
+        <FormField label="Reason" controlId="archive-reason" required>
+          <Form.Control
+            as="textarea"
+            rows={3}
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            required
+          />
+        </FormField>
+      </AppModal>
     </>
   )
 }

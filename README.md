@@ -149,6 +149,24 @@ docker-compose.yml   PostgreSQL 16
 setup.ps1 / setup.sh One-command first-time setup
 ```
 
+### Modals
+
+Every dialog shares one chrome (`components/AppModal.jsx`): an icon in a soft
+circle beside the title, a muted line saying what the dialog is for, a
+divider, the body, and a footer whose primary action sits right in near-black
+with secondary actions as outlines. Fields use `FormField`, which puts a bold
+label above the control and a red asterisk on required ones — the asterisk is
+`aria-hidden`, so the label's accessible name is unchanged and the control's
+own `required` attribute is what announces it. Wide modals lay fields out two
+to a row.
+
+File uploads use `FileDropZone`: a dashed area with a cloud icon, "Choose a
+file or drag and drop it here", the accepted formats and size limit beneath,
+and a Browse button. The `<input type="file">` is still there and still
+labelled — it is visually hidden, and a drop writes onto it through a
+DataTransfer, so `input.files` stays the single source of truth whichever way
+the file arrived.
+
 ### Pages
 
 The app is a left sidebar plus a content column with its own header bar (page

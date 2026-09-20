@@ -128,6 +128,34 @@ test.describe('task attachments', () => {
     })
   })
 
+  test('a file dropped on the zone is the one that uploads', async ({ browser, baseURL, playwright }) => {
+    const { leadUrl } = await seed(playwright, baseURL)
+
+    await asRep(browser, async (page) => {
+      await page.goto(leadUrl)
+      await openTask(page, TASK)
+
+      const dialog = topDialog(page)
+      await dialog.getByRole('button', { name: '+ File' }).click()
+      const zone = dialog.locator('.dropzone')
+      await expect(zone).toContainText('Choose a file or drag and drop it here')
+
+      // A real drop: the browser builds the DataTransfer, the component
+      // reads the file off it. Nothing touches the input directly.
+      const dataTransfer = await page.evaluateHandle(() => {
+        const transfer = new DataTransfer()
+        transfer.items.add(new File(['%PDF-1.4 dropped'], 'dropped.pdf', { type: 'application/pdf' }))
+        return transfer
+      })
+      await zone.dispatchEvent('drop', { dataTransfer })
+
+      // The zone names what it is holding, and that file is what uploads.
+      await expect(zone).toContainText('dropped.pdf')
+      await dialog.getByRole('button', { name: 'Upload' }).click()
+      await expect(dialog.getByRole('button', { name: 'dropped.pdf' })).toBeVisible()
+    })
+  })
+
   test('previewing an attachment opens in place, without leaving the lead', async ({
     browser,
     baseURL,

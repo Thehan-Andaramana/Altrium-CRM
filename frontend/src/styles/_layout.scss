@@ -1072,3 +1072,170 @@ button.status-pill {
     clip-path: polygon(0 3rem, 100% 0, 100% 100%, 0 100%);
   }
 }
+
+// -- Modals ---------------------------------------------------------------
+//
+// One chrome for every dialog (see AppModal): an icon in a soft circle
+// beside the title, a muted line saying what the dialog is for, a divider,
+// then the body, then a footer whose primary action sits right.
+
+.app-modal {
+  border: 0;
+  border-radius: var(--altrium-card-radius);
+  box-shadow: 0 24px 48px rgba($black, 0.22);
+}
+
+.app-modal__form {
+  display: contents;
+}
+
+.app-modal__header {
+  align-items: flex-start;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--bs-border-color);
+
+  // Bootstrap's close button sits against the header's top padding rather
+  // than the title's baseline, which reads as misaligned next to a
+  // two-line heading.
+  .btn-close {
+    margin-top: 0.125rem;
+  }
+}
+
+.app-modal__heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+}
+
+.app-modal__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  background-color: var(--bs-tertiary-bg);
+  color: var(--bs-secondary-color);
+}
+
+.app-modal__heading-text {
+  min-width: 0;
+}
+
+.app-modal__title {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.app-modal__subtitle {
+  margin: 0.125rem 0 0;
+  color: var(--bs-secondary-color);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.app-modal__body {
+  padding: 1.5rem;
+}
+
+.app-modal__footer {
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--bs-border-color);
+}
+
+// Both groups are flex rows of their own so that a footer with only
+// right-hand actions still pushes them right (the leading slot collapses).
+.app-modal__footer-leading,
+.app-modal__footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.app-modal__footer-actions {
+  margin-left: auto;
+}
+
+// -- Fields ---------------------------------------------------------------
+
+.app-field {
+  margin-bottom: 0;
+}
+
+.app-field__label {
+  margin-bottom: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+// The red asterisk is aria-hidden in the markup -- the control's `required`
+// attribute is what announces the field, so this is purely the visual
+// convention readers expect.
+.app-field__required {
+  margin-left: 0.125rem;
+  color: $red;
+}
+
+.app-field__hint {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--bs-secondary-color);
+  font-size: 0.8125rem;
+}
+
+// Generous, even spacing between stacked fields inside a modal body. The
+// read-only blocks (a status pill, a computed due date) use .app-field too,
+// so they sit on the same rhythm as the inputs beside them.
+.app-modal__body > .app-field + .app-field,
+.app-modal__body > .row + .app-field,
+.app-modal__body > .app-field + .row,
+.app-modal__body > .row + .row {
+  margin-top: 1.25rem;
+}
+
+// -- File drop zone -------------------------------------------------------
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1.75rem 1rem;
+  border: 1px dashed var(--bs-border-color);
+  border-radius: var(--altrium-card-radius);
+  background-color: var(--bs-tertiary-bg);
+  text-align: center;
+}
+
+.dropzone--active {
+  border-color: $altrium-amber;
+  background-color: rgba($altrium-amber, 0.08);
+}
+
+.dropzone--disabled {
+  opacity: 0.6;
+}
+
+.dropzone__icon {
+  color: var(--bs-secondary-color);
+}
+
+.dropzone__title {
+  margin: 0.375rem 0 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dropzone__hint {
+  margin: 0 0 0.75rem;
+  color: var(--bs-secondary-color);
+  font-size: 0.8125rem;
+}

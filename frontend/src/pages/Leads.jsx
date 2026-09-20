@@ -1,17 +1,19 @@
 import { formatDistanceToNow } from 'date-fns'
+import { GitBranch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
 import Form from 'react-bootstrap/Form'
 import InputGroup from 'react-bootstrap/InputGroup'
-import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
 import { Link } from 'react-router-dom'
 import { errorMessage, get, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import AppModal from '../components/AppModal.jsx'
 import { PersonCell } from '../components/Avatar.jsx'
+import FormField, { FieldRow } from '../components/FormField.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
 import SearchIcon from '../components/SearchIcon.jsx'
 import { SortableTh, useSortedRows } from '../components/SortableTable.jsx'
@@ -102,66 +104,17 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps, canAssign
   }
 
   return (
-    <Modal show={show} onHide={onHide} centered>
-      <Form onSubmit={handleSubmit}>
-        <Modal.Header closeButton>
-          <Modal.Title as="h2" className="h5 mb-0">
-            New Lead
-          </Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          {error && <Alert variant="danger">{error}</Alert>}
-          <Form.Group className="mb-3" controlId="new-lead-name">
-            <Form.Label>Name</Form.Label>
-            <Form.Control
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
-              required
-            />
-          </Form.Group>
-          <Form.Group className="mb-3" controlId="new-lead-company">
-            <Form.Label>Company</Form.Label>
-            <Form.Select value={companyId} onChange={(event) => handleCompanyChange(event.target.value)} required>
-              <option value="">Select a company…</option>
-              {companies.map((company) => (
-                <option key={company.id} value={company.id}>
-                  {company.name}
-                </option>
-              ))}
-            </Form.Select>
-          </Form.Group>
-          <Form.Group className="mb-3" controlId="new-lead-contact">
-            <Form.Label>Contact</Form.Label>
-            <Form.Select
-              value={contactId}
-              onChange={(event) => setContactId(event.target.value)}
-              disabled={!companyId || loadingContacts}
-            >
-              <option value="">No contact</option>
-              {contacts.map((contact) => (
-                <option key={contact.id} value={contact.id}>
-                  {contact.name}
-                </option>
-              ))}
-            </Form.Select>
-          </Form.Group>
-          {canAssignRep && (
-            <Form.Group controlId="new-lead-assigned">
-              <Form.Label>Assigned rep</Form.Label>
-              <Form.Select value={assignedTo} onChange={(event) => setAssignedTo(event.target.value)} required>
-                <option value="">Select a rep…</option>
-                {salesReps.map((rep) => (
-                  <option key={rep.id} value={rep.id}>
-                    {rep.username}
-                  </option>
-                ))}
-              </Form.Select>
-            </Form.Group>
-          )}
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={onHide} disabled={saving}>
+    <AppModal
+      show={show}
+      onHide={onHide}
+      size="lg"
+      icon={GitBranch}
+      title="New Lead"
+      subtitle="Start a piece of work for a client and hand it to a rep."
+      onSubmit={handleSubmit}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
           <Button
@@ -171,9 +124,62 @@ function NewLeadModal({ show, onHide, onCreated, companies, salesReps, canAssign
           >
             {saving ? 'Creating…' : 'Create'}
           </Button>
-        </Modal.Footer>
-      </Form>
-    </Modal>
+        </>
+      }
+    >
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FormField label="Name" controlId="new-lead-name" required>
+        <Form.Control
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="e.g. Wayne Enterprises — Q3 infrastructure upgrade"
+          required
+        />
+      </FormField>
+      <FieldRow>
+        <FormField label="Company" controlId="new-lead-company" required key="company">
+          <Form.Select value={companyId} onChange={(event) => handleCompanyChange(event.target.value)} required>
+            <option value="">Select a company…</option>
+            {companies.map((company) => (
+              <option key={company.id} value={company.id}>
+                {company.name}
+              </option>
+            ))}
+          </Form.Select>
+        </FormField>
+        <FormField label="Contact" controlId="new-lead-contact" key="contact">
+          <Form.Select
+            value={contactId}
+            onChange={(event) => setContactId(event.target.value)}
+            disabled={!companyId || loadingContacts}
+          >
+            <option value="">No contact</option>
+            {contacts.map((contact) => (
+              <option key={contact.id} value={contact.id}>
+                {contact.name}
+              </option>
+            ))}
+          </Form.Select>
+        </FormField>
+      </FieldRow>
+      {canAssignRep && (
+        <FormField
+          label="Assigned rep"
+          controlId="new-lead-assigned"
+          required
+          hint="A lead is always carried by a sales rep."
+        >
+          <Form.Select value={assignedTo} onChange={(event) => setAssignedTo(event.target.value)} required>
+            <option value="">Select a rep…</option>
+            {salesReps.map((rep) => (
+              <option key={rep.id} value={rep.id}>
+                {rep.username}
+              </option>
+            ))}
+          </Form.Select>
+        </FormField>
+      )}
+    </AppModal>
   )
 }
 

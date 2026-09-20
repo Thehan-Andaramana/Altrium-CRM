@@ -1,4 +1,4 @@
-import { Pencil } from 'lucide-react'
+import { Pencil, UserPen, UserPlus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
@@ -6,12 +6,13 @@ import Button from 'react-bootstrap/Button'
 import Card from 'react-bootstrap/Card'
 import Form from 'react-bootstrap/Form'
 import ListGroup from 'react-bootstrap/ListGroup'
-import Modal from 'react-bootstrap/Modal'
 import Spinner from 'react-bootstrap/Spinner'
 import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import AppModal from '../components/AppModal.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
 import Avatar from '../components/Avatar.jsx'
+import FormField, { FieldRow } from '../components/FormField.jsx'
 import ContactDetails from '../components/ContactDetails.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
 
@@ -24,22 +25,22 @@ const CAN_ATTEMPT_WRITE_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', '
 function ContactFields({ name, setName, email, setEmail, phone, setPhone, jobTitle, setJobTitle }) {
   return (
     <>
-      <Form.Group className="mb-3" controlId="contact-name">
-        <Form.Label>Name</Form.Label>
-        <Form.Control value={name} onChange={(event) => setName(event.target.value)} required />
-      </Form.Group>
-      <Form.Group className="mb-3" controlId="contact-job-title">
-        <Form.Label>Job title</Form.Label>
-        <Form.Control value={jobTitle} onChange={(event) => setJobTitle(event.target.value)} />
-      </Form.Group>
-      <Form.Group className="mb-3" controlId="contact-email">
-        <Form.Label>Email</Form.Label>
-        <Form.Control type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
-      </Form.Group>
-      <Form.Group controlId="contact-phone">
-        <Form.Label>Phone</Form.Label>
-        <Form.Control value={phone} onChange={(event) => setPhone(event.target.value)} />
-      </Form.Group>
+      <FieldRow>
+        <FormField label="Name" controlId="contact-name" required key="name">
+          <Form.Control value={name} onChange={(event) => setName(event.target.value)} required />
+        </FormField>
+        <FormField label="Job title" controlId="contact-job-title" key="job-title">
+          <Form.Control value={jobTitle} onChange={(event) => setJobTitle(event.target.value)} />
+        </FormField>
+      </FieldRow>
+      <FieldRow>
+        <FormField label="Email" controlId="contact-email" key="email">
+          <Form.Control type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+        </FormField>
+        <FormField label="Phone" controlId="contact-phone" key="phone">
+          <Form.Control value={phone} onChange={(event) => setPhone(event.target.value)} />
+        </FormField>
+      </FieldRow>
     </>
   )
 }
@@ -75,47 +76,47 @@ function NewContactModal({ show, onHide, onCreated, companies }) {
   }
 
   return (
-    <Modal show={show} onHide={onHide} centered>
-      <Form onSubmit={handleSubmit}>
-        <Modal.Header closeButton>
-          <Modal.Title as="h2" className="h5 mb-0">
-            New Contact
-          </Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          {error && <Alert variant="danger">{error}</Alert>}
-          <Form.Group className="mb-3" controlId="new-contact-company">
-            <Form.Label>Company</Form.Label>
-            <Form.Select value={companyId} onChange={(event) => setCompanyId(event.target.value)} required>
-              <option value="">Select a company…</option>
-              {companies.map((company) => (
-                <option key={company.id} value={company.id}>
-                  {company.name}
-                </option>
-              ))}
-            </Form.Select>
-          </Form.Group>
-          <ContactFields
-            name={name}
-            setName={setName}
-            email={email}
-            setEmail={setEmail}
-            phone={phone}
-            setPhone={setPhone}
-            jobTitle={jobTitle}
-            setJobTitle={setJobTitle}
-          />
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={onHide} disabled={saving}>
+    <AppModal
+      show={show}
+      onHide={onHide}
+      size="lg"
+      icon={UserPlus}
+      title="New Contact"
+      subtitle="Add someone at a client company you can reach out to."
+      onSubmit={handleSubmit}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" disabled={saving || !companyId}>
             {saving ? 'Creating…' : 'Create'}
           </Button>
-        </Modal.Footer>
-      </Form>
-    </Modal>
+        </>
+      }
+    >
+      {error && <Alert variant="danger">{error}</Alert>}
+      <FormField label="Company" controlId="new-contact-company" required>
+        <Form.Select value={companyId} onChange={(event) => setCompanyId(event.target.value)} required>
+          <option value="">Select a company…</option>
+          {companies.map((company) => (
+            <option key={company.id} value={company.id}>
+              {company.name}
+            </option>
+          ))}
+        </Form.Select>
+      </FormField>
+      <ContactFields
+        name={name}
+        setName={setName}
+        email={email}
+        setEmail={setEmail}
+        phone={phone}
+        setPhone={setPhone}
+        jobTitle={jobTitle}
+        setJobTitle={setJobTitle}
+      />
+    </AppModal>
   )
 }
 
@@ -128,39 +129,39 @@ function EditContactForm({ contact, saving, error, onSave, onHide }) {
   const [jobTitle, setJobTitle] = useState(contact.job_title ?? '')
 
   return (
-    <Form
+    <AppModal
+      onHide={onHide}
+      size="lg"
+      icon={UserPen}
+      title="Edit Contact"
+      subtitle="Update how this person is reached."
       onSubmit={(event) => {
         event.preventDefault()
         onSave({ name, email, phone, jobTitle })
       }}
+      actions={
+        <>
+          <Button variant="outline-secondary" onClick={onHide} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
     >
-      <Modal.Header closeButton>
-        <Modal.Title as="h2" className="h5 mb-0">
-          Edit Contact
-        </Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <ContactFields
-          name={name}
-          setName={setName}
-          email={email}
-          setEmail={setEmail}
-          phone={phone}
-          setPhone={setPhone}
-          jobTitle={jobTitle}
-          setJobTitle={setJobTitle}
-        />
-      </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
-      </Modal.Footer>
-    </Form>
+      {error && <Alert variant="danger">{error}</Alert>}
+      <ContactFields
+        name={name}
+        setName={setName}
+        email={email}
+        setEmail={setEmail}
+        phone={phone}
+        setPhone={setPhone}
+        jobTitle={jobTitle}
+        setJobTitle={setJobTitle}
+      />
+    </AppModal>
   )
 }
 
@@ -187,10 +188,20 @@ function EditContactModal({ contact, onHide, onSaved }) {
     }
   }
 
+  // The form owns the dialog, so that remounting it on a different contact
+  // (via the key) resets its fields without an effect to resync them.
+  if (!contact) {
+    return null
+  }
   return (
-    <Modal show={Boolean(contact)} onHide={onHide} centered>
-      {contact && <EditContactForm key={contact.id} contact={contact} saving={saving} error={error} onSave={handleSave} onHide={onHide} />}
-    </Modal>
+    <EditContactForm
+      key={contact.id}
+      contact={contact}
+      saving={saving}
+      error={error}
+      onSave={handleSave}
+      onHide={onHide}
+    />
   )
 }
 
