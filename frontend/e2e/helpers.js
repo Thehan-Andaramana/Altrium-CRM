@@ -36,10 +36,15 @@ async function body(response) {
 
 // --- data -----------------------------------------------------------------
 
+// Stamped into the name of every record a spec creates, so they can be
+// told apart from real data by something more reliable than a guess at
+// which prefixes look like fixtures -- see `manage.py purge_e2e`.
+export const E2E_MARKER = '[e2e]'
+
 // Unique per call, so a re-run (or the configured retry) never trips over
 // records an earlier attempt left behind.
 export function unique(prefix) {
-  return `${prefix} ${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+  return `${prefix} ${E2E_MARKER} ${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
 }
 
 // Seeds an isolated company + lead (and optionally assigns the PM) through

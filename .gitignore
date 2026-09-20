@@ -9,6 +9,7 @@ env/
 # Environment
 .env
 .env.local
+.env.test
 
 # Django
 db.sqlite3

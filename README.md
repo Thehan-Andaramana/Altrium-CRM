@@ -303,25 +303,61 @@ tab.
 
 ### End-to-end tests (Playwright)
 
-E2e tests drive a real browser against the running app, so **the full stack
-must already be up and the database seeded** — `docker compose up -d`, the
-Django dev server on port 9000, `npm run dev` on port 3000, and
-`python manage.py seed_demo` — before running any of these. They do not start
-the servers for you.
+E2e tests run against their **own backend, frontend and database** —
+`altrium_e2e`, never the `altrium` database the dev stack uses — so a test
+run can never leave fixture companies and approvals sitting in the data you
+look at while developing. `docker compose up -d` still has to be running (one
+Postgres *server*, hosting both databases), but that's the only thing you
+start by hand; Playwright starts and stops its own backend (port 9100) and
+frontend (port 3100) around the run.
+
+**One-time setup**, after the regular one from Quick start:
 
 ```powershell
 cd frontend
-npx playwright install chromium   # once, after npm install
+npx playwright install chromium                                 # once
+Copy-Item ..\backend\.env.test.example ..\backend\.env.test      # once
+Copy-Item .env.test.example .env.test                            # once
+```
+
+The two `.env.test` files are what make this a separate stack rather than a
+second copy of the dev one: `backend/.env.test` points `DATABASE_URL` at
+`altrium_e2e` on the same Postgres container instead of `altrium`, and
+`frontend/.env.test` (loaded via Vite's own `--mode test` convention) points
+the e2e frontend at the e2e backend's port. Both example files work unedited
+against the container `docker-compose.yml` brings up.
+
+```powershell
 npm run test:e2e                  # headless run
 npm run test:e2e:ui               # interactive runner
 npm run test:e2e:report           # reopen the last HTML report
 ```
 
+The first run (and every one after schema changes) creates `altrium_e2e` if
+it doesn't exist, migrates it, and seeds the demo users/companies/templates —
+see the backend entry in `playwright.config.js`'s `webServer`, which chains
+`manage.py ensure_database` / `migrate` / `seed_demo` / `runserver` with
+`DJANGO_ENV_FILE=.env.test`, in that order, so the backend only starts
+accepting connections once the database is fully prepared. (Not
+`globalSetup`: Playwright 1.63 starts `webServer` *before* running
+`globalSetup`, so a `globalSetup` step can't prepare a database the backend
+needs before it too starts up — the bootstrap has to be part of the
+`webServer` command itself.) That's also the command to run by hand if you
+want the e2e database prepared without running the suite:
+
+```powershell
+cd backend; .\.venv\Scripts\Activate.ps1
+$env:DJANGO_ENV_FILE = '.env.test'
+python manage.py ensure_database   # creates altrium_e2e if it isn't there yet
+python manage.py migrate
+python manage.py seed_demo
+```
+
 The first project (`setup`) logs in as each demo role (`rep1`, `pm1`, `mgr1`,
-`ex1`) once via the UI and saves its session under `e2e/.auth/`; every other
-spec reuses one of those instead of logging in again. Chromium only, and one
-worker — the whole suite shares a single dev stack and database, and running
-it in parallel made Django's dev server refuse connections mid-run.
+`ex1`, `admin`) once via the UI and saves its session under `e2e/.auth/`;
+every other spec reuses one of those instead of logging in again. Chromium
+only, and one worker — the whole suite shares one stack and one database, and
+running it in parallel made Django's dev server refuse connections mid-run.
 
 | Spec | Covers |
 |---|---|
@@ -337,9 +373,35 @@ it in parallel made Django's dev server refuse connections mid-run.
 | `login` | Signing in through the labelled fields, the split-screen brand half, and Remember me actually changing the session cookie (persistent when checked, browser-session when not) |
 | `system-admin` | System Admin reads another rep's lead in the pipeline, on the board and on its own page, reaches every page including reporting, and still gets no create buttons |
 
-Each test creates its own company and lead, so they can run in any order and
-don't read each other's leftovers. Records accumulate in the dev database as
-you re-run; `python manage.py flush` then `seed_demo` clears them out.
+Each test creates its own company and lead, tagged `[e2e]` in the name (see
+`E2E_MARKER` in `e2e/helpers.js`), so they can run in any order and don't read
+each other's leftovers. Records still accumulate in `altrium_e2e` as you
+re-run the suite — but since that's never the database you look at while
+developing, the easy fix is just dropping it and letting the next
+`npm run test:e2e` recreate it (empty, migrated, seeded) before its backend
+starts:
+
+```powershell
+docker compose exec db psql -U altrium -d postgres -c "DROP DATABASE altrium_e2e;"
+```
+
+**If you already have fixture companies sitting in the `altrium` dev
+database** from before this split existed, `manage.py purge_e2e` finds and
+removes them (and everything that cascades from them — leads, projects,
+tasks, approvals) without touching anything else:
+
+```powershell
+cd backend; .\.venv\Scripts\Activate.ps1
+python manage.py purge_e2e --dry-run   # see what it would delete first
+python manage.py purge_e2e             # then actually delete it
+```
+
+It matches on the `[e2e]` marker plus the fixture name prefixes used before
+that marker existed (`E2E Co `, `Lifecycle Lead `, etc. — anchored to the
+start of the name, so a real company called "Shotwell Industries" is never
+touched by the `Shot Co ` prefix). Refuses to run at all unless `DEBUG=True`
+or you pass `--force`, so it can't be pointed at a production database by
+mistake.
 
 ---
 

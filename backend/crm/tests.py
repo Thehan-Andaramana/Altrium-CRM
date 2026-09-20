@@ -1,8 +1,11 @@
 import importlib
 from datetime import timedelta
+from io import StringIO
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -4280,3 +4283,120 @@ class RequirementTemplateCopyTests(APITestCase):
         retired.refresh_from_db()
         self.assertTrue(retired.is_active)
         self.assertEqual(retired.phase, 4)
+
+
+class PurgeE2ECommandTests(TestCase):
+    """
+    `manage.py purge_e2e` clears the records Playwright leaves behind. The
+    thing worth testing is what it *doesn't* touch.
+    """
+
+    def setUp(self):
+        self.rep = User.objects.create_user(username='purge-rep', password='pass', role=User.Role.SALES_REP)
+
+        # A real company, and a fixture one carrying the marker.
+        self.real = Company.objects.create(name='Acme Corporation', owner=self.rep)
+        self.real_lead = Lead.objects.create(name='Acme — renewal', company=self.real, assigned_to=self.rep)
+        self.fixture = Company.objects.create(name='E2E Co [e2e] abc123', owner=self.rep)
+        self.fixture_lead = Lead.objects.create(
+            name='E2E Lead [e2e] abc123', company=self.fixture, assigned_to=self.rep,
+        )
+
+    def _run(self, **options):
+        # Django runs tests with DEBUG off, which is exactly what the
+        # command's guard refuses -- so every case but the two about the
+        # guard itself passes --force.
+        out = StringIO()
+        call_command('purge_e2e', yes=True, force=True, stdout=out, **options)
+        return out.getvalue()
+
+    def test_it_removes_the_fixture_company_and_everything_under_it(self):
+        project_id = self.fixture_lead.project.id
+        self.assertGreater(PhaseRequirement.objects.filter(project_id=project_id).count(), 0)
+
+        self._run()
+
+        self.assertFalse(Company.objects.filter(pk=self.fixture.pk).exists())
+        self.assertFalse(Lead.objects.filter(pk=self.fixture_lead.pk).exists())
+        self.assertFalse(Project.objects.filter(pk=project_id).exists())
+        self.assertEqual(PhaseRequirement.objects.filter(project_id=project_id).count(), 0)
+
+    def test_it_leaves_real_records_alone(self):
+        self._run()
+
+        self.assertTrue(Company.objects.filter(pk=self.real.pk).exists())
+        self.assertTrue(Lead.objects.filter(pk=self.real_lead.pk).exists())
+
+    def test_it_takes_the_fixtures_approvals_with_them(self):
+        raised = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            project=self.fixture_lead.project,
+            requested_by=self.rep,
+        )
+        kept = ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            project=self.real_lead.project,
+            requested_by=self.rep,
+        )
+
+        self._run()
+
+        self.assertFalse(ApprovalRequest.objects.filter(pk=raised.pk).exists())
+        self.assertTrue(ApprovalRequest.objects.filter(pk=kept.pk).exists())
+
+    def test_it_matches_the_legacy_prefixes_too(self):
+        # Created before the marker existed, so identified by name alone.
+        legacy = Company.objects.create(name='Lifecycle Co mu8l45z9-mcl5', owner=self.rep)
+
+        self._run()
+
+        self.assertFalse(Company.objects.filter(pk=legacy.pk).exists())
+
+    def test_a_prefix_is_anchored_so_real_names_survive(self):
+        # "Shot Co " is a fixture prefix; "Shotwell" merely starts the same way.
+        lookalike = Company.objects.create(name='Shotwell Industries', owner=self.rep)
+
+        self._run()
+
+        self.assertTrue(Company.objects.filter(pk=lookalike.pk).exists())
+
+    def test_a_fixture_template_goes_with_its_generated_tasks(self):
+        template = RequirementTemplate.objects.create(
+            phase=1, label='Copy Me [e2e] abc123', is_active=True,
+        )
+        task = PhaseRequirement.objects.create(
+            project=self.real_lead.project, template=template, phase=1, label='Copy Me [e2e] abc123',
+        )
+
+        self._run()
+
+        self.assertFalse(RequirementTemplate.objects.filter(pk=template.pk).exists())
+        # Left behind it would be an untitled task on a real project.
+        self.assertFalse(PhaseRequirement.objects.filter(pk=task.pk).exists())
+
+    def test_dry_run_changes_nothing(self):
+        output = self._run(dry_run=True)
+
+        self.assertIn('Dry run', output)
+        self.assertTrue(Company.objects.filter(pk=self.fixture.pk).exists())
+
+    def test_it_reports_what_it_found(self):
+        output = self._run(dry_run=True)
+        self.assertIn('companies', output)
+        self.assertIn('approval requests', output)
+
+    def test_it_refuses_to_run_with_debug_off(self):
+        with self.settings(DEBUG=False):
+            with self.assertRaises(CommandError):
+                call_command('purge_e2e', yes=True, stdout=StringIO())
+        self.assertTrue(Company.objects.filter(pk=self.fixture.pk).exists())
+
+    def test_force_overrides_the_debug_guard(self):
+        with self.settings(DEBUG=False):
+            call_command('purge_e2e', yes=True, force=True, stdout=StringIO())
+        self.assertFalse(Company.objects.filter(pk=self.fixture.pk).exists())
+
+    def test_it_runs_without_force_when_debug_is_on(self):
+        with self.settings(DEBUG=True):
+            call_command('purge_e2e', yes=True, stdout=StringIO())
+        self.assertFalse(Company.objects.filter(pk=self.fixture.pk).exists())

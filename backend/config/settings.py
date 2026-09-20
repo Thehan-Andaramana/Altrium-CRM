@@ -19,8 +19,20 @@ from dotenv import load_dotenv
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load environment variables from backend/.env
-load_dotenv(BASE_DIR / '.env')
+# Which env file to load -- backend/.env by default, or another file in the
+# same directory (e.g. DJANGO_ENV_FILE=.env.test) when a separate config is
+# needed, such as the Playwright suite's own database and CSRF origins. This
+# is how the e2e stack points at `altrium_e2e` instead of the dev database
+# without touching backend/.env at all -- see frontend/e2e/global-setup.js
+# and playwright.config.js, both of which set this before every command.
+env_file_name = os.environ.get('DJANGO_ENV_FILE', '.env')
+env_file = BASE_DIR / env_file_name
+if env_file_name != '.env' and not env_file.exists():
+    raise RuntimeError(
+        f'DJANGO_ENV_FILE={env_file_name!r} but {env_file} does not exist -- '
+        f'copy backend/{env_file_name}.example to backend/{env_file_name} first.',
+    )
+load_dotenv(env_file)
 
 
 # Quick-start development settings - unsuitable for production
