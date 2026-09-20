@@ -18,7 +18,7 @@ import FormField, { FieldRow } from '../components/FormField.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
 import SearchIcon from '../components/SearchIcon.jsx'
 import { SortableTh, useSortedRows } from '../components/SortableTable.jsx'
-import StatusPill, { LEAD_STATUS_TONE } from '../components/StatusPill.jsx'
+import { LeadStatusBadge } from '../components/StatusPill.jsx'
 
 const SEARCH_DEBOUNCE_MS = 300
 // Lead create/update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
@@ -512,7 +512,7 @@ export default function Leads() {
                     <td>{lead.company_name ?? '—'}</td>
                     <td>{phaseLabel(lead)}</td>
                     <td>
-                      <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
+                      <LeadStatusBadge status={lead.status} />
                     </td>
                     <td>
                       {lead.last_activity_at

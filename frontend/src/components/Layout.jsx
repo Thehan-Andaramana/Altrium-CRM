@@ -8,13 +8,10 @@ import { PageChromeProvider } from './PageChrome.jsx'
 import Sidebar from './Sidebar.jsx'
 import { UserDirectoryProvider } from './UserDirectory.jsx'
 
-// How often the sidebar's count badges are refreshed. The same cadence the
-// notification bell already polls at, so the chrome updates as one.
-const COUNT_POLL_MS = 60000
-
 export default function Layout() {
   const { user, logout } = useAuth()
-  const { theme, setTheme, sidebarCollapsed, setSidebarCollapsed } = useTheme()
+  const { theme, setTheme, sidebarCollapsed, setSidebarCollapsed, notificationsEnabled, notificationPollMinutes } =
+    useTheme()
   const navigate = useNavigate()
 
   // Both are "needs your attention" counts shown on sidebar items. Each
@@ -25,36 +22,32 @@ export default function Layout() {
   const [counts, setCounts] = useState({ approvals: 0, overdue: 0 })
 
   useEffect(() => {
-    if (!user) {
-      return
+    // The same Notifications preference the bell reads: the sidebar's
+    // counts are background polling too, so they stop together.
+    if (!user || !notificationsEnabled) {
+      return undefined
     }
     let cancelled = false
 
     async function fetchCounts() {
-      const [approvals, calendarTasks] = await Promise.all([
-        get('/api/approvals/?status=PENDING').catch(() => null),
-        get('/api/calendar/').catch(() => null),
-      ])
-      if (cancelled) {
+      // One small response rather than the whole approvals list and a
+      // month of calendar tasks -- see SidebarBadgeView.
+      const badges = await get('/api/badges/').catch(() => null)
+      if (cancelled || !badges) {
+        // A failed fetch leaves the counts as they were rather than
+        // flashing to zero -- the next poll self-corrects either way.
         return
       }
-      // A failed fetch leaves that count as it was rather than flashing to
-      // zero -- the next poll self-corrects either way.
-      setCounts((previous) => ({
-        approvals: approvals ? approvals.length : previous.approvals,
-        overdue: calendarTasks
-          ? calendarTasks.filter((task) => task.calendar_status === 'OVERDUE').length
-          : previous.overdue,
-      }))
+      setCounts({ approvals: badges.pending_approvals, overdue: badges.overdue_tasks })
     }
 
     fetchCounts()
-    const intervalId = setInterval(fetchCounts, COUNT_POLL_MS)
+    const intervalId = setInterval(fetchCounts, notificationPollMinutes * 60000)
     return () => {
       cancelled = true
       clearInterval(intervalId)
     }
-  }, [user])
+  }, [user, notificationsEnabled, notificationPollMinutes])
 
   function toggleTheme() {
     setTheme(theme === 'light' ? 'dark' : 'light')

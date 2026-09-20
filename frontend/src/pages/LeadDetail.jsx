@@ -38,16 +38,16 @@ import { del, errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import AppModal from '../components/AppModal.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
-import Avatar, { PersonCell, ROLE_LABELS } from '../components/Avatar.jsx'
+import Avatar, { PersonCell, ROLE_LABELS, UnassignedAvatar } from '../components/Avatar.jsx'
 import ContactDetails from '../components/ContactDetails.jsx'
 import FileDropZone from '../components/FileDropZone.jsx'
 import FormField, { FieldRow } from '../components/FormField.jsx'
 import FormFieldsEditor from '../components/FormFieldsEditor.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
-import { usePageMeta } from '../components/PageChrome.jsx'
+import { PageActions, usePageMeta } from '../components/PageChrome.jsx'
 import PhaseStepper from '../components/PhaseStepper.jsx'
 import TimelineEntry, { Timeline } from '../components/TimelineEntry.jsx'
-import StatusPill, { LEAD_STATUS_TONE, PHASE_STATUS_TONE } from '../components/StatusPill.jsx'
+import StatusPill, { LeadStatusBadge, PHASE_STATUS_TONE } from '../components/StatusPill.jsx'
 import { formFieldsPayload } from '../formFields.js'
 
 const TYPE_OPTIONS = [
@@ -201,14 +201,30 @@ function getPhaseProgressVariant(status, hasOverdueTask) {
   return 'secondary'
 }
 
-// Same precedence for the overall bar, just rolled up across all three
-// phases -- there's no "not started" grey state at this level.
-function getOverallProgressVariant(allPhasesComplete, hasOverdueTask) {
+// Whether a set of tasks contains work that is actually running late.
+//
+// PhaseRequirement.is_overdue is "past its date and not confirmed complete",
+// which is the right rule for a task's own row -- a task someone finished
+// but nobody has confirmed is still outstanding. It is the wrong rule for a
+// progress bar: colouring a whole phase (or the project) red because a
+// *completed* task is waiting on a confirmation reads as "this is running
+// late" when the work is done. So the bars ask the narrower question.
+function hasLateWork(tasks) {
+  return tasks.some((task) => task.is_overdue && task.status !== 'COMPLETED')
+}
+
+// Same precedence for the overall bar, rolled up across all four phases,
+// plus the grey the phase bars have: a project nobody has started yet is
+// not "in progress".
+function getOverallProgressVariant({ allPhasesComplete, anyPhaseStarted, late }) {
   if (allPhasesComplete) {
     return 'success'
   }
-  if (hasOverdueTask) {
+  if (late) {
     return 'danger'
+  }
+  if (!anyPhaseStarted) {
+    return 'secondary'
   }
   return 'warning'
 }
@@ -308,7 +324,7 @@ function TaskRow({ task, onOpen }) {
   const responsible = task.responsible_username
   const responsibleLabel = responsible
     ? `${responsible}${ROLE_LABELS[task.responsible_role] ? ` · ${ROLE_LABELS[task.responsible_role]}` : ''}`
-    : 'Nobody assigned yet'
+    : 'Unassigned'
 
   return (
     <ListGroup.Item action onClick={() => onOpen(task)} className="d-flex align-items-center gap-2">
@@ -319,9 +335,7 @@ function TaskRow({ task, onOpen }) {
       {responsible ? (
         <Avatar name={responsible} role={task.responsible_role} size="sm" title={responsibleLabel} />
       ) : (
-        <span className="avatar avatar--sm avatar--vacant" aria-hidden="true" title={responsibleLabel}>
-          ?
-        </span>
+        <UnassignedAvatar size="sm" title={responsibleLabel} />
       )}
       {/* The avatar itself is aria-hidden (it has no name beside it here),
           so the row carries the same information as text for a screen
@@ -1168,7 +1182,7 @@ function PhaseCard({
   // manual "Request sign-off" button for it. Phase 4's sign-off only makes
   // sense (and is only ever reachable) once Phase 3 has actually completed.
   const canRequestSignoff = !isPhase3 && allComplete && status !== 'COMPLETE' && (!isPhase4 || phase3Complete)
-  const hasOverdueTask = tasks.some((task) => task.is_overdue)
+  const hasOverdueTask = hasLateWork(tasks)
 
   return (
     // Labelled region so each phase's controls are distinguishable from the
@@ -1893,10 +1907,11 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
             <span className="small text-body-secondary flex-shrink-0">Overall progress</span>
             <ProgressBar
               now={project.overall_progress}
-              variant={getOverallProgressVariant(
-                PHASE_NUMBERS.every((n) => project[`phase_${n}_status`] === 'COMPLETE'),
-                tasks.some((task) => task.is_overdue),
-              )}
+              variant={getOverallProgressVariant({
+                allPhasesComplete: PHASE_NUMBERS.every((n) => project[`phase_${n}_status`] === 'COMPLETE'),
+                anyPhaseStarted: PHASE_NUMBERS.some((n) => project[`phase_${n}_status`] !== 'NOT_STARTED'),
+                late: hasLateWork(tasks),
+              })}
               className="progress-thin flex-grow-1"
             />
             <span className="small text-body-secondary flex-shrink-0">{project.overall_progress}%</span>
@@ -2012,7 +2027,7 @@ function EditLeadForm({
             </Form.Select>
           ) : (
             <div>
-              <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
+              <LeadStatusBadge status={lead.status} />
               <Form.Text className="d-block" muted>
                 Only a manager can change hot/cold status.
               </Form.Text>
@@ -2656,17 +2671,15 @@ export default function LeadDetail() {
   // need to know the permission rules.
   const statusPill = lead
     && (canRequestStatusChange && !pendingStatusChangeRequest ? (
-      <StatusPill
+      <LeadStatusBadge
         as="button"
         type="button"
-        tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}
+        status={lead.status}
         onClick={() => setShowStatusChangeModal(true)}
         title="Click to request a status change"
-      >
-        {lead.status}
-      </StatusPill>
+      />
     ) : (
-      <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
+      <LeadStatusBadge status={lead.status} />
     ))
 
   return (
@@ -2681,9 +2694,10 @@ export default function LeadDetail() {
         <Alert variant="danger">{leadError}</Alert>
       ) : (
         <>
-          {/* Record actions sit above the stepper: they act on the lead as
-              a whole, not on any one column below. */}
-          <div className="d-flex flex-wrap justify-content-end align-items-center gap-2 mb-3">
+          {/* These act on the lead as a whole, so they sit in the page
+              header beside its title rather than floating above the
+              stepper. */}
+          <PageActions>
             {pendingStatusChangeRequest && (
               <Badge bg="warning" pill title={pendingStatusChangeRequest.reason}>
                 Change to {pendingStatusChangeRequest.target_status} pending
@@ -2692,18 +2706,18 @@ export default function LeadDetail() {
             {canEdit && (
               // Named explicitly: the summary rail has its own "Edit" (for
               // the budget), so a bare "Edit" is ambiguous.
-              <button
-                type="button"
-                className="icon-button"
+              <Button
+                variant="outline-secondary"
+                size="sm"
                 aria-label="Edit lead"
-                title="Edit lead"
                 onClick={() => setShowEditModal(true)}
               >
-                <Pencil size={15} aria-hidden="true" />
-              </button>
+                <Pencil size={14} className="me-1" aria-hidden="true" />
+                Edit
+              </Button>
             )}
             <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} label="Archive lead" />
-          </div>
+          </PageActions>
 
           <PhaseStepper project={project} />
 

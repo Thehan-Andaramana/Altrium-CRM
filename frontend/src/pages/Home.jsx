@@ -14,6 +14,7 @@ import { useAuth } from '../AuthContext.jsx'
 import { PersonCell } from '../components/Avatar.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
 import StatCard from '../components/StatCard.jsx'
+import { LeadStatusBadge } from '../components/StatusPill.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 const LIST_LIMIT = 5
@@ -30,11 +31,14 @@ const REQUEST_TYPE_LABELS = {
 function LeadListItem({ lead, extra }) {
   return (
     <ListGroup.Item className="d-flex justify-content-between align-items-center gap-2">
-      <div>
+      <div style={{ minWidth: 0 }}>
         <Link to={`/leads/${lead.id}`}>{lead.name}</Link>
         <div className="text-body-secondary small">{lead.company_name ?? '—'}</div>
       </div>
-      {extra}
+      <div className="d-flex align-items-center gap-2 flex-shrink-0">
+        {extra}
+        {lead.status && <LeadStatusBadge status={lead.status} />}
+      </div>
     </ListGroup.Item>
   )
 }

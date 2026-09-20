@@ -5,6 +5,7 @@ import Button from 'react-bootstrap/Button'
 import Form from 'react-bootstrap/Form'
 import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
+import { Link } from 'react-router-dom'
 import { errorMessage, get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import AppModal from '../components/AppModal.jsx'
@@ -40,6 +41,23 @@ const STATUS_OPTIONS = [
   { value: 'APPROVED', label: 'Approved' },
   { value: 'REJECTED', label: 'Rejected' },
 ]
+
+// Why the Approve/Reject buttons aren't on this row. Shown as the View
+// link's tooltip, so "no buttons here" is explained rather than just
+// observed.
+function blockedReason(approval, isOwn, canDecideThis) {
+  if (approval.status !== 'PENDING') {
+    const decidedBy = approval.decided_by_username ? ` by ${approval.decided_by_username}` : ''
+    return `Already ${approval.status.toLowerCase()}${decidedBy}.`
+  }
+  if (isOwn) {
+    return 'You raised this request, so someone else has to decide it.'
+  }
+  if (!canDecideThis) {
+    return 'Only an executive manager can decide a Phase 4 sign-off.'
+  }
+  return undefined
+}
 
 function DecisionForm({ mode, saving, error, onSubmit, onHide }) {
   const [decisionNote, setDecisionNote] = useState('')
@@ -232,7 +250,18 @@ export default function Approvals() {
                 && (approval.request_type !== 'PHASE_4_SIGNOFF' || user.role === 'EXECUTIVE_MANAGER')
               return (
                 <tr key={approval.id}>
-                  <td>{approval.lead_name ?? '—'}</td>
+                  <td>
+                    {approval.lead_id ? (
+                      <Link
+                        to={`/leads/${approval.lead_id}?tab=${approval.phase_number ? 'phases' : 'activity'}`}
+                        className="text-decoration-none table-link-hover"
+                      >
+                        {approval.lead_name ?? '—'}
+                      </Link>
+                    ) : (
+                      approval.lead_name ?? '—'
+                    )}
+                  </td>
                   <td>{approval.company_name ?? '—'}</td>
                   <td>
                     {REQUEST_TYPE_LABELS[approval.request_type] ?? approval.request_type}
@@ -253,7 +282,7 @@ export default function Approvals() {
                   <td>{new Date(approval.created_at).toLocaleDateString()}</td>
                   {canDecide && (
                     <td>
-                      {approval.status === 'PENDING' && !isOwn && canDecideThis && (
+                      {approval.status === 'PENDING' && !isOwn && canDecideThis ? (
                         <div className="d-flex gap-1">
                           {/* Icon buttons, but the aria-label keeps each
                               one's name the word it replaced. */}
@@ -276,6 +305,20 @@ export default function Approvals() {
                             <X size={16} aria-hidden="true" />
                           </button>
                         </div>
+                      ) : (
+                        // Never an empty cell: a row you can't act on here
+                        // still has somewhere to go, and says why not.
+                        <Link
+                          to={
+                            approval.lead_id
+                              ? `/leads/${approval.lead_id}?tab=${approval.phase_number ? 'phases' : 'activity'}`
+                              : '/approvals'
+                          }
+                          className="btn btn-sm btn-outline-secondary"
+                          title={blockedReason(approval, isOwn, canDecideThis)}
+                        >
+                          View
+                        </Link>
                       )}
                     </td>
                   )}

@@ -288,13 +288,14 @@ cd backend
 python manage.py test crm
 ```
 
-**331 tests** covering phase gates, the self-approval block, both task
+**344 tests** covering phase gates, the self-approval block, both task
 confirmation paths, NOT_APPLICABLE exclusion, due-date calculation, archive
 cascade and approval flow, dashboard role scoping, board ordering (including
 that a reorder can never move a card between phases), the reporting
 aggregations and their role restriction, rep-only lead assignment and the
 migration that moved manager-held leads, System Admin's unrestricted read,
-the login form's Remember me, and the permission rules on every model.
+the login form's Remember me, template deduplication and copying, and the
+permission rules on every model.
 
 GitHub Actions runs the full suite plus a frontend build on every push and pull
 request, against a PostgreSQL container built from empty — see the **Actions**
@@ -331,6 +332,7 @@ it in parallel made Django's dev server refuse connections mid-run.
 | `server-errors` | A second modal surfaces the server's own validation message, so the shared `errorMessage` helper isn't only wired up on tasks |
 | `board` | Cards land in their phase's column, a cross-column drag is refused with the reason, reordering within a column survives a reload, and the filters narrow the board |
 | `reports` | Reporting is management-only (a rep and a PM are both sent away), the range defaults to the last 30 days and refetches when changed, the per-rep table sorts, and the CSV exports |
+| `settings` | The four settings tabs and their Save Changes button, the notification toggle, and the requirement templates panel — including dragging a template out to retire it and back in to revive it |
 | `lead-layout` | The lead's stepper, contact panel and summary rail; timeline entries rendering as cards; and the pipeline's sort chips, collapsible filter groups and status deep link |
 | `login` | Signing in through the labelled fields, the split-screen brand half, and Remember me actually changing the session cookie (persistent when checked, browser-session when not) |
 | `system-admin` | System Admin reads another rep's lead in the pipeline, on the board and on its own page, reaches every page including reporting, and still gets no create buttons |

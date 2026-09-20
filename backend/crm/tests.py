@@ -4112,3 +4112,171 @@ class LoginRememberMeTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertNotIn('_auth_user_id', self.client.session)
+
+
+class TemplateDeduplicationMigrationTests(TestCase):
+    """
+    Migration 0029 clears the duplicate templates the phase renumbering left
+    behind. Exercised against the real models, the same way the lead
+    reassignment migration is.
+    """
+
+    def setUp(self):
+        self.migration = importlib.import_module('crm.migrations.0029_deduplicate_requirement_templates')
+        # The migrations that ship the canonical set have already run for
+        # this test database, so start from a clean slate.
+        RequirementTemplate.objects.all().delete()
+
+    def _run(self):
+        models = {
+            'RequirementTemplate': RequirementTemplate,
+            'PhaseRequirement': PhaseRequirement,
+            'TaskFormField': TaskFormField,
+        }
+
+        class FakeApps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                return models[model_name]
+
+        self.migration.deduplicate_templates(FakeApps, None)
+
+    def test_an_inactive_twin_is_removed_and_the_active_row_kept(self):
+        active = RequirementTemplate.objects.create(phase=2, label='Budget Proposal', is_active=True)
+        RequirementTemplate.objects.create(phase=1, label='Budget Proposal', is_active=False)
+
+        self._run()
+
+        self.assertEqual(list(RequirementTemplate.objects.values_list('id', flat=True)), [active.id])
+
+    def test_a_retired_template_with_no_active_twin_survives(self):
+        retired = RequirementTemplate.objects.create(phase=1, label='Retired Step', is_active=False)
+
+        self._run()
+
+        self.assertTrue(RequirementTemplate.objects.filter(pk=retired.pk).exists())
+
+    def test_two_active_templates_are_both_kept(self):
+        first = RequirementTemplate.objects.create(phase=1, label='Kickoff', is_active=True)
+        second = RequirementTemplate.objects.create(phase=3, label='Kickoff', is_active=True)
+
+        self._run()
+
+        self.assertEqual(RequirementTemplate.objects.filter(label='Kickoff').count(), 2)
+        self.assertTrue(RequirementTemplate.objects.filter(pk=first.pk).exists())
+        self.assertTrue(RequirementTemplate.objects.filter(pk=second.pk).exists())
+
+    def test_tasks_are_repointed_rather_than_orphaned(self):
+        active = RequirementTemplate.objects.create(phase=2, label='Budget Proposal', is_active=True)
+        stale = RequirementTemplate.objects.create(phase=1, label='Budget Proposal', is_active=False)
+
+        user = User.objects.create_user(username='dedupe-rep', password='pass', role=User.Role.SALES_REP)
+        company = Company.objects.create(name='Dedupe Co', owner=user)
+        lead = Lead.objects.create(company=company, assigned_to=user)
+        task = PhaseRequirement.objects.create(
+            project=lead.project, template=stale, phase=1, label='Budget Proposal',
+        )
+
+        self._run()
+
+        task.refresh_from_db()
+        self.assertEqual(task.template, active)
+
+    def test_a_form_on_the_discarded_row_moves_to_the_kept_one(self):
+        active = RequirementTemplate.objects.create(phase=2, label='Budget Proposal', is_active=True)
+        stale = RequirementTemplate.objects.create(phase=1, label='Budget Proposal', is_active=False)
+        TaskFormField.objects.create(template=stale, label='Proposed budget', field_type='NUMBER')
+
+        self._run()
+
+        self.assertEqual(active.form_fields.count(), 1)
+        self.assertEqual(active.form_fields.first().label, 'Proposed budget')
+
+    def test_the_kept_rows_own_form_wins(self):
+        active = RequirementTemplate.objects.create(phase=2, label='Budget Proposal', is_active=True)
+        TaskFormField.objects.create(template=active, label='Kept field', field_type='TEXT')
+        stale = RequirementTemplate.objects.create(phase=1, label='Budget Proposal', is_active=False)
+        TaskFormField.objects.create(template=stale, label='Discarded field', field_type='TEXT')
+
+        self._run()
+
+        self.assertEqual([f.label for f in active.form_fields.all()], ['Kept field'])
+
+
+class RequirementTemplateCopyTests(APITestCase):
+    """
+    Copying a template into another phase -- what dragging one out of the
+    settings library does.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='tmpl-mgr', password='pass', role=User.Role.SALES_MANAGER,
+        )
+        self.rep = User.objects.create_user(username='tmpl-rep', password='pass', role=User.Role.SALES_REP)
+        RequirementTemplate.objects.all().delete()
+        self.template = RequirementTemplate.objects.create(
+            phase=1, label='Kickoff Call', description='Say hello.', is_active=True,
+            confirmation_authority='REP', client_facing=True, default_duration_days=4,
+        )
+        TaskFormField.objects.create(
+            template=self.template, label='Attendees', field_type='TEXT', required=True, order=0,
+        )
+        self.client.force_authenticate(self.manager)
+
+    def _copy(self, **data):
+        return self.client.post(reverse('requirementtemplate-copy', args=[self.template.id]), data, format='json')
+
+    def test_copying_puts_an_active_template_in_the_target_phase(self):
+        response = self._copy(phase=3)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        copy = RequirementTemplate.objects.get(pk=response.data['id'])
+        self.assertEqual(copy.phase, 3)
+        self.assertEqual(copy.label, 'Kickoff Call')
+        self.assertTrue(copy.is_active)
+        # The original is untouched -- this is a copy, not a move.
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.phase, 1)
+
+    def test_the_form_travels_with_the_template(self):
+        response = self._copy(phase=3)
+        copy = RequirementTemplate.objects.get(pk=response.data['id'])
+
+        self.assertEqual([f.label for f in copy.form_fields.all()], ['Attendees'])
+        self.assertTrue(copy.form_fields.first().required)
+        # Copied, not shared: editing one must not touch the other.
+        self.assertNotEqual(copy.form_fields.first().id, self.template.form_fields.first().id)
+
+    def test_the_copy_keeps_authority_and_duration(self):
+        response = self._copy(phase=2)
+        copy = RequirementTemplate.objects.get(pk=response.data['id'])
+        self.assertEqual(copy.confirmation_authority, 'REP')
+        self.assertTrue(copy.client_facing)
+        self.assertEqual(copy.default_duration_days, 4)
+
+    def test_copying_into_a_phase_that_already_has_it_is_refused(self):
+        self._copy(phase=3)
+        response = self._copy(phase=3)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(RequirementTemplate.objects.filter(phase=3, label='Kickoff Call').count(), 1)
+
+    def test_a_bad_phase_is_refused(self):
+        self.assertEqual(self._copy(phase=9).status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._copy().status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_rep_cannot_copy_a_template(self):
+        self.client.force_authenticate(self.rep)
+        self.assertEqual(self._copy(phase=2).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_activating_a_template_into_a_phase_is_a_patch(self):
+        retired = RequirementTemplate.objects.create(phase=2, label='Old Step', is_active=False)
+        response = self.client.patch(
+            reverse('requirementtemplate-detail', args=[retired.id]),
+            {'is_active': True, 'phase': 4},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        retired.refresh_from_db()
+        self.assertTrue(retired.is_active)
+        self.assertEqual(retired.phase, 4)

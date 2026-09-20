@@ -11,9 +11,9 @@ import { Link, matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { get, patch, post } from '../api'
 import StatusPill from './StatusPill.jsx'
 import { usePageChrome } from './PageChrome.jsx'
+import { useTheme } from '../ThemeContext.jsx'
 
 const SEARCH_DEBOUNCE_MS = 300
-const NOTIFICATION_POLL_MS = 60000
 
 // Shown while a page is still loading (and so hasn't set its own title
 // yet), so the header never flashes empty between routes. A detail route's
@@ -168,12 +168,16 @@ function GlobalSearch() {
 
 function NotificationBell({ user }) {
   const navigate = useNavigate()
+  // Both from Settings > Notifications: whether to poll at all, and how
+  // often. Turning it off stops the background request rather than just
+  // hiding the dot.
+  const { notificationsEnabled, notificationPollMinutes } = useTheme()
   const [unreadCount, setUnreadCount] = useState(0)
   const [mentions, setMentions] = useState([])
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!user) return
+    if (!user || !notificationsEnabled) return undefined
     let cancelled = false
 
     async function fetchUnreadCount() {
@@ -188,12 +192,12 @@ function NotificationBell({ user }) {
     }
 
     fetchUnreadCount()
-    const intervalId = setInterval(fetchUnreadCount, NOTIFICATION_POLL_MS)
+    const intervalId = setInterval(fetchUnreadCount, notificationPollMinutes * 60000)
     return () => {
       cancelled = true
       clearInterval(intervalId)
     }
-  }, [user])
+  }, [user, notificationsEnabled, notificationPollMinutes])
 
   async function handleToggle(nextOpen) {
     if (!nextOpen) return
@@ -242,11 +246,11 @@ function NotificationBell({ user }) {
         // The red dot carries "unread" visually and can't be announced, so
         // the count rides along as a *description* -- the button's name
         // stays exactly "Notifications", which is what it has always been.
-        aria-describedby={unreadCount > 0 ? 'notification-unread-count' : undefined}
+        aria-describedby={notificationsEnabled && unreadCount > 0 ? 'notification-unread-count' : undefined}
         title="Notifications"
       >
         <Bell size={18} aria-hidden="true" />
-        {unreadCount > 0 && (
+        {notificationsEnabled && unreadCount > 0 && (
           <>
             <span className="notification-dot" />
             <span id="notification-unread-count" className="visually-hidden">
@@ -298,7 +302,7 @@ function NotificationBell({ user }) {
 }
 
 export default function AppHeader({ user, theme, onToggleTheme }) {
-  const { meta } = usePageChrome()
+  const { meta, setActionSlot } = usePageChrome()
   const location = useLocation()
   const title = meta?.title || routeTitle(location.pathname)
   const breadcrumbs = meta?.breadcrumbs ?? []
@@ -326,6 +330,10 @@ export default function AppHeader({ user, theme, onToggleTheme }) {
           </nav>
         )}
       </div>
+
+      {/* Where a page's own actions land (see PageActions). A ref callback,
+          not an effect, so handing the node over doesn't cascade renders. */}
+      <div className="app-header__actions" ref={setActionSlot} />
 
       <GlobalSearch />
 

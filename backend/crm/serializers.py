@@ -1067,6 +1067,10 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
     requested_by_username = serializers.CharField(source='requested_by.username', read_only=True, default=None)
     decided_by_username = serializers.CharField(source='decided_by.username', read_only=True, default=None)
     lead_name = serializers.SerializerMethodField()
+    # The lead this request is about, resolved the same way lead_name is --
+    # a phase sign-off carries a project rather than a lead, and the
+    # approvals list links every row through to the lead either way.
+    lead_id = serializers.SerializerMethodField()
     company_name = serializers.SerializerMethodField()
     phase_number = serializers.SerializerMethodField()
 
@@ -1083,10 +1087,14 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'request_type', 'lead', 'project', 'target_status', 'status', 'reason', 'decision_note',
             'requested_by', 'requested_by_username', 'decided_by', 'decided_by_username',
-            'lead_name', 'company_name', 'phase_number',
+            'lead_name', 'lead_id', 'company_name', 'phase_number',
             'created_at', 'decided_at',
         ]
         read_only_fields = ['requested_by', 'decided_by', 'created_at', 'decided_at']
+
+    def get_lead_id(self, obj):
+        lead = self._resolve_lead(obj)
+        return lead.id if lead else None
 
     def _resolve_lead(self, obj):
         if obj.lead is not None:

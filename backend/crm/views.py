@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth import authenticate, login, logout
+from django.db import transaction
 from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Q, Subquery
 from django.http import FileResponse
 from django.utils import timezone
@@ -25,6 +26,7 @@ from .models import (
     RequirementTemplate,
     SystemSettings,
     TaskAttachment,
+    TaskFormField,
     TaskFormResponse,
     User,
 )
@@ -572,6 +574,64 @@ class RequirementTemplateViewSet(viewsets.ModelViewSet):
     ordering = ['phase', 'order']
     queryset = RequirementTemplate.objects.prefetch_related('form_fields')
 
+    @action(detail=True, methods=['post'])
+    def copy(self, request, pk=None):
+        """
+        POST /api/requirement-templates/{id}/copy/ with {"phase": N}.
+
+        Puts a copy of this template into another phase -- what dragging one
+        out of the settings library into a phase does. The copy is active
+        from the start (there would be no point otherwise) and takes the
+        original's form fields with it, because a template without the form
+        it asks for is a different task.
+
+        A PATCH can move a template between phases, but only by taking it
+        out of the one it is in; this is how the same task ends up in two
+        phases at once.
+        """
+        source = self.get_object()
+        phase = request.data.get('phase')
+        if phase not in (1, 2, 3, 4):
+            return Response(
+                {'phase': 'Choose a phase between 1 and 4.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if RequirementTemplate.objects.filter(phase=phase, label=source.label, is_active=True).exists():
+            return Response(
+                {'detail': f'"{source.label}" is already active in phase {phase}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            last_order = RequirementTemplate.objects.filter(phase=phase).aggregate(
+                last=Max('order'),
+            )['last']
+            copy = RequirementTemplate.objects.create(
+                phase=phase,
+                label=source.label,
+                description=source.description,
+                order=(last_order or 0) + 1,
+                confirmation_authority=source.confirmation_authority,
+                client_facing=source.client_facing,
+                default_duration_days=source.default_duration_days,
+                is_active=True,
+            )
+            TaskFormField.objects.bulk_create([
+                TaskFormField(
+                    template=copy,
+                    label=field.label,
+                    field_type=field.field_type,
+                    options=field.options,
+                    required=field.required,
+                    order=field.order,
+                    help_text=field.help_text,
+                )
+                for field in source.form_fields.all()
+            ])
+
+        serializer = self.get_serializer(copy)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
 
 class ApprovalRequestViewSet(viewsets.ModelViewSet):
     serializer_class = ApprovalRequestSerializer
@@ -677,6 +737,48 @@ class DashboardView(APIView):
             # Count only -- the dashboard's projects stat card links through
             # to the board for the list itself.
             'active_projects': {'count': active_projects.count()},
+        })
+
+
+class SidebarBadgeView(APIView):
+    """
+    GET /api/badges/ -- the two counts the sidebar shows, and nothing else.
+
+    The sidebar used to get these by fetching the whole approvals list and
+    the whole calendar month, then counting client-side: a quarter of a
+    megabyte on every page load to render two small numbers. Scoping is
+    identical to those endpoints, so the numbers are the same; only the
+    payload is different.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        approvals = ApprovalRequest.objects.filter(status=ApprovalRequest.Status.PENDING)
+        if user.role == User.Role.PROJECT_MANAGER:
+            approvals = approvals.filter(Q(requested_by=user) | Q(project__project_manager=user))
+        elif user.role not in FULL_ACCESS_ROLES:
+            approvals = approvals.filter(requested_by=user)
+
+        # Same candidate set as CalendarView: is_overdue weighs confirmation
+        # state as well as dates, so it can't be a pure DB filter -- but the
+        # rows are narrowed hard first and only the fields it reads are
+        # loaded, rather than serialising every task for the month.
+        overdue_candidates = PhaseRequirement.objects.select_related(
+            'project__lead', 'project__project_manager', 'confirmed_by',
+        ).exclude(status=PhaseRequirement.Status.NOT_APPLICABLE).filter(
+            Q(due_date__isnull=False) | Q(committed_date__isnull=False),
+        )
+        if user.role == User.Role.SALES_REP:
+            overdue_candidates = overdue_candidates.filter(project__lead__assigned_to=user)
+        elif user.role == User.Role.PROJECT_MANAGER:
+            overdue_candidates = overdue_candidates.filter(project__project_manager=user)
+
+        return Response({
+            'pending_approvals': approvals.count(),
+            'overdue_tasks': sum(1 for requirement in overdue_candidates if requirement.is_overdue),
         })
 
 

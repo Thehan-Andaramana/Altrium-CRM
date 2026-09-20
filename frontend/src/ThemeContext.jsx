@@ -11,6 +11,10 @@ const DENSITIES = ['comfortable', 'compact']
 // Preferences stored under the old NAV_VARIANTS values ('top'/'sidebar')
 // simply fall through to the default below.
 const CARD_STYLES = ['elevated', 'flat', 'bordered']
+// How often the notification bell and the sidebar's count badges re-poll.
+// "off" stops both, for anyone who would rather not have the page talking
+// to the server in the background at all.
+const POLL_MINUTES = [1, 5, 15]
 const FONT_SCALES = { small: 0.875, medium: 1, large: 1.125 }
 const CARD_STYLE_CLASSES = CARD_STYLES.map((style) => `card-style-${style}`)
 
@@ -27,6 +31,8 @@ function loadPreferences() {
       density: 'comfortable',
       sidebarCollapsed: false,
       cardStyle: 'elevated',
+      notificationsEnabled: true,
+      notificationPollMinutes: 1,
     }
   }
   let stored = {}
@@ -41,6 +47,10 @@ function loadPreferences() {
     density: DENSITIES.includes(stored.density) ? stored.density : 'comfortable',
     sidebarCollapsed: stored.sidebarCollapsed === true,
     cardStyle: CARD_STYLES.includes(stored.cardStyle) ? stored.cardStyle : 'elevated',
+    notificationsEnabled: stored.notificationsEnabled !== false,
+    notificationPollMinutes: POLL_MINUTES.includes(stored.notificationPollMinutes)
+      ? stored.notificationPollMinutes
+      : 1,
   }
 }
 
@@ -77,11 +87,17 @@ export function ThemeProvider({ children }) {
     density: preferences.density,
     sidebarCollapsed: preferences.sidebarCollapsed,
     cardStyle: preferences.cardStyle,
+    notificationsEnabled: preferences.notificationsEnabled,
+    notificationPollMinutes: preferences.notificationPollMinutes,
     setTheme: (theme) => setPreferences((prev) => ({ ...prev, theme })),
     setFontSize: (fontSize) => setPreferences((prev) => ({ ...prev, fontSize })),
     setDensity: (density) => setPreferences((prev) => ({ ...prev, density })),
     setSidebarCollapsed: (sidebarCollapsed) => setPreferences((prev) => ({ ...prev, sidebarCollapsed })),
     setCardStyle: (cardStyle) => setPreferences((prev) => ({ ...prev, cardStyle })),
+    setNotificationsEnabled: (notificationsEnabled) =>
+      setPreferences((prev) => ({ ...prev, notificationsEnabled })),
+    setNotificationPollMinutes: (notificationPollMinutes) =>
+      setPreferences((prev) => ({ ...prev, notificationPollMinutes })),
   }
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

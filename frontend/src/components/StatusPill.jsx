@@ -1,3 +1,5 @@
+import { Flame, Snowflake } from 'lucide-react'
+
 // Status pill: a leading dot and a tinted background, rather than a solid
 // Bootstrap badge fill.
 //
@@ -6,7 +8,9 @@
 // buttons (the lead status on LeadDetail), and the text *is* their
 // accessible name.
 
-// Lead temperature: HOT amber, COLD grey.
+// Lead temperature: HOT amber, COLD grey. Kept for anywhere a lead's
+// status needs the same quiet treatment as the other pills; the prominent
+// version is LeadStatusBadge below.
 export const LEAD_STATUS_TONE = {
   HOT: 'amber',
   COLD: 'grey',
@@ -33,6 +37,31 @@ export default function StatusPill({ tone = 'grey', children, className = '', as
     <Tag className={`status-pill status-pill--${tone} ${className}`.trim()} {...props}>
       <span className="status-pill__dot" aria-hidden="true" />
       {children}
+    </Tag>
+  )
+}
+
+// A lead's temperature, given more weight than the other pills: a filled
+// badge with an icon, because hot/cold is the one status people scan a list
+// for.
+//
+// The icon is aria-hidden and the text is the status word alone, so the
+// badge's text content -- and its accessible name when it is a button --
+// stays exactly "HOT" or "COLD".
+const LEAD_STATUS_ICON = {
+  HOT: Flame,
+  COLD: Snowflake,
+}
+
+export function LeadStatusBadge({ status, as = 'span', className = '', ...props }) {
+  const Tag = as
+  const Icon = LEAD_STATUS_ICON[status]
+  const tone = status === 'HOT' ? 'hot' : 'cold'
+
+  return (
+    <Tag className={`lead-status lead-status--${tone} ${className}`.trim()} {...props}>
+      {Icon && <Icon size={14} aria-hidden="true" />}
+      {status}
     </Tag>
   )
 }

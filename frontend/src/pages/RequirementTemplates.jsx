@@ -1,9 +1,19 @@
-import { FilePlus2, FileText } from 'lucide-react'
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import { FilePlus2, FileText, GripVertical } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
-import Card from 'react-bootstrap/Card'
 import Form from 'react-bootstrap/Form'
 import InputGroup from 'react-bootstrap/InputGroup'
 import ListGroup from 'react-bootstrap/ListGroup'
@@ -18,8 +28,13 @@ import { formFieldsPayload } from '../formFields.js'
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 const PHASE_NUMBERS = [1, 2, 3, 4]
 
+// All three of RequirementTemplate.ConfirmationAuthority. Project Manager
+// was missing here, so the eight PM-confirmed templates rendered as "Rep"
+// (a select falls back to its first option when the value matches none) --
+// and picking anything would have silently downgraded them.
 const AUTHORITY_OPTIONS = [
   { value: 'REP', label: 'Rep' },
+  { value: 'PROJECT_MANAGER', label: 'Project Manager' },
   { value: 'MANAGER', label: 'Manager' },
 ]
 
@@ -143,6 +158,126 @@ function AddTemplateModal({ phase, saving, error, onSave, onHide }) {
   )
 }
 
+// Where a dragged template came from decides what dropping it does.
+const PHASE_DROP_PREFIX = 'phase:'
+const PANEL_DROP_ID = 'template-library-panel'
+
+function PhaseDropZone({ phase, isOver, children, onAdd }) {
+  return (
+    <section
+      className={`template-phase ${isOver ? 'template-phase--over' : ''}`.trim()}
+      aria-label={`Phase ${phase} templates`}
+    >
+      <header className="template-phase__header">
+        <h3 className="template-phase__title">Phase {phase}</h3>
+        <Button size="sm" variant="outline-secondary" onClick={() => onAdd(phase)}>
+          + Add task
+        </Button>
+      </header>
+      {children}
+    </section>
+  )
+}
+
+// A draggable handle beside a row or a panel card. The handle, not the whole
+// element, starts the drag -- the rows carry selects, inputs and buttons
+// that would otherwise be impossible to use.
+function DragHandle({ id, data, label }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id, data })
+  return (
+    <button
+      type="button"
+      ref={setNodeRef}
+      className={`template-grip ${isDragging ? 'template-grip--dragging' : ''}`.trim()}
+      aria-label={label}
+      {...attributes}
+      {...listeners}
+    >
+      <GripVertical size={14} aria-hidden="true" />
+    </button>
+  )
+}
+
+// One template in the side panel: what it is, where it lives, and whether it
+// brings a form with it.
+function PanelCard({ template, origin }) {
+  return (
+    <li className="template-card">
+      <DragHandle
+        id={`${origin}-${template.id}`}
+        data={{ origin, template }}
+        label={`Drag ${template.label} into a phase`}
+      />
+      <div className="template-card__body">
+        <div className="template-card__label">{template.label}</div>
+        <div className="template-card__meta">
+          Phase {template.phase}
+          {template.form_fields?.length > 0 && <> · {template.form_fields.length}-field form</>}
+          {!template.is_active && <> · inactive</>}
+        </div>
+      </div>
+    </li>
+  )
+}
+
+function LibraryPanel({ templates, isOver }) {
+  const [tab, setTab] = useState('inactive')
+
+  const inactive = templates.filter((template) => !template.is_active)
+  // The library is the whole catalogue -- including templates already live
+  // in a phase, since copying one into a second phase is the point.
+  const library = [...templates].sort((a, b) => a.label.localeCompare(b.label))
+  const shown = tab === 'inactive' ? inactive : library
+
+  return (
+    <aside
+      className={`template-panel ${isOver ? 'template-panel--over' : ''}`.trim()}
+      aria-label="Template library"
+    >
+      <div className="template-panel__tabs" role="tablist" aria-label="Template library sections">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'inactive'}
+          className={`template-panel__tab ${tab === 'inactive' ? 'template-panel__tab--active' : ''}`.trim()}
+          onClick={() => setTab('inactive')}
+        >
+          Inactive
+          <span className="template-panel__count">{inactive.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'library'}
+          className={`template-panel__tab ${tab === 'library' ? 'template-panel__tab--active' : ''}`.trim()}
+          onClick={() => setTab('library')}
+        >
+          Library
+          <span className="template-panel__count">{library.length}</span>
+        </button>
+      </div>
+
+      <p className="template-panel__hint">
+        {tab === 'inactive'
+          ? 'Drag one into a phase to bring it back, or drag a live task here to retire it.'
+          : 'Drag any of these into a phase to add a copy of it there, form and all.'}
+      </p>
+
+      {shown.length === 0 ? (
+        <p className="text-body-secondary small mb-0">
+          {tab === 'inactive' ? 'Nothing retired.' : 'No templates yet.'}
+        </p>
+      ) : (
+        <ul className="template-panel__list">
+          {shown.map((template) => (
+            <PanelCard key={`${tab}-${template.id}`} template={template} origin={tab} />
+          ))}
+        </ul>
+      )}
+    </aside>
+  )
+}
+
 function TemplateRow({
   template,
   isFirst,
@@ -157,6 +292,11 @@ function TemplateRow({
 }) {
   return (
     <ListGroup.Item className="d-flex align-items-center gap-2">
+      <DragHandle
+        id={`active-${template.id}`}
+        data={{ origin: 'active', template }}
+        label={`Move ${template.label} to another phase or retire it`}
+      />
       <div className="d-flex flex-column">
         <Button
           variant="link"
@@ -265,6 +405,14 @@ export default function RequirementTemplates() {
   const [addSaving, setAddSaving] = useState(false)
   const [addError, setAddError] = useState(null)
 
+  const [dragging, setDragging] = useState(null)
+  const sensors = useSensors(
+    // A few pixels before a drag starts, so clicking the grip doesn't
+    // register as a zero-length drag.
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor),
+  )
+
   useEffect(() => {
     if (!allowed) {
       return
@@ -295,6 +443,11 @@ export default function RequirementTemplates() {
       .filter((t) => t.phase === phase)
       .slice()
       .sort((a, b) => a.order - b.order)
+  }
+
+  // The phases show live tasks only -- retired ones live in the panel.
+  function activeForPhase(phase) {
+    return templatesForPhase(phase).filter((template) => template.is_active)
   }
 
   async function handleMove(template, direction) {
@@ -419,14 +572,82 @@ export default function RequirementTemplates() {
     }
   }
 
+  // Dropping decides by where the dragged thing came from: a live task
+  // moves or retires, an inactive one comes back, a library one is copied.
+  async function handleDragEnd(event) {
+    const { active, over } = event
+    setDragging(null)
+    if (!over) {
+      return
+    }
+
+    const origin = active.data.current?.origin
+    const template = active.data.current?.template
+    if (!template) {
+      return
+    }
+
+    const overId = String(over.id)
+    const toPhase = overId.startsWith(PHASE_DROP_PREFIX) ? Number(overId.slice(PHASE_DROP_PREFIX.length)) : null
+
+    setBusyId(template.id)
+    setRowError(null)
+    try {
+      if (toPhase) {
+        if (origin === 'library' && template.is_active) {
+          // Already live somewhere: put a copy in the target phase rather
+          // than moving the original out of the phase it serves.
+          if (template.phase === toPhase) {
+            setRowError(`"${template.label}" is already in phase ${toPhase}.`)
+            return
+          }
+          const created = await post(`/api/requirement-templates/${template.id}/copy/`, { phase: toPhase })
+          setTemplates((prev) => [...prev, created])
+          return
+        }
+
+        if (origin === 'active' && template.phase === toPhase) {
+          return
+        }
+
+        const updated = await patch(`/api/requirement-templates/${template.id}/`, {
+          is_active: true,
+          phase: toPhase,
+          order: nextOrderFor(toPhase),
+        })
+        setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+        return
+      }
+
+      if (overId === PANEL_DROP_ID && origin === 'active') {
+        const updated = await patch(`/api/requirement-templates/${template.id}/`, { is_active: false })
+        setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+      }
+    } catch (err) {
+      setRowError(errorMessage(err, 'Failed to move that task.'))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  function nextOrderFor(phase) {
+    return templates
+      .filter((template) => template.phase === phase)
+      .reduce((max, template) => Math.max(max, template.order), 0) + 1
+  }
+
   return (
     <>
       <p className="text-body-secondary small">
-        "Client-facing" marks a task as representing confirmed client contact — completing one updates the lead
-        the same way logging a client interaction does. Leave it off for internal-only tasks.
+        Active tasks are generated onto every new project. Drag one into the panel to retire it, or drag from the
+        panel into a phase to bring it back — a task&apos;s form travels with it.
       </p>
       {error && <Alert variant="danger">{error}</Alert>}
-      {rowError && <Alert variant="danger">{rowError}</Alert>}
+      {rowError && (
+        <Alert variant="danger" dismissible onClose={() => setRowError(null)}>
+          {rowError}
+        </Alert>
+      )}
 
       {loading ? (
         <div className="d-flex justify-content-center py-5">
@@ -435,42 +656,51 @@ export default function RequirementTemplates() {
           </Spinner>
         </div>
       ) : (
-        PHASE_NUMBERS.map((phase) => {
-          const phaseTemplates = templatesForPhase(phase)
-          return (
-            <Card key={phase} className="mb-3">
-              <Card.Header className="d-flex justify-content-between align-items-center">
-                <span className="fw-semibold">Phase {phase}</span>
-                <Button size="sm" variant="outline-primary" onClick={() => setAddPhase(phase)}>
-                  + Add task
-                </Button>
-              </Card.Header>
-              <Card.Body className="p-0">
-                {phaseTemplates.length === 0 ? (
-                  <p className="text-body-secondary p-3 mb-0">No tasks defined for this phase.</p>
-                ) : (
-                  <ListGroup variant="flush">
-                    {phaseTemplates.map((template, index) => (
-                      <TemplateRow
-                        key={template.id}
-                        template={template}
-                        isFirst={index === 0}
-                        isLast={index === phaseTemplates.length - 1}
-                        busy={busyId === template.id}
-                        onMove={handleMove}
-                        onEdit={setEditingTemplate}
-                        onToggleActive={handleToggleActive}
-                        onAuthorityChange={handleAuthorityChange}
-                        onClientFacingChange={handleClientFacingChange}
-                        onDurationChange={handleDurationChange}
-                      />
-                    ))}
-                  </ListGroup>
-                )}
-              </Card.Body>
-            </Card>
-          )
-        })
+        <DndContext
+          sensors={sensors}
+          collisionDetection={pointerWithin}
+          onDragStart={(event) => setDragging(event.active.data.current?.template ?? null)}
+          onDragCancel={() => setDragging(null)}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="templates-layout">
+            <div>
+              {PHASE_NUMBERS.map((phase) => (
+                <PhaseDroppable key={phase} phase={phase} onAdd={setAddPhase}>
+                  {activeForPhase(phase).length === 0 ? (
+                    <p className="text-body-secondary small mb-0 p-3">
+                      Nothing here yet — drag a template in, or add one.
+                    </p>
+                  ) : (
+                    <ListGroup variant="flush">
+                      {activeForPhase(phase).map((template, index) => (
+                        <TemplateRow
+                          key={template.id}
+                          template={template}
+                          isFirst={index === 0}
+                          isLast={index === activeForPhase(phase).length - 1}
+                          busy={busyId === template.id}
+                          onMove={handleMove}
+                          onEdit={setEditingTemplate}
+                          onToggleActive={handleToggleActive}
+                          onAuthorityChange={handleAuthorityChange}
+                          onClientFacingChange={handleClientFacingChange}
+                          onDurationChange={handleDurationChange}
+                        />
+                      ))}
+                    </ListGroup>
+                  )}
+                </PhaseDroppable>
+              ))}
+            </div>
+
+            <PanelDroppable templates={templates} />
+          </div>
+
+          <DragOverlay>
+            {dragging ? <div className="template-drag-preview">{dragging.label}</div> : null}
+          </DragOverlay>
+        </DndContext>
       )}
 
       <EditTemplateModal
@@ -491,5 +721,26 @@ export default function RequirementTemplates() {
         />
       )}
     </>
+  )
+}
+
+// Thin wrappers so the droppable hooks sit outside the page component.
+function PhaseDroppable({ phase, onAdd, children }) {
+  const { setNodeRef, isOver } = useDroppable({ id: `${PHASE_DROP_PREFIX}${phase}` })
+  return (
+    <div ref={setNodeRef}>
+      <PhaseDropZone phase={phase} isOver={isOver} onAdd={onAdd}>
+        {children}
+      </PhaseDropZone>
+    </div>
+  )
+}
+
+function PanelDroppable({ templates }) {
+  const { setNodeRef, isOver } = useDroppable({ id: PANEL_DROP_ID })
+  return (
+    <div ref={setNodeRef}>
+      <LibraryPanel templates={templates} isOver={isOver} />
+    </div>
   )
 }

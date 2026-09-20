@@ -27,7 +27,7 @@ import { errorMessage, get, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import Avatar, { AvatarStack } from '../components/Avatar.jsx'
 import { usePageMeta } from '../components/PageChrome.jsx'
-import StatusPill, { LEAD_STATUS_TONE } from '../components/StatusPill.jsx'
+import { LeadStatusBadge } from '../components/StatusPill.jsx'
 
 // A column is a phase, plus one terminal column for work that has finished
 // all four. `match` decides which column a project belongs in -- never the
@@ -120,7 +120,7 @@ function BoardCard({ project, onOpen, dragHandleProps, isDragging }) {
         <button type="button" className="board-card__title" onClick={() => onOpen(project)}>
           {project.lead_name ?? `Project #${project.id}`}
         </button>
-        <StatusPill tone={LEAD_STATUS_TONE[project.lead_status] ?? 'grey'}>{project.lead_status}</StatusPill>
+        <LeadStatusBadge status={project.lead_status} />
       </div>
 
       <div className="board-card__company">

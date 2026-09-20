@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 // The page title now lives in the layout's header bar rather than in each
 // page's body, so a page tells the layout what to put there instead of
@@ -13,7 +14,13 @@ const PageChromeContext = createContext(null)
 
 export function PageChromeProvider({ children }) {
   const [meta, setMeta] = useState(null)
-  const value = useMemo(() => ({ meta, setMeta }), [meta])
+  // The header's action slot, captured as a DOM node by a ref callback so a
+  // page can portal its buttons into it. A node rather than a React element
+  // deliberately: JSX crossing a context would be a new value every render,
+  // and the only ways to hold it would be an effect that sets state (which
+  // cascades renders) or a serialisation that JSX can't survive.
+  const [actionSlot, setActionSlot] = useState(null)
+  const value = useMemo(() => ({ meta, setMeta, actionSlot, setActionSlot }), [meta, actionSlot])
   return <PageChromeContext.Provider value={value}>{children}</PageChromeContext.Provider>
 }
 
@@ -45,4 +52,17 @@ export function usePageMeta({ title, badge = null, breadcrumbs = null }) {
     // fallback, while that page is still loading) takes over cleanly.
     return () => setMeta(null)
   }, [serialised, setMeta])
+}
+
+/**
+ * Renders its children into the header bar, right-aligned beside the page
+ * title -- for actions that belong to the record the page is about rather
+ * than to any one section of it.
+ *
+ * Renders nothing until the header has handed over its slot, which happens
+ * on the header's first commit, so at worst the actions appear a frame late.
+ */
+export function PageActions({ children }) {
+  const { actionSlot } = usePageChrome()
+  return actionSlot ? createPortal(children, actionSlot) : null
 }

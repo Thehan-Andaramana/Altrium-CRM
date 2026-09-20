@@ -1,3 +1,4 @@
+import { User } from 'lucide-react'
 import { useUserRole } from './UserDirectory.jsx'
 
 // Initial avatar for a named person, coloured by their role.
@@ -56,6 +57,25 @@ export default function Avatar({ name, role, size, className = '', title }) {
       title={title ?? name ?? undefined}
     >
       {initialsFor(name)}
+    </span>
+  )
+}
+
+/**
+ * The same disc, for a slot nobody fills yet -- a dashed outline and a
+ * person glyph rather than a "?", which reads as "who is this?" instead of
+ * "nobody yet". aria-hidden like the others: the row that holds it says
+ * "Unassigned" in text of its own.
+ */
+export function UnassignedAvatar({ size, title = 'Unassigned', className = '' }) {
+  const sizeClass = size ? `avatar--${size}` : ''
+  return (
+    <span
+      className={`avatar avatar--unassigned ${sizeClass} ${className}`.trim()}
+      aria-hidden="true"
+      title={title}
+    >
+      <User size={size === 'sm' ? 12 : 14} />
     </span>
   )
 }
