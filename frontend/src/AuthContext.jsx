@@ -28,8 +28,11 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
-  const login = useCallback(async (username, password) => {
-    const me = await post('/api/auth/login/', { username, password })
+  // `remember` decides whether the session survives closing the browser.
+  // It defaults to true, which is what this app did before the login form
+  // offered the choice.
+  const login = useCallback(async (username, password, remember = true) => {
+    const me = await post('/api/auth/login/', { username, password, remember })
     setUser(me)
     return me
   }, [])

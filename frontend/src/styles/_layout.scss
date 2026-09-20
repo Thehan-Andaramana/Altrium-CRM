@@ -10,7 +10,11 @@
 // is actually redefined per theme, which is what these two blocks do --
 // everything else in the app inherits the switch for free.
 
-:root {
+// Listed for [data-bs-theme='light'] as well as :root so that a nested
+// light subtree (the login card, which is white whatever the page theme is)
+// gets these back -- :root alone would leave it inheriting the dark values.
+:root,
+[data-bs-theme='light'] {
   --altrium-surface: #{$altrium-surface};
   --altrium-card-radius: #{$altrium-card-radius};
   --altrium-card-shadow: #{$altrium-card-shadow};
@@ -980,4 +984,91 @@ button.status-pill {
 .icon-button--sm {
   width: 1.625rem;
   height: 1.625rem;
+}
+
+// -- Login ----------------------------------------------------------------
+//
+// Split screen: a white brand half, and a near-black half carrying the form,
+// with a diagonal cut between them.
+//
+// Both halves are fixed colours in either theme, for the same reason the
+// sidebar and the brand mark are: this is chrome, and its contrast is set
+// from the inside out. A themed version would also lose the split -- in
+// dark mode the two halves would be #171717 against #151515 and the
+// diagonal simply wouldn't be visible.
+
+.login {
+  display: flex;
+  min-height: 100vh;
+  background-color: $white;
+}
+
+.login__brand {
+  display: flex;
+  flex: 1 1 45%;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  color: $altrium-ink;
+}
+
+.login__brand-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  text-align: center;
+}
+
+.login__wordmark {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.login__panel {
+  display: flex;
+  flex: 1 1 55%;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 2rem 2rem 4rem;
+  background-color: $altrium-sidebar-bg;
+  // The diagonal edge. A clip-path rather than a rotated pseudo-element:
+  // one declaration, no overflow to contain, and the panel's own padding
+  // above keeps the card clear of the slanted edge.
+  clip-path: polygon(12% 0, 100% 0, 100% 100%, 0 100%);
+  margin-left: -6%;
+}
+
+.login__card {
+  width: 100%;
+  max-width: 24rem;
+  padding: 2rem;
+  border-radius: var(--altrium-card-radius);
+  // White in both themes, like the halves it sits between -- and what the
+  // shadow needs to read against the near-black panel.
+  background-color: $white;
+  color: $altrium-ink;
+  box-shadow: 0 18px 40px rgba($black, 0.45);
+}
+
+// Below the split's breakpoint the diagonal has nowhere to go: the brand
+// becomes a band above the form rather than a half beside it.
+@include media-breakpoint-down(md) {
+  .login {
+    flex-direction: column;
+  }
+
+  .login__brand {
+    flex: 0 0 auto;
+    padding: 2.5rem 1.5rem 1.5rem;
+  }
+
+  .login__panel {
+    flex: 1 1 auto;
+    padding: 2.5rem 1.5rem;
+    margin-left: 0;
+    clip-path: polygon(0 3rem, 100% 0, 100% 100%, 0 100%);
+  }
 }

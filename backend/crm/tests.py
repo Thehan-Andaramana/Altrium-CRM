@@ -4068,3 +4068,47 @@ class ManagerHeldLeadMigrationTests(TestCase):
 
         lead.refresh_from_db()
         self.assertEqual(lead.assigned_to, self.manager)
+
+
+class LoginRememberMeTests(APITestCase):
+    """
+    The login form's "Remember me" decides whether the session outlives the
+    browser. Left out entirely it stays on, which is what this endpoint did
+    before the checkbox existed.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='remember-me', password='pass-phrase', role=User.Role.SALES_REP,
+        )
+        self.url = reverse('auth-login')
+
+    def _login(self, **extra):
+        return self.client.post(
+            self.url, {'username': 'remember-me', 'password': 'pass-phrase', **extra}, format='json',
+        )
+
+    def test_login_without_the_flag_keeps_a_persistent_session(self):
+        response = self._login()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(self.client.session.get_expiry_age(), 0)
+        self.assertFalse(self.client.session.get_expire_at_browser_close())
+
+    def test_remember_true_keeps_a_persistent_session(self):
+        response = self._login(remember=True)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(self.client.session.get_expire_at_browser_close())
+
+    def test_remember_false_expires_the_session_at_browser_close(self):
+        response = self._login(remember=False)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(self.client.session.get_expire_at_browser_close())
+
+    def test_the_flag_does_not_affect_a_failed_login(self):
+        response = self.client.post(
+            self.url,
+            {'username': 'remember-me', 'password': 'wrong', 'remember': False},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertNotIn('_auth_user_id', self.client.session)

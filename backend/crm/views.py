@@ -118,6 +118,14 @@ def login_view(request):
     if user is None:
         return Response({'detail': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
     login(request, user)
+    # "Remember me" is the login form's checkbox, and it decides how long the
+    # session outlives the browser. Left out entirely (an older client, or a
+    # scripted login) it defaults to True, which is the behaviour this
+    # endpoint has always had -- Django's own default of a persistent cookie
+    # for SESSION_COOKIE_AGE. Unchecking it opts into a session cookie that
+    # dies with the browser instead.
+    if request.data.get('remember', True) is False:
+        request.session.set_expiry(0)
     return Response(_user_payload(user))
 
 
