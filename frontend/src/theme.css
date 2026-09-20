@@ -17,10 +17,13 @@
   padding: 0.5rem 0.75rem;
 }
 
-/* Card style: dashboard card appearance, toggled via a class on <html> */
+/* Card style: dashboard card appearance, toggled via a class on <html>.
+   "Elevated" is the app's one soft shadow (--altrium-card-shadow, defined
+   per theme in _layout.scss) -- the same one the card-row tables and stat
+   cards use, so every raised surface reads at the same depth. */
 .card-style-elevated .card {
   border: 0;
-  box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+  box-shadow: var(--altrium-card-shadow);
 }
 
 .card-style-flat .card {

@@ -7,21 +7,28 @@ import Form from 'react-bootstrap/Form'
 import Spinner from 'react-bootstrap/Spinner'
 import Tab from 'react-bootstrap/Tab'
 import Tabs from 'react-bootstrap/Tabs'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useSearchParams } from 'react-router-dom'
 import { errorMessage, get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import { usePageMeta } from '../components/PageChrome.jsx'
 import RequirementTemplates from './RequirementTemplates.jsx'
 
 const ALLOWED_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 
 export default function Settings() {
   const { user } = useAuth()
+  // The sidebar has a Templates item of its own, and both it and System
+  // Settings land on this one route -- ?tab= is what tells them apart.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = searchParams.get('tab') === 'templates' ? 'templates' : 'general'
   const [coldLeadDays, setColdLeadDays] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [saved, setSaved] = useState(false)
+
+  usePageMeta({ title: activeTab === 'templates' ? 'Requirement Templates' : 'System Settings' })
 
   useEffect(() => {
     if (!ALLOWED_ROLES.has(user?.role)) {
@@ -70,9 +77,12 @@ export default function Settings() {
   }
 
   return (
-    <Container style={{ maxWidth: '48rem' }}>
-      <h1 className="h3 mb-3">System Settings</h1>
-      <Tabs defaultActiveKey="general" className="mb-3">
+    <Container className="px-0" style={{ maxWidth: '48rem' }}>
+      <Tabs
+        activeKey={activeTab}
+        onSelect={(key) => setSearchParams(key === 'templates' ? { tab: 'templates' } : {}, { replace: true })}
+        className="mb-3"
+      >
         <Tab eventKey="general" title="General">
           <Card>
             <Card.Body>

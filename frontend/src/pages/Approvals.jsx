@@ -1,6 +1,6 @@
+import { Check, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
-import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
 import Form from 'react-bootstrap/Form'
 import Modal from 'react-bootstrap/Modal'
@@ -8,10 +8,21 @@ import Spinner from 'react-bootstrap/Spinner'
 import Table from 'react-bootstrap/Table'
 import { errorMessage, get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import { PersonCell } from '../components/Avatar.jsx'
+import { usePageMeta } from '../components/PageChrome.jsx'
+import { PlainTh, SortableTh, useSortedRows } from '../components/SortableTable.jsx'
+import StatusPill, { APPROVAL_STATUS_TONE } from '../components/StatusPill.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 
-const TH_CLASS = 'text-body-secondary text-uppercase small fw-normal table-header-tracked'
+const SORT_ACCESSORS = {
+  lead: (approval) => approval.lead_name,
+  company: (approval) => approval.company_name,
+  request_type: (approval) => approval.request_type,
+  requested_by: (approval) => approval.requested_by_username,
+  status: (approval) => approval.status,
+  created_at: (approval) => new Date(approval.created_at).getTime(),
+}
 
 const REQUEST_TYPE_LABELS = {
   ARCHIVE_LEAD: 'Archive Lead',
@@ -28,12 +39,6 @@ const STATUS_OPTIONS = [
   { value: 'APPROVED', label: 'Approved' },
   { value: 'REJECTED', label: 'Rejected' },
 ]
-
-const STATUS_BADGE_VARIANT = {
-  PENDING: 'warning',
-  APPROVED: 'success',
-  REJECTED: 'danger',
-}
 
 function DecisionForm({ mode, saving, error, onSubmit, onHide }) {
   const [decisionNote, setDecisionNote] = useState('')
@@ -104,6 +109,10 @@ export default function Approvals() {
   const [deciding, setDeciding] = useState(false)
   const [decisionError, setDecisionError] = useState(null)
 
+  const { rows: sortedApprovals, sort, toggle: toggleSort } = useSortedRows(approvals, SORT_ACCESSORS)
+
+  usePageMeta({ title: 'Approvals' })
+
   useEffect(() => {
     let cancelled = false
 
@@ -150,10 +159,6 @@ export default function Approvals() {
 
   return (
     <>
-      <div className="d-flex flex-nowrap justify-content-between align-items-center pb-3 mb-4 border-bottom">
-        <h1 className="h3 mb-0">Approvals</h1>
-      </div>
-
       <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
         <Form.Select
           value={status}
@@ -188,21 +193,21 @@ export default function Approvals() {
       ) : approvals.length === 0 ? (
         <p className="text-body-secondary">No approval requests found.</p>
       ) : (
-        <Table striped hover responsive>
+        <Table hover responsive className="table-cards">
           <thead>
             <tr>
-              <th className={TH_CLASS}>Lead</th>
-              <th className={TH_CLASS}>Company</th>
-              <th className={TH_CLASS}>Request Type</th>
-              <th className={TH_CLASS}>Requested By</th>
-              <th className={TH_CLASS}>Reason</th>
-              <th className={TH_CLASS}>Status</th>
-              <th className={TH_CLASS}>Date</th>
-              {canDecide && <th className={TH_CLASS}>Actions</th>}
+              <SortableTh columnKey="lead" label="Lead" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="company" label="Company" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="request_type" label="Request Type" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="requested_by" label="Requested By" sort={sort} onToggle={toggleSort} />
+              <PlainTh label="Reason" />
+              <SortableTh columnKey="status" label="Status" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="created_at" label="Date" sort={sort} onToggle={toggleSort} />
+              {canDecide && <PlainTh label="Actions" />}
             </tr>
           </thead>
           <tbody>
-            {approvals.map((approval) => {
+            {sortedApprovals.map((approval) => {
               const isOwn = approval.requested_by === user.id
               // PHASE_4_SIGNOFF (Executive Sign-Off) can only be decided by
               // an EXECUTIVE_MANAGER, not just any management role -- matches
@@ -221,30 +226,40 @@ export default function Approvals() {
                       ? ` → ${approval.target_status}`
                       : ''}
                   </td>
-                  <td>{approval.requested_by_username ?? 'Unknown'}</td>
+                  <td>
+                    <PersonCell name={approval.requested_by_username} fallback="Unknown" />
+                  </td>
                   <td>{approval.reason || '—'}</td>
                   <td>
-                    <Badge bg={STATUS_BADGE_VARIANT[approval.status] ?? 'secondary'}>{approval.status}</Badge>
+                    <StatusPill tone={APPROVAL_STATUS_TONE[approval.status] ?? 'grey'}>
+                      {approval.status}
+                    </StatusPill>
                   </td>
                   <td>{new Date(approval.created_at).toLocaleDateString()}</td>
                   {canDecide && (
                     <td>
                       {approval.status === 'PENDING' && !isOwn && canDecideThis && (
                         <div className="d-flex gap-1">
-                          <Button
-                            size="sm"
-                            variant="outline-success"
+                          {/* Icon buttons, but the aria-label keeps each
+                              one's name the word it replaced. */}
+                          <button
+                            type="button"
+                            className="icon-button icon-button--success"
                             onClick={() => openDecision(approval, 'APPROVED')}
+                            aria-label="Approve"
+                            title="Approve"
                           >
-                            Approve
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline-danger"
+                            <Check size={16} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-button icon-button--danger"
                             onClick={() => openDecision(approval, 'REJECTED')}
+                            aria-label="Reject"
+                            title="Reject"
                           >
-                            Reject
-                          </Button>
+                            <X size={16} aria-hidden="true" />
+                          </button>
                         </div>
                       )}
                     </td>

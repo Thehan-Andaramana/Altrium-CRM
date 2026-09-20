@@ -1,7 +1,6 @@
 import { format } from 'date-fns'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
-import Badge from 'react-bootstrap/Badge'
 import Button from 'react-bootstrap/Button'
 import Card from 'react-bootstrap/Card'
 import Col from 'react-bootstrap/Col'
@@ -15,17 +14,14 @@ import { Link, useParams } from 'react-router-dom'
 import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
+import { PersonCell } from '../components/Avatar.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
 import PageHeader from '../components/PageHeader.jsx'
+import StatusPill, { LEAD_STATUS_TONE } from '../components/StatusPill.jsx'
 
 // Company update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
 // SYSTEM_ADMIN is read-only for companies (see CompanyPermission, backend).
 const MANAGER_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER'])
-
-const STATUS_BADGE_VARIANT = {
-  HOT: 'warning',
-  COLD: 'secondary',
-}
 
 function formatWebsiteDomain(url) {
   return url.replace(/^https?:\/\//, '').replace(/^www\./, '')
@@ -77,7 +73,9 @@ function EditCompanyForm({ company, canEditOwner, salesReps, saving, error, onSa
               ))}
             </Form.Select>
           ) : (
-            <div>{company.owner_username ?? 'Unassigned'}</div>
+            <div>
+              <PersonCell name={company.owner_username} fallback="Unassigned" />
+            </div>
           )}
         </Form.Group>
         <div>
@@ -452,16 +450,11 @@ export default function CompanyDetail() {
   }
 
   return (
-    <Container style={{ maxWidth: '56rem' }}>
+    <Container className="px-0" style={{ maxWidth: '56rem' }}>
       <PageHeader
         title={company.name}
-        badge={
-          company.is_archived && (
-            <Badge bg="secondary" className="align-middle">
-              Archived
-            </Badge>
-          )
-        }
+        badge={company.is_archived ? 'Archived' : null}
+        breadcrumbs={[{ label: 'Companies', to: '/companies' }]}
         subtitle={company.industry || null}
         actions={
           <>
@@ -532,7 +525,9 @@ export default function CompanyDetail() {
         </Col>
         <Col sm={4}>
           <div className="text-body-secondary small">Owner</div>
-          <div>{company.owner_username ?? 'Unassigned'}</div>
+          <div>
+            <PersonCell name={company.owner_username} fallback="Unassigned" />
+          </div>
         </Col>
       </Row>
 
@@ -631,8 +626,8 @@ export default function CompanyDetail() {
                             </div>
                           </div>
                           <div className="d-flex align-items-center gap-1 flex-shrink-0">
-                            <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}>{lead.status}</Badge>
-                            {lead.has_project && <Badge bg="info">Project</Badge>}
+                            <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
+                            {lead.has_project && <StatusPill tone="blue">Project</StatusPill>}
                           </div>
                         </div>
                       </ListGroup.Item>

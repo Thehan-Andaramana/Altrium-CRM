@@ -21,6 +21,7 @@ from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.routers import DefaultRouter
 
+from crm.reports import ReportsView
 from crm.views import (
     ApprovalRequestViewSet,
     CalendarView,
@@ -57,6 +58,7 @@ urlpatterns = [
     path('api/settings/', SystemSettingsView.as_view(), name='system-settings'),
     path('api/dashboard/', DashboardView.as_view(), name='dashboard'),
     path('api/calendar/', CalendarView.as_view(), name='calendar'),
+    path('api/reports/', ReportsView.as_view(), name='reports'),
     path('api/', include(router.urls)),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path(

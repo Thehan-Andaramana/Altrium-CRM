@@ -1,8 +1,8 @@
 import { differenceInCalendarDays } from 'date-fns'
+import { Check, CheckSquare, Clock, Flame, FolderKanban, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
-import Button from 'react-bootstrap/Button'
 import Card from 'react-bootstrap/Card'
 import Col from 'react-bootstrap/Col'
 import ListGroup from 'react-bootstrap/ListGroup'
@@ -11,6 +11,9 @@ import Spinner from 'react-bootstrap/Spinner'
 import { Link } from 'react-router-dom'
 import { errorMessage, get, patch } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import { PersonCell } from '../components/Avatar.jsx'
+import { usePageMeta } from '../components/PageChrome.jsx'
+import StatCard from '../components/StatCard.jsx'
 
 const MANAGEMENT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER', 'SYSTEM_ADMIN'])
 const LIST_LIMIT = 5
@@ -139,8 +142,10 @@ function ApprovalsCard({ count, items, userRole, actioningId, actionError, onDec
                         {approval.phase_number ? ` (Phase ${approval.phase_number})` : ''}
                         {approval.request_type === 'LEAD_STATUS_CHANGE' && approval.target_status
                           ? ` → ${approval.target_status}`
-                          : ''}{' '}
-                        · Requested by {approval.requested_by_username ?? 'Unknown'}
+                          : ''}
+                      </div>
+                      <div className="text-body-secondary small d-flex align-items-center gap-1 mt-1">
+                        Requested by <PersonCell name={approval.requested_by_username} fallback="Unknown" />
                       </div>
                       {approval.request_type === 'LEAD_STATUS_CHANGE' && approval.reason && (
                         <div className="text-body-secondary small fst-italic">{approval.reason}</div>
@@ -148,22 +153,26 @@ function ApprovalsCard({ count, items, userRole, actioningId, actionError, onDec
                     </div>
                     {canDecideThis && (
                       <div className="d-flex gap-1 flex-shrink-0">
-                        <Button
-                          size="sm"
-                          variant="outline-success"
+                        <button
+                          type="button"
+                          className="icon-button icon-button--success"
                           disabled={actioningId === approval.id}
                           onClick={() => onDecide(approval, 'APPROVED')}
+                          aria-label="Approve"
+                          title="Approve"
                         >
-                          Approve
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline-danger"
+                          <Check size={16} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button icon-button--danger"
                           disabled={actioningId === approval.id}
                           onClick={() => onDecide(approval, 'REJECTED')}
+                          aria-label="Reject"
+                          title="Reject"
                         >
-                          Reject
-                        </Button>
+                          <X size={16} aria-hidden="true" />
+                        </button>
                       </div>
                     )}
                   </div>
@@ -189,6 +198,8 @@ export default function Home() {
   const [error, setError] = useState(null)
   const [actioningId, setActioningId] = useState(null)
   const [actionError, setActionError] = useState(null)
+
+  usePageMeta({ title: 'Dashboard' })
 
   useEffect(() => {
     let cancelled = false
@@ -249,7 +260,45 @@ export default function Home() {
 
   return (
     <>
-      <h1 className="h3 mb-3">Dashboard</h1>
+      <Row xs={1} sm={2} xl={4} className="g-3 mb-4">
+        <Col>
+          <StatCard
+            label="Hot Leads"
+            value={dashboard.hot_leads.count}
+            Icon={Flame}
+            tone="amber"
+            to="/leads?status=HOT"
+          />
+        </Col>
+        <Col>
+          <StatCard
+            label="Overdue Tasks"
+            value={dashboard.overdue_tasks.count}
+            Icon={Clock}
+            tone="red"
+            to="/calendar"
+          />
+        </Col>
+        <Col>
+          <StatCard
+            label="Pending Approvals"
+            value={dashboard.pending_approvals.count}
+            Icon={CheckSquare}
+            tone="amber"
+            to="/approvals"
+          />
+        </Col>
+        <Col>
+          <StatCard
+            label="Active Projects"
+            value={dashboard.active_projects.count}
+            Icon={FolderKanban}
+            tone="blue"
+            to="/board"
+          />
+        </Col>
+      </Row>
+
       <Row xs={1} md={2} xl={4} className="g-3">
         <Col>
           <LeadCard

@@ -1,4 +1,5 @@
 import { formatDistanceToNow } from 'date-fns'
+import { Pencil } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
@@ -19,14 +20,12 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { del, errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
+import Avatar, { PersonCell } from '../components/Avatar.jsx'
 import FormFieldsEditor from '../components/FormFieldsEditor.jsx'
 import NewContactInline from '../components/NewContactInline.jsx'
+import { usePageMeta } from '../components/PageChrome.jsx'
+import StatusPill, { LEAD_STATUS_TONE, PHASE_STATUS_TONE } from '../components/StatusPill.jsx'
 import { formFieldsPayload } from '../formFields.js'
-
-const STATUS_BADGE_VARIANT = {
-  HOT: 'warning',
-  COLD: 'secondary',
-}
 
 const TYPE_OPTIONS = [
   { value: 'CALL', label: 'Call' },
@@ -71,12 +70,6 @@ function getCurrentPhaseNumber(project) {
   return PHASE_NUMBERS.find((phaseNum) => project[`phase_${phaseNum}_status`] !== 'COMPLETE') ?? PHASE_NUMBERS.at(-1)
 }
 
-const PHASE_STATUS_BADGE_VARIANT = {
-  NOT_STARTED: 'secondary',
-  IN_PROGRESS: 'info',
-  AWAITING_APPROVAL: 'warning',
-  COMPLETE: 'success',
-}
 
 const PHASE_STATUS_LABELS = {
   NOT_STARTED: 'Not Started',
@@ -94,11 +87,13 @@ const TASK_STATUS_OPTIONS = [
 
 const TASK_STATUS_LABELS = Object.fromEntries(TASK_STATUS_OPTIONS.map((option) => [option.value, option.label]))
 
-const TASK_STATUS_BADGE_VARIANT = {
-  PENDING: 'secondary',
-  IN_PROGRESS: 'info',
-  COMPLETED: 'success',
-  NOT_APPLICABLE: 'secondary',
+// Task statuses reuse the phase tones -- the same four states, read at a
+// different scale.
+const TASK_STATUS_TONE = {
+  PENDING: 'grey',
+  IN_PROGRESS: 'blue',
+  COMPLETED: 'green',
+  NOT_APPLICABLE: 'grey',
 }
 
 // Mirrors PhaseRequirementSerializer.COMPLETION_ROLE_BY_PHASE on the backend
@@ -818,9 +813,9 @@ function TaskDetailReadOnly({ task, canConfirm, canEdit, saving, onConfirm, onEd
         {task.description && <p className="text-body-secondary">{task.description}</p>}
         <div className="mb-3">
           <div className="text-body-secondary small">Status</div>
-          <Badge bg={TASK_STATUS_BADGE_VARIANT[task.status] ?? 'secondary'}>
+          <StatusPill tone={TASK_STATUS_TONE[task.status] ?? 'grey'}>
             {TASK_STATUS_LABELS[task.status] ?? task.status}
-          </Badge>
+          </StatusPill>
         </div>
         <TaskDueDateGroup task={task} />
         {task.committed_date && (
@@ -925,9 +920,9 @@ function TaskDetailEditForm({ task, canConfirm, canComplete, saving, error, onSa
         ) : (
           <div className="mb-3">
             <div className="text-body-secondary small">Status</div>
-            <Badge bg={TASK_STATUS_BADGE_VARIANT[task.status] ?? 'secondary'}>
+            <StatusPill tone={TASK_STATUS_TONE[task.status] ?? 'grey'}>
               {TASK_STATUS_LABELS[task.status] ?? task.status}
-            </Badge>
+            </StatusPill>
             <div className="text-body-secondary small mt-1">{completionResponsibilityMessage(task)}</div>
           </div>
         )}
@@ -1158,9 +1153,9 @@ function PhaseCard({
     <Card className="mb-2" role="region" aria-label={`Phase ${phaseNum}`}>
       <Card.Header className="d-flex justify-content-between align-items-center py-2">
         <span className="fw-semibold">Phase {phaseNum}</span>
-        <Badge bg={PHASE_STATUS_BADGE_VARIANT[status] ?? 'secondary'}>
+        <StatusPill tone={PHASE_STATUS_TONE[status] ?? 'grey'}>
           {PHASE_STATUS_LABELS[status] ?? status}
-        </Badge>
+        </StatusPill>
       </Card.Header>
       <Card.Body className="p-2">
         <div className="d-flex align-items-center gap-2 mb-2">
@@ -1375,7 +1370,9 @@ function ProjectSummaryPanel({ leadId, leadAssignedTo, refreshToken }) {
           </Col>
           <Col sm={6} md={3}>
             <div className="text-body-secondary small">Project Manager</div>
-            <div>{project.project_manager_username ?? 'Unassigned'}</div>
+            <div>
+              <PersonCell name={project.project_manager_username} fallback="Unassigned" />
+            </div>
           </Col>
         </Row>
         <div className="mt-3 pt-3 border-top">
@@ -1738,7 +1735,7 @@ function PhaseTracker({ leadId, leadAssignedTo, onProjectChange }) {
                 ))}
               </Form.Select>
             ) : (
-              <span>{project.project_manager_username ?? 'Unassigned'}</span>
+              <PersonCell name={project.project_manager_username} fallback="Unassigned" />
             )}
           </div>
           <div className="d-flex align-items-center gap-2 mb-3">
@@ -1873,7 +1870,7 @@ function EditLeadForm({
             </>
           ) : (
             <div>
-              <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}>{lead.status}</Badge>
+              <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
               <Form.Text className="d-block" muted>
                 Only a manager can change hot/cold status.
               </Form.Text>
@@ -2312,6 +2309,18 @@ export default function LeadDetail() {
   const [projectRefreshToken, setProjectRefreshToken] = useState(0)
   const bumpProjectRefresh = () => setProjectRefreshToken((token) => token + 1)
 
+  usePageMeta({
+    // Falls back to the layout's route title until the lead arrives.
+    title: lead?.name ?? 'Lead',
+    badge: lead?.is_archived ? 'Archived' : null,
+    breadcrumbs: lead
+      ? [
+          { label: 'Leads', to: '/leads' },
+          { label: lead.company_name ?? '—', to: lead.company ? `/companies/${lead.company}` : undefined },
+        ]
+      : null,
+  })
+
   useEffect(() => {
     let cancelled = false
 
@@ -2502,38 +2511,26 @@ export default function LeadDetail() {
         <Alert variant="danger">{leadError}</Alert>
       ) : (
         <>
-          <div className="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
-            <div>
-              <h1 className="h3 mb-1">
-                {lead.name}
-                {lead.is_archived && (
-                  <Badge bg="secondary" className="ms-2 align-middle">
-                    Archived
-                  </Badge>
-                )}
-              </h1>
-              <p className="text-body-secondary mb-0">
-                {lead.company_name ?? '—'}
-                {lead.contact_name && <> · {lead.contact_name}</>}
-              </p>
-            </div>
+          <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <p className="text-body-secondary mb-0">
+              {lead.contact_name ? `Contact: ${lead.contact_name}` : 'No contact'}
+            </p>
             <div className="d-flex align-items-center gap-2">
+              {/* The pill's text content is the status word and nothing
+                  else (its dot is an empty aria-hidden span), so as a
+                  button it still announces as "HOT"/"COLD". */}
               {canRequestStatusChange && !pendingStatusChangeRequest ? (
-                <Badge
+                <StatusPill
                   as="button"
                   type="button"
-                  bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}
-                  className="fs-6 border-0"
-                  style={{ cursor: 'pointer' }}
+                  tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}
                   onClick={() => setShowStatusChangeModal(true)}
                   title="Click to request a status change"
                 >
                   {lead.status}
-                </Badge>
+                </StatusPill>
               ) : (
-                <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'} className="fs-6">
-                  {lead.status}
-                </Badge>
+                <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
               )}
               {pendingStatusChangeRequest && (
                 <Badge bg="warning" pill title={pendingStatusChangeRequest.reason}>
@@ -2543,14 +2540,15 @@ export default function LeadDetail() {
               {canEdit && (
                 // Named explicitly: the project panel below has its own
                 // "Edit" (for the budget), so a bare "Edit" is ambiguous.
-                <Button
-                  variant="outline-secondary"
-                  size="sm"
+                <button
+                  type="button"
+                  className="icon-button"
                   aria-label="Edit lead"
+                  title="Edit lead"
                   onClick={() => setShowEditModal(true)}
                 >
-                  Edit
-                </Button>
+                  <Pencil size={15} aria-hidden="true" />
+                </button>
               )}
               <ArchiveButton resource="lead" record={lead} onArchived={refreshLead} label="Archive lead" />
             </div>
@@ -2565,7 +2563,9 @@ export default function LeadDetail() {
           <Row className="mb-4 gy-2">
             <Col sm={6} md={3}>
               <div className="text-body-secondary small">Assigned to</div>
-              <div>{lead.assigned_to_username ?? 'Unassigned'}</div>
+              <div>
+                <PersonCell name={lead.assigned_to_username} fallback="Unassigned" />
+              </div>
             </Col>
             <Col sm={6} md={3}>
               <div className="text-body-secondary small">Last client contact</div>
@@ -2758,6 +2758,7 @@ export default function LeadDetail() {
                           leadId={id}
                         />
                         <div className="text-body-secondary small">
+                          <Avatar name={entry.created_by_username} size="sm" className="me-1" />
                           Logged by {entry.created_by_username ?? 'Unknown'}
                         </div>
                       </ListGroup.Item>

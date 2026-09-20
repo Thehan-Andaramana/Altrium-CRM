@@ -11,25 +11,33 @@ import Table from 'react-bootstrap/Table'
 import { Link } from 'react-router-dom'
 import { errorMessage, get, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import { PersonCell } from '../components/Avatar.jsx'
+import { usePageMeta } from '../components/PageChrome.jsx'
 import SearchIcon from '../components/SearchIcon.jsx'
+import { SortableTh, useSortedRows } from '../components/SortableTable.jsx'
+import StatusPill, { LEAD_STATUS_TONE } from '../components/StatusPill.jsx'
 
 const SEARCH_DEBOUNCE_MS = 300
 // Lead create/update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
 // SYSTEM_ADMIN is read-only for leads (see ArchivableOwnedResourcePermission, backend).
 const MANAGER_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER'])
 
-const TH_CLASS = 'text-body-secondary text-uppercase small fw-normal table-header-tracked'
+// Sort values per column, for the card table's sortable headers. Dates sort
+// on the raw timestamp, not the "3 days ago" text the cell shows.
+const SORT_ACCESSORS = {
+  name: (lead) => lead.name,
+  company: (lead) => lead.company_name,
+  contact: (lead) => lead.contact_name,
+  status: (lead) => lead.status,
+  last_activity: (lead) => (lead.last_activity_at ? new Date(lead.last_activity_at).getTime() : null),
+  assigned_to: (lead) => lead.assigned_to_username,
+}
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All statuses' },
   { value: 'HOT', label: 'Hot' },
   { value: 'COLD', label: 'Cold' },
 ]
-
-const STATUS_BADGE_VARIANT = {
-  HOT: 'warning',
-  COLD: 'secondary',
-}
 
 function NewLeadModal({ show, onHide, onCreated, companies, salesReps, canAssignRep }) {
   const [name, setName] = useState('')
@@ -190,6 +198,10 @@ export default function Leads() {
   const [salesReps, setSalesReps] = useState([])
   const [showNewModal, setShowNewModal] = useState(false)
 
+  const { rows: sortedLeads, sort, toggle: toggleSort } = useSortedRows(leads, SORT_ACCESSORS)
+
+  usePageMeta({ title: 'Leads' })
+
   useEffect(() => {
     const timeoutId = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(timeoutId)
@@ -264,15 +276,6 @@ export default function Leads() {
 
   return (
     <>
-      <div className="d-flex flex-nowrap justify-content-between align-items-center pb-3 mb-4 border-bottom">
-        <h1 className="h3 mb-0">Leads</h1>
-        {canCreate && (
-          <Button variant="primary" onClick={() => setShowNewModal(true)}>
-            New Lead
-          </Button>
-        )}
-      </div>
-
       <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
         <InputGroup style={{ maxWidth: '20rem' }}>
           <InputGroup.Text>
@@ -286,7 +289,7 @@ export default function Leads() {
             aria-label="Search leads"
           />
         </InputGroup>
-        <div className="d-flex flex-column flex-sm-row gap-2">
+        <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2">
           <Form.Select
             value={status}
             onChange={(event) => setStatus(event.target.value)}
@@ -302,10 +305,17 @@ export default function Leads() {
           <Form.Switch
             id="leads-include-archived"
             label="Show archived"
+          className="text-nowrap"
+            className="text-nowrap"
             checked={includeArchived}
             onChange={(event) => setIncludeArchived(event.target.checked)}
           />
         </div>
+        {canCreate && (
+          <Button variant="primary" className="ms-sm-auto" onClick={() => setShowNewModal(true)}>
+            New Lead
+          </Button>
+        )}
       </div>
 
       {error && <Alert variant="danger">{error}</Alert>}
@@ -330,19 +340,19 @@ export default function Leads() {
       ) : leads.length === 0 ? (
         <p className="text-body-secondary">No leads found.</p>
       ) : (
-        <Table striped hover responsive>
+        <Table hover responsive className="table-cards">
           <thead>
             <tr>
-              <th className={TH_CLASS}>Project</th>
-              <th className={TH_CLASS}>Company</th>
-              <th className={TH_CLASS}>Contact</th>
-              <th className={TH_CLASS}>Status</th>
-              <th className={TH_CLASS}>Last activity</th>
-              <th className={TH_CLASS}>Assigned to</th>
+              <SortableTh columnKey="name" label="Project" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="company" label="Company" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="contact" label="Contact" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="status" label="Status" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="last_activity" label="Last activity" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="assigned_to" label="Assigned to" sort={sort} onToggle={toggleSort} />
             </tr>
           </thead>
           <tbody>
-            {leads.map((lead) => (
+            {sortedLeads.map((lead) => (
               <tr key={lead.id}>
                 <td>
                   <Link to={`/leads/${lead.id}`} className="text-decoration-none table-link-hover">
@@ -357,14 +367,16 @@ export default function Leads() {
                 <td>{lead.company_name ?? '—'}</td>
                 <td>{lead.contact_name ?? '—'}</td>
                 <td>
-                  <Badge bg={STATUS_BADGE_VARIANT[lead.status] ?? 'secondary'}>{lead.status}</Badge>
+                  <StatusPill tone={LEAD_STATUS_TONE[lead.status] ?? 'grey'}>{lead.status}</StatusPill>
                 </td>
                 <td>
                   {lead.last_activity_at
                     ? formatDistanceToNow(new Date(lead.last_activity_at), { addSuffix: true })
                     : '—'}
                 </td>
-                <td>{lead.assigned_to_username ?? 'Unassigned'}</td>
+                <td>
+                  <PersonCell name={lead.assigned_to_username} fallback="Unassigned" />
+                </td>
               </tr>
             ))}
           </tbody>

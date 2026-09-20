@@ -327,3 +327,16 @@ class ManagementWritePermission(BasePermission):
         if request.method in SAFE_METHODS:
             return True
         return request.user.role in FULL_ACCESS_ROLES
+
+
+class ReportingPermission(BasePermission):
+    """
+    Reporting is management-only, read-only: SALES_MANAGER,
+    EXECUTIVE_MANAGER and SYSTEM_ADMIN (FULL_ACCESS_ROLES) -- the same three
+    roles that already see every record, which is what a cross-rep,
+    cross-PM report necessarily exposes. A rep or PM would only ever see
+    their own slice, and the dashboard already gives them that.
+    """
+
+    def has_permission(self, request, view):
+        return request.method in SAFE_METHODS and request.user.role in FULL_ACCESS_ROLES

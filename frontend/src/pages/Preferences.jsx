@@ -1,6 +1,7 @@
 import Card from 'react-bootstrap/Card'
 import Container from 'react-bootstrap/Container'
 import Form from 'react-bootstrap/Form'
+import { usePageMeta } from '../components/PageChrome.jsx'
 import { useTheme } from '../ThemeContext.jsx'
 
 const THEME_OPTIONS = [
@@ -19,9 +20,9 @@ const DENSITY_OPTIONS = [
   { value: 'compact', label: 'Compact' },
 ]
 
-const NAV_VARIANT_OPTIONS = [
-  { value: 'top', label: 'Top navbar' },
-  { value: 'sidebar', label: 'Sidebar' },
+const SIDEBAR_OPTIONS = [
+  { value: 'expanded', label: 'Expanded' },
+  { value: 'collapsed', label: 'Icon rail' },
 ]
 
 const CARD_STYLE_OPTIONS = [
@@ -57,15 +58,16 @@ export default function Preferences() {
     setFontSize,
     density,
     setDensity,
-    navVariant,
-    setNavVariant,
+    sidebarCollapsed,
+    setSidebarCollapsed,
     cardStyle,
     setCardStyle,
   } = useTheme()
 
+  usePageMeta({ title: 'Preferences' })
+
   return (
-    <Container style={{ maxWidth: '32rem' }}>
-      <h1 className="h3 mb-3">Preferences</h1>
+    <Container className="px-0" style={{ maxWidth: '32rem' }}>
       <Card>
         <Card.Body>
           <RadioGroup
@@ -90,11 +92,11 @@ export default function Preferences() {
             onChange={setDensity}
           />
           <RadioGroup
-            legend="Navigation style"
-            name="nav-variant"
-            options={NAV_VARIANT_OPTIONS}
-            value={navVariant}
-            onChange={setNavVariant}
+            legend="Sidebar"
+            name="sidebar"
+            options={SIDEBAR_OPTIONS}
+            value={sidebarCollapsed ? 'collapsed' : 'expanded'}
+            onChange={(value) => setSidebarCollapsed(value === 'collapsed')}
           />
           <RadioGroup
             legend="Card style"

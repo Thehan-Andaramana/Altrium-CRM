@@ -331,7 +331,10 @@ class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated, ArchivableOwnedResourcePermission]
     filterset_fields = ['company', 'lead']
-    ordering_fields = ['created_at']
+    # board_order is orderable but not the default -- the board asks for
+    # ?ordering=board_order,-created_at explicitly, and every other caller
+    # keeps the newest-first list it already had.
+    ordering_fields = ['created_at', 'board_order']
     ordering = ['-created_at']
 
     def get_queryset(self):
@@ -341,7 +344,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
             to_attr='pending_requests',
         )
         queryset = (
-            Project.objects.select_related('company', 'deal', 'lead', 'project_manager')
+            Project.objects.select_related(
+                'company', 'deal', 'lead', 'lead__assigned_to', 'project_manager',
+            )
             .prefetch_related('requirements', pending_requests)
         )
         user = self.request.user
@@ -355,6 +360,54 @@ class ProjectViewSet(viewsets.ModelViewSet):
         elif user.role == User.Role.PROJECT_MANAGER:
             queryset = queryset.filter(project_manager=user)
         return _apply_archived_filter(queryset, self.request, self)
+
+    @action(detail=False, methods=['post'])
+    def reorder(self, request):
+        """
+        POST /api/projects/reorder/ with {"order": [<project id>, ...]}.
+
+        Writes board_order for a board column in one request, so dragging a
+        card doesn't fan out into one PATCH per card behind it. Only
+        board_order is ever written here -- a phase still moves solely
+        through an approved sign-off (see ProjectSerializer.update), and the
+        same-column check below refuses an order that would span two
+        columns, so the board's rule holds server-side and not just in the UI.
+        """
+        ids = request.data.get('order')
+        if not isinstance(ids, list) or not all(isinstance(pk, int) for pk in ids):
+            return Response(
+                {'order': 'Expected a list of project ids.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(set(ids)) != len(ids):
+            return Response({'order': 'Ids must be unique.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # get_queryset() is already role-scoped, so an id the requester
+        # can't see simply isn't found; check_object_permissions then
+        # applies the same write rule a PATCH would (a rep on their own
+        # leads, the managing PM, management anywhere -- SYSTEM_ADMIN is
+        # read-only on projects and is refused here too).
+        projects = {project.id: project for project in self.get_queryset().filter(id__in=ids)}
+        missing = [pk for pk in ids if pk not in projects]
+        if missing:
+            return Response({'order': 'Unknown project in order.'}, status=status.HTTP_404_NOT_FOUND)
+
+        ordered = [projects[pk] for pk in ids]
+        for project in ordered:
+            self.check_object_permissions(request, project)
+
+        columns = {(project.maintenance, project.current_phase) for project in ordered}
+        if len(columns) > 1:
+            return Response(
+                {'order': 'Cards can only be reordered within one phase -- phases advance through approval.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        for position, project in enumerate(ordered):
+            project.board_order = position
+        Project.objects.bulk_update(ordered, ['board_order'])
+
+        return Response({'updated': len(ordered)})
 
     @action(detail=True, methods=['post'])
     def archive(self, request, pk=None):
@@ -555,11 +608,18 @@ class DashboardView(APIView):
         ).exclude(status=PhaseRequirement.Status.NOT_APPLICABLE).filter(
             Q(due_date__isnull=False) | Q(committed_date__isnull=False),
         )
+        # "Active" = live work: not archived, and not yet handed over into
+        # maintenance. Scoped below the same way everything else here is.
+        active_projects = Project.objects.filter(is_archived=False, maintenance=False)
 
         if user.role == User.Role.SALES_REP:
             leads = leads.filter(assigned_to=user)
             approvals = approvals.filter(requested_by=user)
             overdue_task_candidates = overdue_task_candidates.filter(project__lead__assigned_to=user)
+            # Same owner-or-assigned-lead reach a rep has in ProjectViewSet.
+            active_projects = active_projects.filter(Q(company__owner=user) | Q(lead__assigned_to=user))
+        elif user.role == User.Role.PROJECT_MANAGER:
+            active_projects = active_projects.filter(project_manager=user)
 
         hot_leads_qs = leads.filter(status=Lead.Status.HOT).order_by(F('deal_value').desc(nulls_last=True))
         cold_leads_qs = leads.filter(status=Lead.Status.COLD).order_by('-last_activity_at')
@@ -596,6 +656,9 @@ class DashboardView(APIView):
                 'count': len(overdue_tasks),
                 'results': PhaseRequirementSerializer(overdue_tasks, many=True, context=ctx).data,
             },
+            # Count only -- the dashboard's projects stat card links through
+            # to the board for the list itself.
+            'active_projects': {'count': active_projects.count()},
         })
 
 

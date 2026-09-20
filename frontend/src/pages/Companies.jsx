@@ -11,14 +11,22 @@ import Table from 'react-bootstrap/Table'
 import { Link } from 'react-router-dom'
 import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
+import { PersonCell } from '../components/Avatar.jsx'
+import { usePageMeta } from '../components/PageChrome.jsx'
 import SearchIcon from '../components/SearchIcon.jsx'
+import { SortableTh, useSortedRows } from '../components/SortableTable.jsx'
 
 const SEARCH_DEBOUNCE_MS = 300
 // Company create/update is restricted to SALES_MANAGER/EXECUTIVE_MANAGER --
 // SYSTEM_ADMIN is read-only for companies (see CompanyPermission, backend).
 const OWNER_EDIT_ROLES = new Set(['SALES_MANAGER', 'EXECUTIVE_MANAGER'])
 
-const TH_CLASS = 'text-body-secondary text-uppercase small fw-normal table-header-tracked'
+const SORT_ACCESSORS = {
+  name: (company) => company.name,
+  industry: (company) => company.industry,
+  website: (company) => company.website,
+  owner: (company) => company.owner_username,
+}
 
 function formatWebsiteDomain(url) {
   return url.replace(/^https?:\/\//, '').replace(/^www\./, '')
@@ -103,7 +111,7 @@ function OwnerCell({ company, canEdit, salesReps, saving, onChange }) {
   const [editing, setEditing] = useState(false)
 
   if (!canEdit) {
-    return company.owner_username ?? 'Unassigned'
+    return <PersonCell name={company.owner_username} fallback="Unassigned" />
   }
 
   if (editing) {
@@ -144,7 +152,7 @@ function OwnerCell({ company, canEdit, salesReps, saving, onChange }) {
         }
       }}
     >
-      {company.owner_username ?? 'Unassigned'}
+      <PersonCell name={company.owner_username} fallback="Unassigned" />
     </span>
   )
 }
@@ -170,6 +178,10 @@ export default function Companies() {
   const [savingOwnerId, setSavingOwnerId] = useState(null)
   const [ownerError, setOwnerError] = useState(null)
   const [showNewModal, setShowNewModal] = useState(false)
+
+  const { rows: sortedCompanies, sort, toggle: toggleSort } = useSortedRows(companies, SORT_ACCESSORS)
+
+  usePageMeta({ title: 'Companies' })
 
   useEffect(() => {
     const timeoutId = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS)
@@ -250,15 +262,6 @@ export default function Companies() {
 
   return (
     <>
-      <div className="d-flex flex-nowrap justify-content-between align-items-center pb-3 mb-4 border-bottom">
-        <h1 className="h3 mb-0">Companies</h1>
-        {canCreate && (
-          <Button variant="primary" onClick={() => setShowNewModal(true)}>
-            New Company
-          </Button>
-        )}
-      </div>
-
       <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
         <InputGroup style={{ maxWidth: '20rem' }}>
           <InputGroup.Text>
@@ -283,9 +286,15 @@ export default function Companies() {
         <Form.Switch
           id="companies-include-archived"
           label="Show archived"
+          className="text-nowrap"
           checked={includeArchived}
           onChange={(event) => setIncludeArchived(event.target.checked)}
         />
+        {canCreate && (
+          <Button variant="primary" className="ms-sm-auto" onClick={() => setShowNewModal(true)}>
+            New Company
+          </Button>
+        )}
       </div>
 
       {error && <Alert variant="danger">{error}</Alert>}
@@ -309,17 +318,17 @@ export default function Companies() {
       ) : companies.length === 0 ? (
         <p className="text-body-secondary">No companies found.</p>
       ) : (
-        <Table striped hover responsive>
+        <Table hover responsive className="table-cards">
           <thead>
             <tr>
-              <th className={TH_CLASS}>Name</th>
-              <th className={TH_CLASS}>Industry</th>
-              <th className={TH_CLASS}>Website</th>
-              <th className={TH_CLASS}>Owner</th>
+              <SortableTh columnKey="name" label="Name" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="industry" label="Industry" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="website" label="Website" sort={sort} onToggle={toggleSort} />
+              <SortableTh columnKey="owner" label="Owner" sort={sort} onToggle={toggleSort} />
             </tr>
           </thead>
           <tbody>
-            {companies.map((company) => (
+            {sortedCompanies.map((company) => (
               <tr key={company.id}>
                 <td>
                   <Link to={`/companies/${company.id}`} className="text-decoration-none table-link-hover">

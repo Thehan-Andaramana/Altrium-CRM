@@ -1,3 +1,4 @@
+import { Pencil } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import Alert from 'react-bootstrap/Alert'
 import Badge from 'react-bootstrap/Badge'
@@ -10,6 +11,8 @@ import Spinner from 'react-bootstrap/Spinner'
 import { errorMessage, get, patch, post } from '../api'
 import { useAuth } from '../AuthContext.jsx'
 import ArchiveButton from '../components/ArchiveButton.jsx'
+import Avatar from '../components/Avatar.jsx'
+import { usePageMeta } from '../components/PageChrome.jsx'
 
 // Contact create/update may be attempted by management (always allowed) or a
 // SALES_REP (allowed only on a company where they have an assigned lead --
@@ -204,6 +207,8 @@ export default function Contacts() {
   const [showNewModal, setShowNewModal] = useState(false)
   const [editingContact, setEditingContact] = useState(null)
 
+  usePageMeta({ title: 'Contacts' })
+
   useEffect(() => {
     let cancelled = false
 
@@ -252,22 +257,19 @@ export default function Contacts() {
 
   return (
     <>
-      <div className="d-flex flex-nowrap justify-content-between align-items-center pb-3 mb-4 border-bottom">
-        <h1 className="h3 mb-0">Contacts</h1>
-        {canAttemptWrite && (
-          <Button variant="primary" onClick={() => setShowNewModal(true)}>
-            New Contact
-          </Button>
-        )}
-      </div>
-
       <div className="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
         <Form.Switch
           id="contacts-include-archived"
           label="Show archived"
+          className="text-nowrap"
           checked={includeArchived}
           onChange={(event) => setIncludeArchived(event.target.checked)}
         />
+        {canAttemptWrite && (
+          <Button variant="primary" className="ms-sm-auto" onClick={() => setShowNewModal(true)}>
+            New Contact
+          </Button>
+        )}
       </div>
 
       {error && <Alert variant="danger">{error}</Alert>}
@@ -306,26 +308,35 @@ export default function Contacts() {
                     key={contact.id}
                     className="d-flex justify-content-between align-items-center gap-2"
                   >
-                    <div>
+                    <div className="d-flex align-items-center gap-2" style={{ minWidth: 0 }}>
+                      <Avatar name={contact.name} />
                       <div>
-                        {contact.name}
-                        {contact.is_archived && (
-                          <Badge bg="secondary" className="ms-2">
-                            Archived
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="text-body-secondary small">
-                        {contact.job_title || '—'}
-                        {contact.email && <> · {contact.email}</>}
-                        {contact.phone && <> · {contact.phone}</>}
+                        <div>
+                          {contact.name}
+                          {contact.is_archived && (
+                            <Badge bg="secondary" className="ms-2">
+                              Archived
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="text-body-secondary small">
+                          {contact.job_title || '—'}
+                          {contact.email && <> · {contact.email}</>}
+                          {contact.phone && <> · {contact.phone}</>}
+                        </div>
                       </div>
                     </div>
                     <div className="d-flex align-items-center gap-2 flex-shrink-0">
                       {canAttemptWrite && (
-                        <Button variant="outline-secondary" size="sm" onClick={() => setEditingContact(contact)}>
-                          Edit
-                        </Button>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          onClick={() => setEditingContact(contact)}
+                          aria-label={`Edit ${contact.name}`}
+                          title="Edit"
+                        >
+                          <Pencil size={15} aria-hidden="true" />
+                        </button>
                       )}
                       <ArchiveButton resource="contact" record={contact} onArchived={refresh} />
                     </div>

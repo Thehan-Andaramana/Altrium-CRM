@@ -9,6 +9,7 @@ import ListGroup from 'react-bootstrap/ListGroup'
 import Spinner from 'react-bootstrap/Spinner'
 import { useNavigate } from 'react-router-dom'
 import { get } from '../api'
+import { usePageMeta } from '../components/PageChrome.jsx'
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -66,6 +67,8 @@ export default function Calendar() {
   // narrow screens (where a 7-column grid has no room to be useful) start in
   // list view, but either view stays a click away regardless of width.
   const [view, setView] = useState(() => (window.innerWidth < NARROW_SCREEN_BREAKPOINT ? 'list' : 'grid'))
+
+  usePageMeta({ title: 'Calendar' })
 
   useEffect(() => {
     let cancelled = false
@@ -130,9 +133,8 @@ export default function Calendar() {
   const monthLabel = new Date(year, month - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
 
   return (
-    <Container style={{ maxWidth: '64rem' }}>
-      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-        <h1 className="h3 mb-0">Calendar</h1>
+    <Container className="px-0" style={{ maxWidth: '64rem' }}>
+      <div className="d-flex flex-wrap justify-content-end align-items-center gap-2 mb-3">
         <div className="d-flex flex-wrap align-items-center gap-2">
           <ButtonGroup size="sm">
             <Button variant="outline-secondary" onClick={goToPreviousMonth} aria-label="Previous month">

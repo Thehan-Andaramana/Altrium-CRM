@@ -417,6 +417,12 @@ class Project(models.Model):
     phase_3_started_at = models.DateTimeField(null=True, blank=True)
     phase_4_started_at = models.DateTimeField(null=True, blank=True)
     maintenance = models.BooleanField(default=False)
+    # Manual position within a board column. The column itself is never a
+    # board concern -- it is the phase, which only an approved sign-off can
+    # change -- so this orders cards *within* one column and nothing else.
+    # Ties (everything starts at 0) fall back to -created_at, so an untouched
+    # board still reads newest-first.
+    board_order = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_archived = models.BooleanField(default=False)

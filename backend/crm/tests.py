@@ -573,6 +573,114 @@ class ProjectProgressTests(ProjectRequirementsTestMixin, APITestCase):
         self.assertEqual(response.data['overall_progress'], 14)
 
 
+class BoardOrderingTests(ProjectRequirementsTestMixin, APITestCase):
+    """
+    The board reorders cards *within* a column by writing board_order, and
+    can never move one between columns -- a column is the phase, and only an
+    approved sign-off changes that (see ProjectPhaseTransitionTests). These
+    cover the half the board actually writes.
+    """
+
+    def _detail_url(self):
+        return reverse('project-detail', args=[self.project.id])
+
+    def test_board_order_defaults_to_zero_and_is_patchable(self):
+        response = self.client.get(self._detail_url())
+        self.assertEqual(response.data['board_order'], 0)
+
+        response = self.client.patch(self._detail_url(), {'board_order': 3}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.board_order, 3)
+
+    def test_board_order_patch_does_not_touch_the_phase(self):
+        before = self.project.phase_1_status
+        response = self.client.patch(self._detail_url(), {'board_order': 5}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.phase_1_status, before)
+        self.assertEqual(self.project.current_phase, 1)
+
+    def test_projects_can_be_ordered_by_board_order(self):
+        second_lead = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep)
+        second = second_lead.project
+        second.board_order = 0
+        second.save(update_fields=['board_order'])
+        self.project.board_order = 1
+        self.project.save(update_fields=['board_order'])
+
+        response = self.client.get(reverse('project-list'), {'ordering': 'board_order,-created_at'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row['id'] for row in response.data][:2], [second.id, self.project.id])
+
+    def _reorder(self, ids):
+        return self.client.post(reverse('project-reorder'), {'order': ids}, format='json')
+
+    def test_reorder_writes_positions_for_a_whole_column_in_one_request(self):
+        second = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep).project
+
+        response = self._reorder([second.id, self.project.id])
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['updated'], 2)
+
+        second.refresh_from_db()
+        self.project.refresh_from_db()
+        self.assertEqual(second.board_order, 0)
+        self.assertEqual(self.project.board_order, 1)
+
+    def test_reorder_refuses_an_order_spanning_two_phases(self):
+        other = Lead.objects.create(company=self.company, contact=self.contact, assigned_to=self.rep).project
+        other.current_phase = 2
+        other.save(update_fields=['current_phase'])
+
+        response = self._reorder([other.id, self.project.id])
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('phases advance through approval', str(response.data['order']))
+
+        # Nothing was written -- a refused reorder is not a partial one.
+        other.refresh_from_db()
+        self.project.refresh_from_db()
+        self.assertEqual(other.board_order, 0)
+        self.assertEqual(self.project.board_order, 0)
+
+    def test_reorder_never_moves_a_card_between_phases(self):
+        before = self.project.current_phase
+        self._reorder([self.project.id])
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.current_phase, before)
+        self.assertEqual(self.project.phase_1_status, Project.PhaseStatus.IN_PROGRESS)
+
+    def test_reorder_is_scoped_to_what_the_requester_can_see(self):
+        stranger = User.objects.create_user(username='rep-elsewhere', password='pass', role=User.Role.SALES_REP)
+        other_company = Company.objects.create(name='Elsewhere', owner=stranger)
+        hidden = Lead.objects.create(company=other_company, assigned_to=stranger).project
+
+        self.client.force_authenticate(self.rep)
+        response = self._reorder([hidden.id])
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        hidden.refresh_from_db()
+        self.assertEqual(hidden.board_order, 0)
+
+    def test_reorder_rejects_a_malformed_order(self):
+        response = self.client.post(reverse('project-reorder'), {'order': 'nope'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_card_payload_carries_the_lead_identity_the_board_draws(self):
+        response = self.client.get(self._detail_url())
+        self.assertEqual(response.data['lead_name'], self.lead.name)
+        self.assertEqual(response.data['lead_status'], self.lead.status)
+        self.assertEqual(response.data['assigned_to_username'], self.rep.username)
+        self.assertEqual(response.data['overdue_task_count'], 0)
+
+    def test_overdue_task_count_reflects_an_overdue_requirement(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        requirement.due_date = timezone.localdate() - timedelta(days=2)
+        requirement.save(update_fields=['due_date'])
+
+        response = self.client.get(self._detail_url())
+        self.assertEqual(response.data['overdue_task_count'], 1)
+
+
 class ProjectRequirementGateTests(ProjectRequirementsTestMixin, APITestCase):
     def test_cannot_move_to_awaiting_approval_with_incomplete_requirements(self):
         url = reverse('project-detail', args=[self.project.id])
@@ -3562,3 +3670,149 @@ class ApprovalRequestCrossManagementRoleTests(APITestCase):
         url = reverse('approvalrequest-detail', args=[approval.id])
         response = self.client.patch(url, {'status': ApprovalRequest.Status.APPROVED}, format='json')
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class ReportsApiTests(ProjectRequirementsTestMixin, APITestCase):
+    """
+    /api/reports/ -- management-only aggregation. The mixin gives us a
+    company, a rep, a PM and one project with its full requirement set.
+    """
+
+    def _get(self, **params):
+        return self.client.get(reverse('reports'), params)
+
+    def test_a_rep_cannot_read_the_report(self):
+        self.client.force_authenticate(self.rep)
+        self.assertEqual(self._get().status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_project_manager_cannot_read_the_report(self):
+        self.client.force_authenticate(self.pm)
+        self.assertEqual(self._get().status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_management_can_read_the_report(self):
+        response = self._get()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        for key in (
+            'projects_per_phase', 'average_days_per_phase', 'per_rep', 'per_project_manager',
+            'approval_throughput', 'phase_3_budget', 'interaction_volume',
+        ):
+            self.assertIn(key, response.data)
+
+    def test_the_range_defaults_to_the_last_30_days(self):
+        response = self._get()
+        today = timezone.localdate()
+        self.assertEqual(response.data['range']['end'], today.isoformat())
+        self.assertEqual(response.data['range']['start'], (today - timedelta(days=29)).isoformat())
+
+    def test_a_malformed_date_is_rejected(self):
+        response = self._get(start='last-tuesday')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_backwards_range_is_rejected(self):
+        today = timezone.localdate()
+        response = self._get(start=today.isoformat(), end=(today - timedelta(days=5)).isoformat())
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_projects_per_phase_counts_the_window_cohort(self):
+        response = self._get()
+        per_phase = response.data['projects_per_phase']
+        self.assertEqual(per_phase['total'], 1)
+        self.assertEqual(per_phase['phases'][0], {'phase': 1, 'count': 1})
+        self.assertEqual(per_phase['maintenance'], 0)
+
+        # A project created before the window isn't in its cohort.
+        response = self._get(
+            start=(timezone.localdate() - timedelta(days=90)).isoformat(),
+            end=(timezone.localdate() - timedelta(days=60)).isoformat(),
+        )
+        self.assertEqual(response.data['projects_per_phase']['total'], 0)
+
+    def test_per_rep_counts_completed_tasks_and_overdue_separately(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        requirement.status = PhaseRequirement.Status.COMPLETED
+        requirement.completed_at = timezone.now()
+        requirement.save(update_fields=['status', 'completed_at'])
+
+        overdue = self.project.requirements.filter(phase=1).exclude(pk=requirement.pk).first()
+        overdue.due_date = timezone.localdate() - timedelta(days=3)
+        overdue.save(update_fields=['due_date'])
+
+        row = next(r for r in self._get().data['per_rep'] if r['username'] == self.rep.username)
+        self.assertEqual(row['tasks_completed'], 1)
+        self.assertEqual(row['tasks_overdue'], 1)
+        self.assertIsNotNone(row['average_days_to_complete_task'])
+
+    def test_per_rep_ignores_a_task_completed_outside_the_window(self):
+        requirement = self.project.requirements.filter(phase=1).first()
+        requirement.status = PhaseRequirement.Status.COMPLETED
+        requirement.completed_at = timezone.now() - timedelta(days=200)
+        requirement.save(update_fields=['status', 'completed_at'])
+
+        row = next(r for r in self._get().data['per_rep'] if r['username'] == self.rep.username)
+        self.assertEqual(row['tasks_completed'], 0)
+
+    def test_per_rep_splits_phase_1_signoffs_by_decision(self):
+        ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            project=self.project,
+            requested_by=self.rep,
+            status=ApprovalRequest.Status.APPROVED,
+            decided_by=self.manager,
+            decided_at=timezone.now(),
+        )
+        row = next(r for r in self._get().data['per_rep'] if r['username'] == self.rep.username)
+        self.assertEqual(row['phase_1_signoffs_approved'], 1)
+        self.assertEqual(row['phase_1_signoffs_rejected'], 0)
+
+    def test_per_project_manager_counts_phase_2_and_3_tasks(self):
+        for phase in (2, 3):
+            requirement = self.project.requirements.filter(phase=phase).first()
+            requirement.status = PhaseRequirement.Status.COMPLETED
+            requirement.completed_at = timezone.now()
+            requirement.save(update_fields=['status', 'completed_at'])
+
+        row = next(r for r in self._get().data['per_project_manager'] if r['username'] == self.pm.username)
+        self.assertEqual(row['phase_2_tasks_completed'], 1)
+        self.assertEqual(row['phase_3_tasks_completed'], 1)
+        self.assertEqual(row['projects_managed'], 1)
+
+    def test_approval_throughput_reports_raised_and_decided_counts(self):
+        ApprovalRequest.objects.create(
+            request_type=ApprovalRequest.RequestType.PHASE_1_SIGNOFF,
+            project=self.project,
+            requested_by=self.rep,
+            status=ApprovalRequest.Status.APPROVED,
+            decided_by=self.manager,
+            decided_at=timezone.now(),
+        )
+        throughput = self._get().data['approval_throughput']
+        self.assertEqual(throughput['raised'], 1)
+        self.assertEqual(throughput['approved'], 1)
+        self.assertEqual(throughput['rejected'], 0)
+        self.assertIsNotNone(throughput['average_days_to_decision'])
+
+    def test_phase_3_budget_only_counts_projects_that_got_that_far(self):
+        self.project.proposed_budget = Decimal('1000.00')
+        self.project.save(update_fields=['proposed_budget'])
+
+        # Still in Phase 1 -- it hasn't reached execution.
+        self.assertEqual(self._get().data['phase_3_budget']['projects'], 0)
+
+        self.project.current_phase = 3
+        self.project.save(update_fields=['current_phase'])
+        budget = self._get().data['phase_3_budget']
+        self.assertEqual(budget['projects'], 1)
+        self.assertEqual(budget['total_proposed_budget'], '1000.00')
+        self.assertEqual(budget['average_proposed_budget'], '1000.00')
+
+    def test_interaction_volume_groups_by_outcome(self):
+        Interaction.objects.create(
+            lead=self.lead, type=Interaction.Type.CALL,
+            outcome=Interaction.Outcome.NO_ANSWER, created_by=self.rep,
+        )
+        Interaction.objects.create(
+            lead=self.lead, type=Interaction.Type.CALL,
+            outcome=Interaction.Outcome.NO_ANSWER, created_by=self.rep,
+        )
+        volume = {row['outcome']: row['count'] for row in self._get().data['interaction_volume']}
+        self.assertEqual(volume[Interaction.Outcome.NO_ANSWER], 2)

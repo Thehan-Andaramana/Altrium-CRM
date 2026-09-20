@@ -50,3 +50,69 @@ $box-shadow: 0 0.5rem 1.25rem rgba($altrium-ink, 0.1);
 @import "bootstrap/scss/variables-dark";
 
 $theme-colors: map.merge($theme-colors, ("accent": $altrium-amber));
+
+
+// -- Surfaces -------------------------------------------------------------
+//
+// The redesign separates "page" from "content": a soft grey page ground with
+// white cards floating on it, which is what gives the interface depth. Every
+// Bootstrap surface variable below defaults to var(--bs-body-bg) -- now the
+// grey -- so each one is redirected at --altrium-surface instead, the white
+// (dark: near-black) card colour defined as a CSS custom property in
+// _components.scss so it can flip with [data-bs-theme] at runtime.
+
+$altrium-page-bg: #F5F6F8;
+$altrium-page-bg-dark: #0E0E0E;
+$altrium-surface: #FFFFFF;
+$altrium-surface-dark: #171717;
+// Chrome, not content: the sidebar stays dark in both themes, the same way
+// the brand mark keeps its own internal contrast (see BrandMark).
+$altrium-sidebar-bg: #151515;
+$altrium-sidebar-bg-active: #232323;
+
+$body-bg: $altrium-page-bg;
+$body-bg-dark: $altrium-page-bg-dark;
+
+$surface: var(--altrium-surface);
+$card-bg: $surface;
+$modal-content-bg: $surface;
+$dropdown-bg: $surface;
+$list-group-bg: $surface;
+$input-bg: $surface;
+$popover-bg: $surface;
+$accordion-bg: $surface;
+$offcanvas-bg-color: $surface;
+$table-bg: $surface;
+
+// -- Card shape -----------------------------------------------------------
+//
+// One radius (12px) and one soft shadow everywhere, rather than Bootstrap's
+// border-on-white. $border-radius itself stays at 0.5rem -- 12px is a card
+// radius, and applying it to buttons and inputs too reads as bubbly.
+
+$altrium-card-radius: 0.75rem;
+$altrium-card-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+
+$card-border-radius: $altrium-card-radius;
+// Equal to the outer radius rather than inset by a border width, since
+// $card-border-width is 0 here -- a header/footer that meets the card edge
+// has to round by exactly as much as the edge does.
+$card-inner-border-radius: $altrium-card-radius;
+$card-border-width: 0;
+$card-cap-bg: transparent;
+$card-spacer-y: 1rem;
+$card-spacer-x: 1rem;
+$card-cap-padding-y: 0.75rem;
+$card-cap-padding-x: 1rem;
+$box-shadow-sm: $altrium-card-shadow;
+
+// -- Links in dark mode ---------------------------------------------------
+//
+// $primary is ink, and Bootstrap derives the dark theme's link colour from
+// it (tint-color($primary, 40%) -> a mid grey) -- which on the near-black
+// page ground above is barely distinguishable from body text. Amber is the
+// one brand colour that *can* carry text on a dark ground (~11:1 against
+// #171717), even though it can't on a light one, so the dark theme is
+// exactly where it belongs.
+$link-color-dark: $altrium-amber;
+$link-hover-color-dark: $altrium-amber-tint-20;

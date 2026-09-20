@@ -149,6 +149,38 @@ docker-compose.yml   PostgreSQL 16
 setup.ps1 / setup.sh One-command first-time setup
 ```
 
+### Pages
+
+The app is a left sidebar plus a content column with its own header bar (page
+title, global search, notifications, account menu). The sidebar collapses to a
+72px icon rail, and that choice is remembered in Preferences.
+
+| Route | What it is |
+|---|---|
+| `/` | Dashboard — stat cards over hot/cold/approaching-cold lead lists and pending approvals |
+| `/board` | Kanban board, one column per phase. Cards reorder *within* a column only (`POST /api/projects/reorder/` writes `board_order`); a phase is changed by an approved sign-off and nothing else, so a cross-column drag is refused and says why |
+| `/leads`, `/leads/:id` | Pipeline list and the lead detail page (phases, tasks, timeline, project panel) |
+| `/companies`, `/companies/:id`, `/contacts` | Records |
+| `/calendar` | Tasks by due date, scoped by role |
+| `/approvals` | The approval queue |
+| `/reports` | Management reporting (`GET /api/reports/`) — see below |
+| `/preferences`, `/settings` | Per-user preferences; system settings and requirement templates (`?tab=templates`) |
+
+### Reporting
+
+`GET /api/reports/?start=&end=` is restricted to Sales Manager, Executive
+Manager and System Admin, and defaults to the last 30 days. It returns projects
+per phase, average days in each phase, per-rep and per-PM tables, approval
+throughput, the budget behind projects that reached Phase 3, and interaction
+volume by outcome.
+
+Two kinds of figure come back, and the page labels which is which: *activity*
+(tasks completed, approvals decided, interactions logged) is filtered to the
+range, while *inventory* (which phase a project is in, what's overdue today) is
+a snapshot — scoped to the projects created in the range where that's
+meaningful, and left current where it isn't. The charts are hand-built inline
+SVG; there's no charting dependency.
+
 ---
 
 ## Data model
@@ -226,10 +258,12 @@ cd backend
 python manage.py test crm
 ```
 
-**119 tests** covering phase gates, the self-approval block, both task
+**307 tests** covering phase gates, the self-approval block, both task
 confirmation paths, NOT_APPLICABLE exclusion, due-date calculation, archive
-cascade and approval flow, dashboard role scoping, and the permission rules on
-every model.
+cascade and approval flow, dashboard role scoping, board ordering (including
+that a reorder can never move a card between phases), the reporting
+aggregations and their role restriction, and the permission rules on every
+model.
 
 GitHub Actions runs the full suite plus a frontend build on every push and pull
 request, against a PostgreSQL container built from empty — see the **Actions**
@@ -264,6 +298,8 @@ it in parallel made Django's dev server refuse connections mid-run.
 | `lead-temperature` | A RESPONDED interaction leaves a cold lead cold, a manager's direct status change needs a reason, and a rep's badge click raises an approval request instead |
 | `forms-and-attachments` | Required form fields block completion (naming the missing ones), answers persist, and files upload and preview in place |
 | `server-errors` | A second modal surfaces the server's own validation message, so the shared `errorMessage` helper isn't only wired up on tasks |
+| `board` | Cards land in their phase's column, a cross-column drag is refused with the reason, reordering within a column survives a reload, and the filters narrow the board |
+| `reports` | Reporting is management-only (a rep and a PM are both sent away), the range defaults to the last 30 days and refetches when changed, the per-rep table sorts, and the CSV exports |
 
 Each test creates its own company and lead, so they can run in any order and
 don't read each other's leftovers. Records accumulate in the dev database as

@@ -25,15 +25,11 @@
   );
 }
 
-// Table polish: Bootstrap has no letter-spacing utility, and no plain
-// "underline on hover only" utility (its link-underline-opacity-* utilities
-// require a matching base .link-underline class, more machinery than a
-// table link needs) -- both are pure structural/spacing rules, not colour,
-// so adding them here doesn't affect dark-mode theming either way.
-.table-header-tracked {
-  letter-spacing: 0.06em;
-}
-
+// Table polish: no plain "underline on hover only" utility exists in
+// Bootstrap (its link-underline-opacity-* utilities require a matching base
+// .link-underline class, more machinery than a table link needs). A pure
+// structural rule, not colour, so it doesn't affect dark-mode theming.
+// (Header letter-spacing now lives on .table-cards' own thead rule.)
 .table-link-hover {
   &:hover {
     text-decoration: underline;

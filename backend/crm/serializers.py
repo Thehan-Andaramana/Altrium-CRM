@@ -289,6 +289,15 @@ class MentionSerializer(serializers.ModelSerializer):
 class ProjectSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='company.name', read_only=True, default=None)
     project_manager_username = serializers.CharField(source='project_manager.username', read_only=True, default=None)
+    # The board draws a card per project and needs the lead's own identity on
+    # it -- name, temperature and who carries it -- without a second request
+    # per card.
+    lead_name = serializers.CharField(source='lead.name', read_only=True, default=None)
+    lead_status = serializers.CharField(source='lead.status', read_only=True, default=None)
+    assigned_to_username = serializers.CharField(
+        source='lead.assigned_to.username', read_only=True, default=None,
+    )
+    overdue_task_count = serializers.SerializerMethodField()
     phase_progress = serializers.SerializerMethodField()
     overall_progress = serializers.SerializerMethodField()
     pending_approval_requests = serializers.SerializerMethodField()
@@ -309,10 +318,11 @@ class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = Project
         fields = [
-            'id', 'lead', 'company', 'company_name', 'deal', 'current_phase',
+            'id', 'lead', 'lead_name', 'lead_status', 'assigned_to_username',
+            'company', 'company_name', 'deal', 'current_phase',
             'project_manager', 'project_manager_username',
             'phase_1_status', 'phase_2_status', 'phase_3_status', 'phase_4_status', 'phase_3_execution_status',
-            'proposed_budget', 'currency', 'notes',
+            'proposed_budget', 'currency', 'notes', 'board_order', 'overdue_task_count',
             'maintenance', 'phase_progress', 'overall_progress', 'pending_approval_requests',
             'is_archived', 'archived_by', 'archived_by_username', 'archived_at', 'archive_reason',
             'created_at', 'updated_at',
@@ -357,6 +367,12 @@ class ProjectSerializer(serializers.ModelSerializer):
             completed = sum(1 for r in applicable if r.is_confirmed_complete)
             progress[phase] = {'completed': completed, 'total': total, 'percent': self._percent(completed, total)}
         return progress
+
+    def get_overdue_task_count(self, obj):
+        # is_overdue weighs confirmation state as well as dates, so it isn't
+        # a single DB column -- counted in Python off the same prefetched
+        # requirements every other method here uses.
+        return sum(1 for r in obj.requirements.all() if r.is_overdue)
 
     def get_overall_progress(self, obj):
         applicable = self._applicable(obj.requirements.all())

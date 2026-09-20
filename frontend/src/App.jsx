@@ -3,6 +3,7 @@ import './App.css'
 import { AuthProvider, useAuth } from './AuthContext.jsx'
 import Layout from './components/Layout.jsx'
 import Approvals from './pages/Approvals.jsx'
+import Board from './pages/Board.jsx'
 import Calendar from './pages/Calendar.jsx'
 import Companies from './pages/Companies.jsx'
 import CompanyDetail from './pages/CompanyDetail.jsx'
@@ -12,6 +13,7 @@ import LeadDetail from './pages/LeadDetail.jsx'
 import Leads from './pages/Leads.jsx'
 import Login from './pages/Login.jsx'
 import Preferences from './pages/Preferences.jsx'
+import Reports from './pages/Reports.jsx'
 import Settings from './pages/Settings.jsx'
 
 function RequireAuth() {
@@ -36,6 +38,7 @@ function AppRoutes() {
         <Route element={<Layout />}>
           <Route path="/" element={<Home />} />
           <Route path="/approvals" element={<Approvals />} />
+          <Route path="/board" element={<Board />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/companies" element={<Companies />} />
           <Route path="/companies/:id" element={<CompanyDetail />} />
@@ -43,6 +46,7 @@ function AppRoutes() {
           <Route path="/leads" element={<Leads />} />
           <Route path="/leads/:id" element={<LeadDetail />} />
           <Route path="/preferences" element={<Preferences />} />
+          <Route path="/reports" element={<Reports />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
       </Route>

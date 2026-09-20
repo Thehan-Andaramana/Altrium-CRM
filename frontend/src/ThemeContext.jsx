@@ -5,7 +5,11 @@ const ThemeContext = createContext(undefined)
 const STORAGE_KEY = 'app-preferences'
 const FONT_SIZES = ['small', 'medium', 'large']
 const DENSITIES = ['comfortable', 'compact']
-const NAV_VARIANTS = ['top', 'sidebar']
+// The top-navbar layout is gone -- the app is sidebar-only now -- so what
+// used to be a choice of navigation *style* is now a choice of the
+// sidebar's default width: the full 260px panel or the 72px icon rail.
+// Preferences stored under the old NAV_VARIANTS values ('top'/'sidebar')
+// simply fall through to the default below.
 const CARD_STYLES = ['elevated', 'flat', 'bordered']
 const FONT_SCALES = { small: 0.875, medium: 1, large: 1.125 }
 const CARD_STYLE_CLASSES = CARD_STYLES.map((style) => `card-style-${style}`)
@@ -21,7 +25,7 @@ function loadPreferences() {
       theme: 'light',
       fontSize: 'medium',
       density: 'comfortable',
-      navVariant: 'top',
+      sidebarCollapsed: false,
       cardStyle: 'elevated',
     }
   }
@@ -35,7 +39,7 @@ function loadPreferences() {
     theme: stored.theme === 'light' || stored.theme === 'dark' ? stored.theme : getSystemTheme(),
     fontSize: FONT_SIZES.includes(stored.fontSize) ? stored.fontSize : 'medium',
     density: DENSITIES.includes(stored.density) ? stored.density : 'comfortable',
-    navVariant: NAV_VARIANTS.includes(stored.navVariant) ? stored.navVariant : 'top',
+    sidebarCollapsed: stored.sidebarCollapsed === true,
     cardStyle: CARD_STYLES.includes(stored.cardStyle) ? stored.cardStyle : 'elevated',
   }
 }
@@ -71,12 +75,12 @@ export function ThemeProvider({ children }) {
     theme: preferences.theme,
     fontSize: preferences.fontSize,
     density: preferences.density,
-    navVariant: preferences.navVariant,
+    sidebarCollapsed: preferences.sidebarCollapsed,
     cardStyle: preferences.cardStyle,
     setTheme: (theme) => setPreferences((prev) => ({ ...prev, theme })),
     setFontSize: (fontSize) => setPreferences((prev) => ({ ...prev, fontSize })),
     setDensity: (density) => setPreferences((prev) => ({ ...prev, density })),
-    setNavVariant: (navVariant) => setPreferences((prev) => ({ ...prev, navVariant })),
+    setSidebarCollapsed: (sidebarCollapsed) => setPreferences((prev) => ({ ...prev, sidebarCollapsed })),
     setCardStyle: (cardStyle) => setPreferences((prev) => ({ ...prev, cardStyle })),
   }
 
