@@ -1,4 +1,4 @@
-# Meeting 41 — Lead Status Approval Workflow (Result)
+# Meeting 41 — Lead Status Approval Workflow 
 *Date:* 21 August 2026
 *Time:* 10:00 A.M.
 
