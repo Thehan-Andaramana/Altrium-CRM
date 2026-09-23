@@ -1,4 +1,4 @@
-# Meeting 49 — Pipeline & Sign-off Frontend (Result)
+# Meeting 49 — Pipeline & Sign-off Frontend
 *Date:* 29 August 2026
 *Time:* 01:30 P.M.
 
