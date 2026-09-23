@@ -1,6 +1,6 @@
-# Meeting 47 — Contact–Company Relationship Mapping (Result)
-*Date:* 28 August 2026
-*Time:* 10:00 A.M.
+# Meeting 47 — Phase Sign-off Workflow Design (Result)
+*Date:* 31 August 2026
+*Time:* 09:00 A.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Discussed the one-to-many relationship between companies and contacts.
-- Reviewed how to display linked contacts on the company page.
-- Considered handling of contacts linked to multiple companies.
+- Defined Phase 1–4 sign-off rules: Sales Representative handles Sales phases, Project Manager handles delivery phases.
+- Discussed that Phase 3 sign-off is raised automatically once its execution is completed.
+- Discussed that only the Executive Manager can approve Phase 4 sign-off; Phase 1–3 can be approved by Sales Manager, Executive Manager or System Administrator.
 
 ---
 ## Decisions
 
-- Support one company per contact for Sprint 2 scope.
+- Sign-off requests reuse the same ApprovalRequest entity as lead status changes.
 
 ---
 ## Completed
 
-- Relationship mapping logic documented.
+- Phase sign-off rules and flow documented.
