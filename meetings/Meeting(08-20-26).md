@@ -1,4 +1,4 @@
-# Meeting 40 — Lead Qualification & Status Design (Result)
+# Meeting 40 — Lead Qualification & Status Design 
 *Date:* 20 August 2026
 *Time:* 03:00 P.M.
 
