@@ -1,6 +1,6 @@
-# Meeting 55 — Interaction Log Schema (Result)
-*Date:* 9 September 2026
-*Time:* 01:30 P.M.
+# Meeting 55 — Dashboard Design (Result)
+*Date:* 10 September 2026
+*Time:* 03:00 P.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Reviewed fields needed to log interactions (calls, emails, meetings).
-- Discussed linking interactions to leads and contacts.
-- Talked through timestamp and author tracking.
+- Designed the role-scoped dashboard, available to all authenticated roles.
+- Planned the `GET /api/dashboard/` aggregation query.
+- Discussed which summary data each role should see on load.
 
 ---
 ## Decisions
 
-- Finalize interaction log schema with polymorphic linking to leads/contacts.
+- Dashboard data scoped by role at the query level, not the UI level.
 
 ---
 ## Completed
 
-- Interaction log schema drafted.
+- Dashboard design finalized.
