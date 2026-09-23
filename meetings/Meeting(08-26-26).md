@@ -1,6 +1,6 @@
-# Meeting 46 — Company Profile UI Design (Result)
-*Date:* 27 August 2026
-*Time:* 03:00 P.M.
+# Meeting 46 — Pipeline Backend Implementation (Result)
+*Date:* 28 August 2026
+*Time:* 10:00 A.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Reviewed layout options for the company profile page.
-- Discussed which fields to surface prominently.
-- Talked through tabbed vs. single-page layout.
+- Implemented `GET /api/projects/?ordering=board_order,-created_at` for role-scoped project loading.
+- Implemented `POST /api/projects/reorder/`, enforcing same-phase-only reordering.
+- Added write-permission and phase-scope checks.
 
 ---
 ## Decisions
 
-- Adopt tabbed layout for the company profile page.
+- Reorder endpoint merged after review; cross-phase reorder attempts correctly rejected in testing.
 
 ---
 ## Completed
 
-- Company profile UI wireframe completed.
+- Pipeline board backend endpoints implemented.
