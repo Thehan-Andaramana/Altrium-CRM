@@ -1,6 +1,6 @@
-# Meeting 40 — Lead Capture Form (Result)
-*Date:* 19 August 2026
-*Time:* 01:30 P.M.
+# Meeting 40 — Lead Qualification & Status Design (Result)
+*Date:* 20 August 2026
+*Time:* 03:00 P.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Reviewed required fields for the lead capture form.
-- Discussed UI wireframe layout.
-- Considered validation needs for mandatory fields.
+- Designed the lead status model: HOT / COLD values.
+- Discussed the direct-update rule (Sales Manager, Executive Manager can PATCH status directly).
+- Discussed the approval route for Sales Representatives, who must request a status change with a reason.
 
 ---
 ## Decisions
 
-- Approved wireframe layout for the lead capture form.
+- System Administrator can approve/reject requests but cannot directly PATCH lead status.
 
 ---
 ## Completed
 
-- Lead capture form wireframe finalized.
+- Lead status state model and access rules drafted.
