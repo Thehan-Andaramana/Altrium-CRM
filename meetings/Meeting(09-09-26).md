@@ -1,5 +1,5 @@
 # Meeting 60 — Test Case Writing (Result)
-*Date:* 17 September 2026
+*Date:* 9 September 2026
 *Time:* 03:00 P.M.
 
 ## Attendees
