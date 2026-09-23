@@ -1,6 +1,6 @@
-# Meeting 49 — Company & Contact Management Review (Result)
-*Date:* 1 September 2026
-*Time:* 02:00 P.M.
+# Meeting 49 — Pipeline & Sign-off Frontend (Result)
+*Date:* 2 September 2026
+*Time:* 01:30 P.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Walked through completed module components.
-- Identified UI polish items.
-- Reviewed remaining validation edge cases.
+- Built the drag-and-drop pipeline board UI with reject/revert behaviour on invalid moves.
+- Built the sign-off request and approval-queue UI.
+- Connected the frontend to the reorder and approval endpoints.
 
 ---
 ## Decisions
 
-- Approve Company & Contact Management module for integration testing.
+- Frontend and backend branches merged; smoke-tested together.
 
 ---
 ## Completed
 
-- Company & Contact Management module design finalized.
+- Pipeline board and sign-off UI implemented.
