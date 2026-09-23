@@ -1,6 +1,6 @@
-# Meeting 43 — Lead Scoring & Prioritization (Result)
-*Date:* 24 August 2026
-*Time:* 09:00 A.M.
+# Meeting 43 — Lead Status Frontend (Result)
+*Date:* 25 August 2026
+*Time:* 02:00 P.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Defined scoring criteria: engagement, source, company size.
-- Discussed prioritization display in the UI.
-- Reviewed scoring update triggers.
+- Built the HOT/COLD status display on the lead view.
+- Built the "request status change" form (reason field + submit) for Sales Representatives.
+- Wired the frontend to the new lead/approval endpoints.
 
 ---
 ## Decisions
 
-- Adopt a weighted scoring model for lead prioritization.
+- Frontend branch merged with backend after integration check.
 
 ---
 ## Completed
 
-- Lead scoring criteria finalized.
+- Lead status UI implemented and connected to the API.
