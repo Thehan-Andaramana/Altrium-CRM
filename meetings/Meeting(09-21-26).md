@@ -1,5 +1,5 @@
 # Meeting 72 — Project Closure & Final Handover Review (Result)
-*Date:* 23 September 2026
+*Date:* 21 September 2026
 *Time:* 09:00 A.M.
 
 ## Attendees
