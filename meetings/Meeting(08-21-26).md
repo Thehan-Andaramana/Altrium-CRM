@@ -1,6 +1,6 @@
-# Meeting 41 — Lead Status Workflow (Result)
-*Date:* 20 August 2026
-*Time:* 03:00 P.M.
+# Meeting 41 — Lead Status Approval Workflow (Result)
+*Date:* 21 August 2026
+*Time:* 10:00 A.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Mapped out lead lifecycle stages.
-- Discussed transition rules between statuses.
-- Reviewed edge cases, such as reverting a qualified lead.
+- Designed the ApprovalRequest entity for lead status changes.
+- Discussed the self-approval prevention rule — no user may approve their own request.
+- Walked through the request → pending → approve/reject → status update flow.
 
 ---
 ## Decisions
 
-- Adopt New → Contacted → Qualified → Converted workflow.
+- Adopt ApprovalRequest as a shared entity, reused later for phase sign-offs.
 
 ---
 ## Completed
 
-- Lead status workflow diagram completed.
+- Lead status approval workflow finalized on paper.
