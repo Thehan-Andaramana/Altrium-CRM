@@ -1,6 +1,6 @@
-# Meeting 42 — Lead Assignment Logic (Result)
-*Date:* 21 August 2026
-*Time:* 10:00 A.M.
+# Meeting 42 — Lead Status Backend Implementation (Result)
+*Date:* 24 August 2026
+*Time:* 09:00 A.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Discussed round-robin vs. manual lead assignment.
-- Reviewed workload balancing considerations.
-- Talked through reassignment scenarios.
+- Implemented `PATCH /api/leads/{id}/` for direct status updates by management roles.
+- Implemented `POST /api/approvals/` to raise a `LEAD_STATUS_CHANGE` request.
+- Added validation for requester-vs-approver and target status checks.
 
 ---
 ## Decisions
 
-- Use manual assignment with round-robin suggestion for Sprint 2.
+- Backend endpoints merged into the develop branch after review.
 
 ---
 ## Completed
 
-- Lead assignment logic documented.
+- Lead status backend endpoints implemented and committed.
