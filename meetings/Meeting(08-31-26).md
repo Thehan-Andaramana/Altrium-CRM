@@ -1,5 +1,5 @@
 # Meeting 51 — Project Lifecycle & Phase Tasks Design (Result)
-*Date:* 4 September 2026
+*Date:* 31 August 2026
 *Time:* 10:00 A.M.
 
 ## Attendees
