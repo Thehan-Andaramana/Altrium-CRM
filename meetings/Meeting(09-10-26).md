@@ -1,6 +1,6 @@
-# Meeting 61 — Use Case Diagram Finalization (Result)
-*Date:* 17 September 2026
-*Time:* 03:00 P.M.
+# Meeting 61 — Test Automation (Result)
+*Date:* 18 September 2026
+*Time:* 10:00 A.M.
 
 ## Attendees
 
@@ -9,16 +9,15 @@
 ---
 ## Discussion
 
-- Reviewed the high-level use case diagram against implemented modules.
-- Identified missing use cases.
-- Discussed actor roles across the system.
+- Automated the drafted test cases and ran them against the current build.
+- Reviewed failures and logged bugs found during the run.
 
 ---
 ## Decisions
 
-- Update use case diagram to reflect final Sprint 2 scope.
+- Bugs found prioritized for fixing before UAT.
 
 ---
 ## Completed
 
-- High-level use case diagram finalized.
+- Test cases automated; initial run completed with a bug list produced.
