@@ -1,6 +1,6 @@
-# Meeting 51 — Filter UI Design (Result)
-*Date:* 3 September 2026
-*Time:* 03:00 P.M.
+# Meeting 51 — Project Lifecycle & Phase Tasks Design (Result)
+*Date:* 4 September 2026
+*Time:* 10:00 A.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Reviewed multi-criteria filter requirements.
-- Discussed filter panel layout.
-- Talked through saved filter presets.
+- Designed the phase task model: due dates, custom task forms, attachments.
+- Discussed task confirmation — manager-authority tasks confirmed by management, Project-Manager-authority tasks confirmed by the assigned Project Manager.
+- Reviewed Phase 1/4 (Sales Representative tasks) vs Phase 2/3 (Project Manager tasks) split.
 
 ---
 ## Decisions
 
-- Adopt collapsible filter panel with multi-select criteria.
+- Task confirmation rules finalized per role/phase.
 
 ---
 ## Completed
 
-- Filter UI wireframe completed.
+- Project Lifecycle & Phase Tasks design finalized.
