@@ -1,4 +1,4 @@
-# Meeting 64 — Sprint 2 Review & Retrospective (Result)
+# Meeting 64 — Sprint 2 Review & Retrospective 
 *Date:* 13 September 2026
 *Time:* 01:30 P.M.
 
