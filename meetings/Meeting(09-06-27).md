@@ -1,6 +1,6 @@
-# Meeting 57 — Notification Integration (Result)
-*Date:* 11 September 2026
-*Time:* 10:00 A.M.
+# Meeting 57 — Dashboard Frontend (Result)
+*Date:* 14 September 2026
+*Time:* 09:00 A.M.
 
 ## Attendees
 
@@ -9,16 +9,15 @@
 ---
 ## Discussion
 
-- Discussed triggering notifications on new interaction logs.
-- Reviewed notification channels: in-app vs. email.
-- Talked through notification preferences.
+- Built the Dashboard UI, rendering role-scoped summary data.
+- Connected to the dashboard endpoint and verified role-based content differences.
 
 ---
 ## Decisions
 
-- Implement in-app notifications for Sprint 2; defer email to a later sprint.
+- Dashboard frontend merged after review.
 
 ---
 ## Completed
 
-- Notification integration approach documented.
+- Dashboard UI implemented.
