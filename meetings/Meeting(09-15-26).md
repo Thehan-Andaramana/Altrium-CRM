@@ -1,4 +1,4 @@
-# Meeting 66 — Security Review (Result)
+# Meeting 66 — Security Review 
 *Date:* 15 September 2026
 *Time:* 02:00 P.M.
 
