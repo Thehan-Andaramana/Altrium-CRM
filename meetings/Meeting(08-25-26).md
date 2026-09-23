@@ -1,6 +1,6 @@
-# Meeting 45 — Contact Database Schema (Result)
-*Date:* 26 August 2026
-*Time:* 01:30 P.M.
+# Meeting 45 — Visual Pipeline Board Design (Result)
+*Date:* 27 August 2026
+*Time:* 03:00 P.M.
 
 ## Attendees
 
@@ -9,16 +9,16 @@
 ---
 ## Discussion
 
-- Reviewed required contact fields.
-- Discussed relationships between contacts and companies.
-- Considered normalization vs. denormalization trade-offs.
+- Designed the visual pipeline board layout — projects grouped by phase, drag-to-reorder within a phase.
+- Discussed role-based project visibility on the board.
+- Reviewed the rule that board reorder only writes `board_order` and rejects cross-phase moves.
 
 ---
 ## Decisions
 
-- Finalize schema with separate contact and company tables linked by foreign key.
+- Phase movement only happens through the sign-off approval workflow, never via drag-reorder.
 
 ---
 ## Completed
 
-- Contact database schema drafted.
+- Visual pipeline board design finalized.
