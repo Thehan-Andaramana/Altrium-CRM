@@ -1,5 +1,5 @@
 # Meeting 61 — Test Automation (Result)
-*Date:* 18 September 2026
+*Date:* 10 September 2026
 *Time:* 10:00 A.M.
 
 ## Attendees
