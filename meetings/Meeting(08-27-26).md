@@ -1,4 +1,4 @@
-# Meeting 47 — Phase Sign-off Workflow Design (Result)
+# Meeting 47 — Phase Sign-off Workflow Design 
 *Date:* 27 August 2026
 *Time:* 09:00 A.M.
 
