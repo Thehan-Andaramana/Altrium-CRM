@@ -1,4 +1,4 @@
-# Meeting 74 — Final Sprint 2 Sign-off (Result)
+# Meeting 74 — Final Sprint 2 Sign-off 
 *Date:* 23 September 2026
 *Time:* 01:00 P.M.
 
